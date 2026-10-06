@@ -320,7 +320,9 @@
    "                      ? (a X Y) (b Y Z) (< Z 9) -> (X Z)  and  ~ absence"
    "  ?count ?exists      the same query: its count, or its witnesses"
    "                      every query makes a result set rN, watched for the"
-   "                      session (`?QUERY as rN` names it, `as _` makes none)"
+   "                      session (`?QUERY as rN` names it, `as _` makes none);"
+   "                      one over a lattice column, or with a nested pattern,"
+   "                      reads through a scratch rule, kept as relation rN"
    "  sets                list the result sets: size, live, stale"
    "  show rN             read a set's rows again (its count is re-taken)"
    "  unwatch rN | watch rN  stop or resume re-counting a set after commits"
@@ -1551,11 +1553,17 @@
     (for/list ([cells (in-list rows-cells)])
       (for/list ([cell (in-list cells)])
         (query-cell-display state cell))))
+  ;; a set kept from one relation's facts prints them as that relation's
+  (define fact
+    (and pattern
+         (match (kept-fact-relation set)
+           [#f pattern]
+           [relation (cons relation (rest pattern))])))
   (define numbered
     (for/list ([row (in-list displays)] [i (in-naturals (add1 start-index))])
       (format "~a  ~a" i
-              (if pattern
-                  (render-query-fact pattern vars row)
+              (if fact
+                  (render-query-fact fact vars row)
                   (format "(~a)" (string-join row " "))))))
   (define shown (+ start-index (length rows-cells)))
   ;; the first page leads with the set, its name and size; a later page
@@ -1624,15 +1632,33 @@
   ;; (the handle resolver only fires when a #N actually appears)
   (define (parse text)
     (parse-query-line text #:resolve-handle (frame-handle-resolver state table)))
-  (void (parse source))
+  (define nested
+    (with-handlers ([(lambda (e) (and (exn:fail:query-plan? e)
+                                      (regexp-match? #px"unsupported query term \\("
+                                                     (exn-message e))))
+                     (lambda (e) e)])
+      (void (parse source))
+      #f))
   (define rs (ensure-session-record! state))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
   (define snapshot
     (if plan (held-query-boundary-snapshot s plan) (query-boundary-snapshot s)))
+  ;; a nested pattern, or a relation `?` does not plan (a lattice column),
+  ;; reads through a scratch rule: a set kept from the start
+  (define unplanned (and (not nested) (unplannable-relation s snapshot text)))
+  (define derived? (or nested unplanned))
+  (when (and derived? (or plan (equal? name "_")))
+    (if nested
+        (raise nested)
+        (error '? "~a has a lattice column, and `?` plans plain tables; `show ~a` lists its rows"
+               unplanned unplanned)))
   (define result
-    (open-result-set! state rs s text parse snapshot name
-                      #:read source #:held? (and plan #t)))
+    (if derived?
+        (derived-result-set! state rs s text name
+                             (if nested "a nested pattern" (format "~a has a lattice column" unplanned)))
+        (open-result-set! state rs s text parse snapshot name
+                          #:read source #:held? (and plan #t))))
   ;; a frame handle reads back as the variable's value
   (define (unhandled line)
     (for/fold ([line line]) ([(label word) (in-hash table)])
@@ -1700,6 +1726,10 @@
 
 (struct set-registry (sets [made #:mutable]))
 
+;; #f while a commit cannot move any set: keeping one, whose relation is
+;; new, so no set reads it.
+(define settle-sets? (make-parameter #t))
+
 (define max-live-sets 8)
 (define max-result-sets 100)
 
@@ -1740,6 +1770,19 @@
     [(zero? n) "no rows"]
     [(= n 1) "1 row"]
     [else (format "~a rows" n)]))
+
+;; The relation a kept set's columns are all the places of (`edge.1`,
+;; `edge.2`, ...), or #f.
+(define (kept-fact-relation set)
+  (define relations
+    (for/list ([column (in-list (result-set-columns set))])
+      (match (regexp-match #px"^(.+)\\.([0-9]+)$" (hash-ref column 'name))
+        [(list _ relation n) (cons relation (string->number n))]
+        [_ #f])))
+  (and (result-set-kept set) (pair? relations) (andmap values relations)
+       (= 1 (length (remove-duplicates (map car relations))))
+       (equal? (map cdr relations) (range 1 (add1 (length relations))))
+       (car (first relations))))
 
 (define (set-headline set)
   (if (result-set-name set)
@@ -1833,7 +1876,8 @@
   (define-values (exact? count) (count-set-rows s snapshot line))
   (set-result-set-count! set count)
   (set-result-set-exact?! set exact?)
-  (set-result-set-columns! set (map column-record (set-columns line snapshot)))
+  (unless (result-set-kept set)
+    (set-result-set-columns! set (map column-record (set-columns line snapshot))))
   (define request (query-line-request line))
   (define (answer title lines . fields)
     (define result
@@ -2062,18 +2106,20 @@
           'type (if type (~a type) 'null)))
 
 ;; The scratch definition that keeps a set's rows as the relation NAME:
-;; table (rN T ...) rule (rN H ...) <-- BODY, its head the set's columns.
-;; Returns the definition, the `?` query that reads the relation back, and
-;; its columns.
+;; table (rN T ...) rule (rN H ...) <-- BODY, its head the set's columns,
+;; a column of no known type `any`.
 (define (set-definition name line snapshot)
-  (define head (set-columns line snapshot))
+  (kept-relation name (set-columns line snapshot) query-term-text
+                 (query-body-text (query-line-request line))))
+
+;; The definition of relation NAME headed by HEAD, (term name type) each,
+;; over BODY; `term-text` spells a head term.  Returns the definition, the
+;; `?` query that reads the relation back, and its columns.
+(define (kept-relation name head term-text body)
   (for ([column (in-list head)])
-    (match-define (list term column-name type) column)
-    (when (and (symbol? term) (not (variable? term)))
-      (error 'keep "`_` matches without naming a value to keep"))
-    (unless type
-      (error 'keep "the type of ~a is not known" column-name)))
-  ;; read back by variable: the head's own, or a fresh one for a constant
+    (when (wildcard-in? (first column))
+      (error 'keep "`_` matches without naming a value to keep")))
+  ;; read back by variable: the head's own, or a fresh one for anything else
   (define named
     (for/list ([column (in-list head)] #:when (symbol? (first column)))
       (~a (first column))))
@@ -2085,27 +2131,40 @@
         (if (or (member var vars) (and (not (symbol? term)) (member var named)))
             (loop (string-append var "_"))
             (cons var vars)))))
+  (define (type-of column) (~a (or (third column) 'any)))
   (values
    (format "table (~a ~a) rule (~a ~a) <-- ~a"
-           name (string-join (map (lambda (c) (~a (third c))) head) " ")
-           name (string-join (map (lambda (c) (query-term-text (first c))) head) " ")
-           (query-body-text (query-line-request line)))
+           name (string-join (map type-of head) " ")
+           name (string-join (map (lambda (c) (term-text (first c))) head) " ")
+           body)
    (format "?(~a ~a)" name (string-join vars " "))
    (for/list ([column (in-list head)] [var (in-list vars)])
-     (hasheq 'name (second column) 'var var 'type (~a (third column))))))
+     (hasheq 'name (second column) 'var var 'type (type-of column)))))
+
+;; `_` -- a parsed wildcard, or a datum's -- anywhere in a term.
+(define (wildcard-in? term)
+  (match term
+    [(? symbol?) (or (eq? term '_) (not (symbol-interned? term)))]
+    [(? list?) (ormap wildcard-in? term)]
+    [_ #f]))
 
 (define (keep-set-result state set)
   (check-set-readable! 'keep state set)
   (define name (result-set-name set))
-  (when (result-set-kept set)
-    (error 'keep "~a is already kept as a relation" name))
   (define rs (result-set-rs set))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
   (define-values (definition read columns)
-    (set-definition name (parse-query-line (result-set-read set))
-                    (query-boundary-snapshot s)))
-  (define kept (scratch-register-result state definition "table"))
+    (if (result-set-kept set)
+        (values (result-set-kept set) (result-set-read set) (result-set-columns set))
+        (set-definition name (parse-query-line (result-set-read set))
+                        (query-boundary-snapshot s))))
+  ;; a set kept already answers what it is kept as
+  (define kept
+    (if (result-set-kept set)
+        (text-result "Kept" '() #:kind "scratch")
+        (parameterize ([settle-sets? #f])
+          (scratch-register-result state definition "table"))))
   (set-result-set-kept! set definition)
   (set-result-set-read! set read)
   (set-result-set-columns! set columns)
@@ -2124,6 +2183,162 @@
              'set (set-record state set)
              'definition definition
              'columns columns))
+
+;; ---- queries `?` cannot plan --------------------------------------------------
+;;
+;; The planner reads plain tables through existing indices, and its terms
+;; are variables and literals.  A query over a relation with a lattice
+;; column, or with a nested constructor pattern like `?(boolval (ff))`, is
+;; ordinary Slog as a rule body, so it reads through a scratch rule: its
+;; set is kept from the start, `table (rN T ...) rule (rN H ...) <-- BODY`,
+;; and maintained and re-counted as any kept set is.
+
+;; A query's text as data: its mode, its clauses (`~` stands before the
+;; atom it negates), and its projection or #f.  #f when it does not read.
+(define (query-datums text)
+  (match (regexp-match #px"^\\?(count|exists)?(?![[:alnum:]])(.*)$" (string-trim text))
+    [(list _ mode body)
+     (define datums
+       (with-handlers ([exn:fail:read? (lambda (_) #f)])
+         (port->list read (open-input-string body))))
+     (define-values (clauses* project*)
+       (match datums
+         [#f (values #f #f)]
+         [_ (let-values ([(before after) (splitf-at datums (lambda (d) (not (eq? d '->))))])
+              (match after
+                ['() (values before #f)]
+                [(list '-> (? list? vars)) (values before vars)]
+                [_ (values #f #f)]))]))
+     (and clauses* (list (if mode (string->symbol mode) 'rows) clauses* project*))]
+    [_ #f]))
+
+(define guard-heads '(< <= > >= /= =))
+
+;; The atoms of clauses, each (relation terms negated?); guards and
+;; computes are not atoms.
+(define (clause-atoms clauses)
+  (let loop ([clauses clauses] [negated? #f])
+    (match clauses
+      ['() '()]
+      [(cons '~ rest) (loop rest #t)]
+      [(cons (list (? symbol? rel) terms ...) rest)
+       #:when (not (memq rel guard-heads))
+       (cons (list rel terms negated?) (loop rest #f))]
+      [(cons _ rest) (loop rest #f)])))
+
+;; The variables a term binds or reads, in order: a constructor's are its
+;; arguments'.
+(define (term-variables term)
+  (match term
+    ['_ '()]
+    [(? symbol?) (list term)]
+    [(list (? symbol?) args ...) (append-map term-variables args)]
+    [_ '()]))
+
+(define (clauses-variables clauses)
+  (remove-duplicates
+   (append*
+    (for/list ([clause (in-list clauses)])
+      (match clause
+        [(list '= out (list (? symbol?) args ...)) (append-map term-variables (cons out args))]
+        [(list (? (lambda (h) (memq h guard-heads))) a b) (append (term-variables a) (term-variables b))]
+        [(list (? symbol?) terms ...) (append-map term-variables terms)]
+        [_ '()])))))
+
+;; Each relation's column types, by display name, as plain-table types: a
+;; lattice column reads as `any`.
+(define (relation-column-types s)
+  (define head (session-current-boundary s))
+  (define declarations (if head (catalog-declarations (boundary-catalog head)) (hash)))
+  (define (lattice? ref)
+    (match ref
+      [(type-ref 'named name)
+       (define declaration (hash-ref declarations name #f))
+       (and declaration (eq? (declaration-descriptor-kind declaration) 'lattice))]
+      [_ #f]))
+  (for/hash ([(name declaration) (in-hash declarations)]
+             #:when (eq? (declaration-descriptor-kind declaration) 'table))
+    (values (qname->display name)
+            (for/list ([ref (in-list (declaration-descriptor-fields declaration))])
+              (if (lattice? ref) 'any (field-type-symbol ref))))))
+
+;; A relation the query names that is declared but not planned, or #f.
+(define (unplannable-relation s snapshot text)
+  (match (query-datums text)
+    [(list _ clauses _)
+     (define declared (relation-column-types s))
+     (for/first ([atom (in-list (clause-atoms clauses))]
+                 #:do [(define name (~a (first atom)))]
+                 #:when (and (hash-has-key? declared name)
+                             (not (hash-has-key? (query-boundary-declarations snapshot) name))))
+       name)]
+    [_ #f]))
+
+;; The set of a query read through a scratch rule.  Its head is the one
+;; atom's terms when the query is that atom alone, else the projected
+;; variables -- or, with none, every positive atom's terms -- each typed by
+;; the relation column it stands in, else `any`.
+(define (derived-result-set! state rs s text name why)
+  (match-define (list mode typed-clauses project)
+    (or (query-datums text) (error '? "the query does not read as Slog data")))
+  (define vars (or project (clauses-variables typed-clauses)))
+  ;; each `_` named, so a head of the atoms' own terms can hold it
+  (define clauses
+    (let ([n 0])
+      (let name ([datum typed-clauses])
+        (match datum
+          ['_ (set! n (add1 n)) (string->symbol (format "Any~a_" n))]
+          [(? list?) (map name datum)]
+          [_ datum]))))
+  (define atoms (clause-atoms clauses))
+  (define positive (filter (lambda (atom) (not (third atom))) atoms))
+  (define types (relation-column-types s))
+  (define (column-type rel i)
+    (define fields (hash-ref types (~a rel) '()))
+    (and (< i (length fields)) (let ([type (list-ref fields i)]) (and (not (eq? type 'any)) type))))
+  (define (fact-columns atom)
+    (for/list ([term (in-list (second atom))] [i (in-naturals)])
+      (list term (format "~a.~a" (first atom) (add1 i)) (column-type (first atom) i))))
+  (define head
+    (cond
+      [(and (not project) (= (length clauses) 1) (= (length positive) 1))
+       (fact-columns (first positive))]
+      [(null? vars) (append-map fact-columns positive)]
+      [else
+       (for/list ([var (in-list vars)])
+         (list var (~a var)
+               (for*/first ([atom (in-list positive)]
+                            [(term i) (in-indexed (second atom))]
+                            #:when (eq? term var))
+                 (column-type (first atom) i))))]))
+  (define set-name (or name (next-set-name state (query-boundary-snapshot s))))
+  (define body
+    (string-join
+     (let loop ([clauses clauses])
+       (match clauses
+         ['() '()]
+         [(list* '~ clause rest) (cons (format "~~~s" clause) (loop rest))]
+         [(cons clause rest) (cons (format "~s" clause) (loop rest))]))
+     " "))
+  (define-values (definition read columns)
+    (kept-relation set-name head (lambda (term) (format "~s" term)) body))
+  (define kept
+    (parameterize ([settle-sets? #f])
+      (scratch-register-result state definition "table")))
+  (define set
+    (result-set set-name text read rs #f 0 #t #t #f definition columns))
+  (define result
+    (read-result-set state set s (parse-query-line read) (query-boundary-snapshot s)
+                     #:rows? (not (eq? mode 'count))))
+  (define unwatched (add-result-set! state set))
+  (hash-set result 'lines
+            (append (hash-ref result 'lines)
+                    (list (format "~a is relation ~a, a scratch rule over the query: ~a, which `?` does not plan"
+                                  set-name set-name why))
+                    (for/list ([rebind (in-list (hash-ref kept 'rebinds '()))])
+                      (format "the rule makes `~a` a new version, so `clear scratch` cannot retract it"
+                              (hash-ref rebind 'relation)))
+                    unwatched)))
 
 (define (csv-field text)
   (if (regexp-match? #px"[,\"\r\n]" text)
@@ -4206,7 +4421,7 @@
   ;; relation intents rebound to successor keys, query intents re-counted
   (define watch-notes (settle-watches! state rs events))
   ;; and every live result set of the session is re-counted
-  (define sets (settle-result-sets! state rs))
+  (define sets (if (settle-sets?) (settle-result-sets! state rs) '()))
   (define watched
     (if (null? watch-notes) change (hash-set change 'watches watch-notes)))
   (values value
@@ -7029,6 +7244,102 @@
          (lines-of "sets"))
         (check-exn #px"r4 is stale" (lambda () (dispatch-command state "show r4"))))
       (lambda () (void (dispatch-command state ":quit")))))
+
+  ;; `keep rN` defines a set's rows as the relation rN: declared with the
+  ;; types of the relation columns its values come from, headed by what
+  ;; the set shows, its body the query's clauses, and read back by
+  ;; variable.  A `_` has no value to keep, and refuses.
+  (let ([keep-program (make-temporary-file "repl-keep-~a.slog")])
+    (with-output-to-file keep-program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "table (edge int int)\nstruct (pt int int)\ntable (at int pt)\n"
+                  "rule (edge 1 2) (edge 2 1) (edge 2 3)\nrule (at 3 (pt 1 2))\n"))))
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables test-environment])
+      (define state (make-server-state))
+      (define (keep query name)
+        (with-handlers ([exn:fail? exn-message])
+          (void (dispatch-command state (format "~a as ~a" query name)))
+          (define kept (dispatch-command state (format "keep ~a" name)))
+          (list (hash-ref kept 'definition) (hash-ref (hash-ref kept 'set) 'read))))
+      (dynamic-wind
+        void
+        (lambda ()
+          (void (dispatch-command state (format "run ~a" keep-program)))
+          (check-equal? (keep "?(edge 1 Y)" "r1")
+                        '("table (r1 int int) rule (r1 1 Y) <-- (edge 1 Y)" "?(r1 C1 Y)"))
+          ;; a repeated variable reads back as two
+          (check-equal? (second (keep "?(edge X X)" "r2")) "?(r2 X X_)")
+          (check-equal?
+           (keep "? (edge X Y) ~ (edge Y X) (at Y P) (< X 3) -> (P X)" "r3")
+           '("table (r3 pt int) rule (r3 P X) <-- (edge X Y) ~(edge Y X) (at Y P) (< X 3)"
+             "?(r3 P X)"))
+          ;; a ground query keeps the facts it names
+          (check-equal?
+           (keep "? (edge 1 2) (edge 2 3)" "r4")
+           '("table (r4 int int int int) rule (r4 1 2 2 3) <-- (edge 1 2) (edge 2 3)"
+             "?(r4 C1 C2 C3 C4)"))
+          (check-regexp-match #px"`_` matches without naming a value" (keep "?(edge 1 _)" "r5"))
+          ;; a computed value stands in no relation column: it is `any`
+          (check-equal? (keep "? (edge X Y) (= Z (tofloat X)) -> (Z)" "r6")
+                        '("table (r6 any) rule (r6 Z) <-- (edge X Y) (= Z (tofloat X))" "?(r6 Z)"))
+          ;; the kept relations read like any other; a relation holds each
+          ;; row once
+          (check-equal? (string-join (hash-ref (dispatch-command state "?count (r3 P X)") 'lines))
+                        "r7 · 1 row"))
+        (lambda ()
+          (void (dispatch-command state ":quit"))
+          (delete-file keep-program)))))
+
+  ;; A query `?` cannot plan -- over a relation with a lattice column, or
+  ;; with a nested constructor pattern -- reads through a scratch rule: its
+  ;; set is kept from the start, prints the facts it holds, and is
+  ;; re-counted after a commit like any other.  Where no rule may be added
+  ;; (`as _`), the refusal says why and what reads the relation instead.
+  (let ([program (make-temporary-file "repl-derived-~a.slog")])
+    (with-output-to-file program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "table (edge int int)\nlattice (cost (min int #:floor 0))\n"
+                  "table (dist int int cost)\nunion (expr (num int) (negate expr))\n"
+                  "table (prog expr)\nrule (edge 1 2) (edge 2 3)\n"
+                  "rule (edge X Y) --> (dist X Y 1)\n"
+                  "rule (dist X Y D) (edge Y Z) --> (dist X Z (+ D 1))\n"
+                  "rule (prog (negate (num 3))) (prog (num 4))\n"))))
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables test-environment])
+      (define state (make-server-state))
+      (define (lines-of line)
+        (string-join (hash-ref (dispatch-command state line) 'lines) "\n"))
+      (dynamic-wind
+        void
+        (lambda ()
+          (void (dispatch-command state (format "run ~a" program)))
+          (define lattice (dispatch-command state "?(dist 1 Y D)"))
+          (check-regexp-match
+           #px"^r1 · 2 rows\n(?s:.*)\\(dist 1 3 2\\)(?s:.*)\nr1 is relation r1, a scratch rule over the query: dist has a lattice column"
+           (string-join (hash-ref lattice 'lines) "\n"))
+          (check-equal? (hash-ref (hash-ref lattice 'set) 'relation) "r1")
+          (check-regexp-match #px"^r2 · 1 row\n1  \\(prog \\(negate \\(num 3\\)\\) #[0-9]+\\)\n.*a nested pattern"
+                              (lines-of "?(prog (negate (num N)))"))
+          (check-regexp-match #px"^r3 · 1 row\n1  \\(r3 3\\)" (lines-of "? (prog (negate (num N))) -> (N)"))
+          ;; with no variable to show, a match is one row
+          (check-regexp-match #px"^r4 · 1 row" (lines-of "?count (prog _)"))
+          (check-regexp-match #px"^r5 · 1 row" (lines-of "?count (prog (num _))"))
+          ;; kept from the start, and maintained: a commit re-counts it
+          (check-regexp-match #px"r1: \\+1 row \\(now 3\\)"
+                              (string-join (hash-ref (dispatch-command state "add edge 3 4") 'brief-lines) "\n"))
+          (check-regexp-match #px"^r1 · 3 rows\n(?s:.*)\\(dist 1 4 3\\)" (lines-of "show r1"))
+          (check-equal? (hash-ref (dispatch-command state "keep r1") 'definition)
+                        "table (r1 int int any) rule (r1 1 Y D) <-- (dist 1 Y D)")
+          (check-exn #px"dist has a lattice column, and `\\?` plans plain tables; `show dist` lists its rows"
+                     (lambda () (dispatch-command state "?(dist X Y D) as _")))
+          (check-exn #px"unsupported query term"
+                     (lambda () (dispatch-command state "?(prog (num X)) as _"))))
+        (lambda ()
+          (void (dispatch-command state ":quit"))
+          (delete-file program)))))
 
   ;; A first run's later strata see every row its first stratum wrote, though
   ;; that stratum kept `goal` in (1 0) alone and the later ones read it
