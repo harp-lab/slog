@@ -7,6 +7,8 @@ import { renderEntry } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
 const token = location.hash.slice(1);
+// The project the page was opened on (`/?project=NAME`); none is the default.
+const project = new URLSearchParams(location.search).get("project") ?? "";
 
 const state = {
   file: "",
@@ -164,7 +166,8 @@ const receive = {
 let failedAttempts = 0;
 
 function connect() {
-  socket = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  const query = `token=${encodeURIComponent(token)}&project=${encodeURIComponent(project)}`;
+  socket = new WebSocket(`ws://${location.host}/ws?${query}`);
   socket.onopen = () => {
     failedAttempts = 0;
     renderStatus();

@@ -3,9 +3,11 @@
 //!
 //! Only the WebSocket can read or change anything, so only it is guarded: it
 //! requires the per-launch token and a same-origin `Origin` header. The page
-//! and its assets hold no data.
+//! and its assets hold no data. A tab names its project in the handshake;
+//! the registry maps the user and the project to their Studio.
 
 use crate::lane::Mode;
+use crate::registry::{LOCAL_USER, Registry};
 use crate::studio::{Event, Snapshot, Studio};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,14 +21,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 
 struct Web {
-    studio: Arc<Studio>,
+    registry: Arc<Registry>,
     token: String,
     next_connection: AtomicU64,
 }
 
-pub fn router(studio: Arc<Studio>, token: String) -> Router {
+pub fn router(registry: Arc<Registry>, token: String) -> Router {
     let web = Arc::new(Web {
-        studio,
+        registry,
         token,
         next_connection: AtomicU64::new(1),
     });
@@ -93,16 +95,20 @@ async fn socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // The token is hex, so it needs no percent-decoding.
     let token_ok = uri
         .query()
-        .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("token=")))
-        .is_some_and(|token| same_secret(token, &web.token));
+        .and_then(|query| field(query, "token"))
+        .is_some_and(|token| same_secret(&token, &web.token));
     if !token_ok || !same_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let project = uri.query().and_then(|query| field(query, "project"));
+    let studio = match web.registry.open(LOCAL_USER, project.as_deref().unwrap_or("")) {
+        Ok(studio) => studio,
+        Err(message) => return (StatusCode::NOT_FOUND, message).into_response(),
+    };
     let connection = web.next_connection.fetch_add(1, Ordering::SeqCst);
-    upgrade.on_upgrade(move |socket| serve(socket, web.studio.clone(), connection))
+    upgrade.on_upgrade(move |socket| serve(socket, studio, connection))
 }
 
 /// Browsers send cookies and tokens cross-site on WebSocket handshakes, so
@@ -123,6 +129,29 @@ fn same_secret(given: &str, expected: &str) -> bool {
             .zip(expected.bytes())
             .fold(0, |difference, (a, b)| difference | (a ^ b))
             == 0
+}
+
+/// The value of `key` in `a=1&b=2`, a query or a form's body, decoded.
+pub fn field(encoded: &str, key: &str) -> Option<String> {
+    encoded.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if decode(name)? == key { decode(value) } else { None }
+    })
+}
+
+/// Undo form encoding: `+` is a space and `%XX` a byte.
+fn decode(text: &str) -> Option<String> {
+    let hex = |digit: Option<u8>| char::from(digit?).to_digit(16);
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.bytes();
+    while let Some(byte) = rest.next() {
+        bytes.push(match byte {
+            b'+' => b' ',
+            b'%' => (hex(rest.next())? * 16 + hex(rest.next())?) as u8,
+            byte => byte,
+        });
+    }
+    String::from_utf8(bytes).ok()
 }
 
 async fn serve(mut socket: WebSocket, studio: Arc<Studio>, connection: u64) {
@@ -246,7 +275,7 @@ fn json<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{same_origin, same_secret};
+    use super::{field, same_origin, same_secret};
     use axum::http::{HeaderMap, HeaderValue, header};
 
     #[test]
@@ -264,5 +293,19 @@ mod tests {
         assert!(same_secret("abc", "abc"));
         assert!(!same_secret("abd", "abc"));
         assert!(!same_secret("ab", "abc"));
+    }
+
+    /// Queries and forms (and the passwords in them) arrive encoded, so
+    /// every byte must survive decoding.
+    #[test]
+    fn form_fields_decode_exactly() {
+        let body = "user=alice&password=p%40ss+w%26rd%3D%25&next=";
+        assert_eq!(field(body, "user").as_deref(), Some("alice"));
+        assert_eq!(field(body, "password").as_deref(), Some("p@ss w&rd=%"));
+        assert_eq!(field(body, "next").as_deref(), Some(""));
+        assert_eq!(field(body, "token"), None);
+        assert_eq!(field("password=%4", "password"), None);
+        assert_eq!(field("password=%+1", "password"), None);
+        assert_eq!(field("password=%C3%A9", "password").as_deref(), Some("é"));
     }
 }

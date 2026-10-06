@@ -3,17 +3,18 @@
 //! notebook. `./slog studio FILE` runs it.
 
 mod lane;
+mod registry;
 mod scenario;
 mod session;
 mod studio;
 mod web;
 
-use lane::{Lane, Mode};
+use lane::Mode;
+use registry::{LOCAL_USER, Registry};
 use slog_repl::server::{private_token, project_root};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use studio::Studio;
 
 const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FILE]
        slog studio scenario [--json] FILE.scenario.toml...
@@ -183,39 +184,34 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
         println!("{USAGE}");
         return Ok(());
     };
-    let root = project_root()?;
+    let home = studio_home()?;
     let file = program_file(options.file)?;
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("cannot read {}: {error}", file.display())),
-    };
     // The interpreter skips the C++ toolchain, which is what an edit-evaluate
     // loop wants; it is also what breakpoints and stepping need.
     let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
-    let studio = Arc::new(Studio::new(file, text, Lane::new(root, mode)));
-    studio.relay_lane();
+    // One user, whose default project is FILE.
+    let registry = Arc::new(Registry::new(project_root()?, home.clone(), mode, Some(file)));
     // Start the session server now so the first evaluation does not wait.
-    web::warm(studio.clone());
+    web::warm(registry.open(LOCAL_USER, "")?);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", options.port))
         .await
         .map_err(|error| format!("cannot listen on 127.0.0.1:{}: {error}", options.port))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
-    let token = launch_token(&studio_home()?)?;
+    let token = launch_token(&home)?;
     let url = format!("http://{address}/#{token}");
     println!("Slog Studio: {url}");
     if options.open {
         open_browser(&url);
     }
 
-    let app = web::router(studio.clone(), token);
+    let app = web::router(registry.clone(), token);
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await;
-    studio.lane.shutdown().await;
+    registry.shutdown().await;
     served.map_err(|error| error.to_string())
 }
 
