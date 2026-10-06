@@ -5553,6 +5553,11 @@ public:
   void evaluateWatchesAtBarrier()
   {
     if (watches.empty()) return;
+    // A count/recount incarnation folds support into sidecars without
+    // mutating membership: its delta re-derives rows already present, so
+    // nothing appears or disappears for a watch to report (rank marking
+    // skips these rounds for the same reason).
+    if (rs.stratum != nullptr && rs.stratum->transient_instance) return;
     const u64 barrier = ++watch_barrier_seq;
     for (WatchSpec& w : watches)
     {
