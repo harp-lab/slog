@@ -261,12 +261,22 @@
 ;; Name this daemon's EvaluationId: a command verb, not an action plugin --
 ;; the id is fresh per session, so a plugin would cost a clang build each time.
 (define (set-evaluation! s)
-  (write `(set-evaluation ,(session-evaluation-id s)) (session-in s))
+  (command-expecting! s `(set-evaluation ,(session-evaluation-id s))
+                      "(evaluation-set)"))
+
+;; Import a frozen ground-fact database: a command verb too -- its directory
+;; is content-addressed, so a plugin would cost a clang build per fact set.
+(define (import-path! s dir)
+  (command-expecting! s `(import-path ,dir) "(imported)"))
+
+;; Send one command whose only success reply is `expected`, unechoed.
+(define (command-expecting! s datum expected)
+  (write datum (session-in s))
   (newline (session-in s))
   (flush-output (session-in s))
   (define reply (read-line (session-out s)))
-  (unless (equal? reply "(evaluation-set)")
-    (error 'session (format "could not set the evaluation id: ~a" reply))))
+  (unless (equal? reply expected)
+    (error 'session (format "~a failed: ~a" (car datum) reply))))
 
 ;; A session facade over an existing daemon connection (the one-shot
 ;; driver's, for recipe-chain loads -- runslog's recipe-chain-loader hook).
@@ -3101,7 +3111,7 @@
             (when (session-prepare-hook)
               ((session-prepare-hook) s (car bps)))
             (for ([dir (in-list g-frozen)])
-              (session-action! s `(import-path ,dir)))
+              (import-path! s dir))
             ;; spine A3: a severing (activation) plan runs ONLY the cone's
             ;; strata -- the plan's create actions are the cone, and the
             ;; outside-cone strata have nothing to derive (their relations
@@ -3141,7 +3151,7 @@
           (read-one-line! s)])   ; (segment P N)
        (unless n2?
          (for ([dir (in-list g-frozen)])
-           (session-action! s `(import-path ,dir)))
+           (import-path! s dir))
          (for ([sb (in-list g-strata)])
            (push-sbuild! s sb)))
        (when (or (not n2?) committed?) (touch! s ws))

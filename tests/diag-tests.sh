@@ -229,6 +229,120 @@ if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
   ok errors-quote-source
 else bad errors-quote-source "$o"; fi
 
+# 15. a constructor named like a primitive is a located compile error at its
+#     declaration (was: (neg X) silently evaluated as the primitive, every
+#     binding surfaced a runtime type_mismatch fact, and the rule's heads were
+#     lost).  A TABLE may still take such a name: atoms are not expressions.
+cat > "$D/ctor_prim.slog" <<'EOF'
+union (expr (lit int) (neg expr))
+table (e expr)
+table (out expr)
+rule (e (lit 3))
+rule (e X) --> (out (neg X))
+EOF
+cat > "$D/table_prim.slog" <<'EOF'
+table (min int int)
+table (out int)
+rule (min 1 2)
+rule (min X Y) --> (out X)
+EOF
+o="$(run ctor_prim)"
+o2="$(run table_prim)"
+if echo "$o" | grep -qF 'ctor_prim.slog:1:23: The constructor neg has the name of a builtin primitive' \
+   && echo "$o2" | grep -qE '\(fixpoint '; then
+  ok constructor-named-like-primitive-rejected
+else bad constructor-named-like-primitive-rejected "$o
+$o2"; fi
+
+# 16. an int/float mix in a polymorphic prim names the rule's location and
+#     quotes it, like every other type error (was: a bare
+#     `Arguments X : int and _tconst... : float do not match`).
+cat > "$D/numeric_mix.slog" <<'EOF'
+table (a int)
+table (b float)
+rule (a 1)
+rule (a X) --> (b (+ X 1.5))
+EOF
+o="$(run numeric_mix)"
+if echo "$o" | grep -qE 'numeric_mix\.slog:4:1: Arguments .* do not match' \
+   && echo "$o" | grep -qF 'rule (a X) --> (b (+ X 1.5))' \
+   && ! echo "$o" | grep -qE '_t[A-Za-z]*[0-9]'; then
+  ok numeric-mismatch-located
+else bad numeric-mismatch-located "$o"; fi
+
+# 17. an ordering comparison on a string is a located compile error (was: it
+#     compiled, then every binding surfaced a runtime type_mismatch fact and
+#     the rule derived nothing).
+cat > "$D/str_order.slog" <<'EOF'
+table (s str)
+table (out str)
+rule (s "a") (s "c")
+rule (s S) (< S "b") --> (out S)
+EOF
+o="$(run str_order)"
+if echo "$o" | grep -qF 'str_order.slog:4:1: S : str cannot be compared with <' \
+   && echo "$o" | grep -qF 'rule (s S) (< S "b") --> (out S)'; then
+  ok string-order-rejected
+else bad string-order-rejected "$o"; fi
+
+# 18. a hyphenated name is rejected where it is written, naming it (was: the
+#     lexer split `on-cycle` into the subtraction `on - cycle`, and
+#     simplify-all broke its own contract on the resulting rule).
+cat > "$D/name_hyphen.slog" <<'EOF'
+table (edge int int)
+table (on-cycle int)
+rule (edge 1 2)
+rule (on-cycle X) <-- (edge X X)
+EOF
+cat > "$D/name_hyphen_ctor.slog" <<'EOF'
+union (term (my-var int) (lam term))
+table (t term)
+rule (t (my-var 1))
+EOF
+o="$(run name_hyphen; run name_hyphen_ctor)"
+if echo "$o" | grep -qF "name_hyphen.slog:2:8: on-cycle is not a valid name" \
+   && echo "$o" | grep -qF "name_hyphen_ctor.slog:1:14: my-var is not a valid name" \
+   && echo "$o" | grep -qF "write on_cycle" \
+   && ! echo "$o" | grep -qi 'contract'; then
+  ok hyphenated-name-rejected
+else bad hyphenated-name-rejected "$o"; fi
+
+# 19. `const` is reserved: the parser spells every literal (const v), so a
+#     constructor named const read as a malformed literal (was: the same
+#     simplify-all contract failure).
+cat > "$D/name_const.slog" <<'EOF'
+union (term (const int) (lam term))
+table (t term)
+rule (t (const 1))
+EOF
+o="$(run name_const)"
+if echo "$o" | grep -qF "name_const.slog:1:14: const is a reserved word" \
+   && ! echo "$o" | grep -qi 'contract'; then
+  ok const-name-reserved
+else bad const-name-reserved "$o"; fi
+
+# 20. an enum member written without parentheses is a located error saying
+#     how to write it (was: in a head, `internal error ... key: 'red`; in a
+#     body, a variable silently matching every value).
+cat > "$D/enum_bare_head.slog" <<'EOF'
+enum (color red green)
+table (c color)
+rule (c red)
+EOF
+cat > "$D/enum_bare_body.slog" <<'EOF'
+enum (color red green)
+table (c color)
+table (out int)
+rule (c (red))
+rule (out 1) <-- (c green)
+EOF
+o="$(run enum_bare_head; run enum_bare_body)"
+if echo "$o" | grep -qF 'enum_bare_head.slog:3:6: red is an enum member, not a variable: write it with parentheses, (red)' \
+   && echo "$o" | grep -qF 'enum_bare_body.slog:5:18: green is an enum member' \
+   && ! echo "$o" | grep -qi 'internal error'; then
+  ok enum-member-needs-parens
+else bad enum-member-needs-parens "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -124,6 +124,19 @@
                         (rule-location-string rule) x
                         (syn-source (neg-inner cl)) (syn-source rule)))))
 
+     ;; ---- enum members written as variables -------------------------------
+     ;; A member is a nullary constructor, written (red); a bare `red` parses
+     ;; as a variable.  In a head it is unbound -- previously an opaque
+     ;; `internal error ... key: 'red` -- and in a body it silently matches
+     ;; every value.  Name the clause and say how to write it.
+     (for* ([cl (in-list (append bodys heads))]
+            [x (in-set (clause-vars cl))]
+            #:when (match (hash-ref rel-env x #f)
+                     [`(enum ,_) #t]
+                     [_ #f]))
+       (error (format "~a: ~a is an enum member, not a variable: write it with parentheses, (~a), in ~a\n  in rule: ~a"
+                      (rule-location-string cl) x x (syn-source cl) (syn-source rule))))
+
      ;; ---- first pass: immediate variable types --------------------------
      ;; `head?` marks a HEAD clause: a variable emitted into a relation column
      ;; or struct field there is a SINK, not a source of its own type -- seeding
@@ -253,6 +266,31 @@
               [else
                (loop (append rest (hash-ref local-env-proto `(= ,s) '()))
                      (set-add seen s))])])))
+     ;; How a mismatch error names a side of the conflict: a member of sym's
+     ;; link class whose DIRECT type is t, as the user wrote it.  The vars
+     ;; being unified may be gensyms (the result of a nested call), so name
+     ;; a grounded member instead -- the column variable or literal that
+     ;; brought t in.  Compiler names (leading `_`) go last, and sorting
+     ;; keeps the choice deterministic across hash orders.
+     (define (class-member-of-type sym t)
+       (define members
+         (let loop ([frontier (list sym)] [seen (set)])
+           (match frontier
+             ['() seen]
+             [(cons s rest)
+              (if (set-member? seen s)
+                  (loop rest seen)
+                  (loop (append rest (hash-ref local-env-proto `(= ,s) '()))
+                        (set-add seen s)))])))
+       (define names
+         (for/list ([m (in-set members)]
+                    #:when (equal? (hash-ref local-env-proto m #f) t))
+           (variable-display m rule)))
+       (define-values (internal user)
+         (partition (lambda (n) (string-prefix? n "_")) (sort names string<?)))
+       (match (append user internal)
+         ['() (format "~a" sym)]
+         [(cons n _) n]))
      ;; ---- second pass: connect variables via polymorphic instantiations
      (define local-env
        (foldl (lambda (k env)
@@ -275,7 +313,11 @@
                          [(eq? acc 'any) yt]
                          [(eq? yt 'any) acc]
                          [else
-                          (error (format "Arguments ~a : ~a and ~a : ~a do not match" x acc y yt))])))
+                          (error (format "~a: Arguments ~a : ~a and ~a : ~a do not match in\n  ~a"
+                                         (rule-location-string rule)
+                                         (class-member-of-type x acc) acc
+                                         (class-member-of-type x yt) yt
+                                         (syn-source rule)))])))
                    (hash-set env x t*)]
                   [(? symbol? x) (hash-set env x (hash-ref local-env-proto x))]))
               (hash)
@@ -366,6 +408,27 @@
             [_ '()])]
          [_ '()]))
 
+     ;; Ordering guards (< <= > >=) compare NUMBERS: the runtime kernels
+     ;; (daemon/prims.h SLOG_CMP) take int, float, or a mixed pair, and
+     ;; anything else surfaces as a type_mismatch fact that kills every head
+     ;; of the rule.  Strings in particular have no ordering: intern ids do
+     ;; not order by content, and a string cmp prim is a reserved extension
+     ;; (docs/sequences.md §7).  So reject an operand whose type cannot hold
+     ;; a number at all.  `any` and a union overlapping int/float pass, as
+     ;; in type-match?; a type with no runtime tag (a count-lattice value)
+     ;; is left alone, as residual-accepts leaves it.
+     (define (check-ordered! op x)
+       (define t (hash-ref local-env x #f))
+       (define members
+         (if t (ground-member-types (lattice-base-type rel-env t)) (set)))
+       (unless (or (set-empty? members)
+                   (for/or ([m (in-list '(any int float))])
+                     (set-member? members m)))
+         (error (format "~a: ~a : ~a cannot be compared with ~a: ordering comparisons take numbers (int or float) in\n  ~a"
+                        (rule-location-string rule)
+                        (variable-display x rule) t op
+                        (syn-source rule)))))
+
      ;; ---- clause checking + normalization -------------------------------
      (define (check-clause cl)
        (define (check-rel! x name args decl)
@@ -386,7 +449,10 @@
                     (error (format "~a is being used with the wrong arity" name))))]))
        (match cl
          [`(syn ,_ /= ,(? symbol? x) ,(? symbol? y)) cl]
-         [`(syn ,_ ,(? primitive-cmp?) ,(? symbol? x) ,(? symbol? y)) cl]
+         [`(syn ,_ ,(? primitive-cmp? op) ,(? symbol? x) ,(? symbol? y))
+          (check-ordered! op x)
+          (check-ordered! op y)
+          cl]
          [`(syn ,_ = ,(? symbol? x) (syn ,_ const ,v)) cl]
          [`(syn ,pr0 = ,(? symbol? x) (syn ,pr1 ,name ,(? symbol? args) ...))
           #:when (hash-has-key? fun-env name)

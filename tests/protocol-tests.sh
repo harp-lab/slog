@@ -221,11 +221,11 @@ racket tests/api/drive.rkt \
   > out/proto-break.log 2>&1
 expect    "break-added"       '(break-added (id "b1") (breaks 1))' out/proto-break.log
 expect_rx "break-duplicate"   '\(refused break-binding [0-9]+ \(verb break\) \(detail "break id b1 is already in use"\)\)' out/proto-break.log
-expect_rx "break-needs-filter" '\(refused parse [0-9]+ \(verb break\) \(detail "a break needs a relation, a rule, or a position to narrow it"\)\)' out/proto-break.log
+expect_rx "break-needs-filter" '\(refused parse [0-9]+ \(verb break\) \(detail "a break needs a relation, a rule, a source, or a position to narrow it"\)\)' out/proto-break.log
 expect_rx "break-needs-id"    '\(refused parse [0-9]+ \(verb break\) \(detail "requires \(id .*b1.*\)"\)\)' out/proto-break.log
-expect_rx "break-position-rule" '\(refused parse [0-9]+ \(verb break\) \(detail "a body position belongs to a rule; give \(rule N\) too"\)\)' out/proto-break.log
+expect_rx "break-position-rule" '\(refused parse [0-9]+ \(verb break\) \(detail "a body position belongs to a rule; give \(rule N\) or \(source .*FILE:LINE.*\) too"\)\)' out/proto-break.log
 expect    "break-rule-position" '(break-added (id "b4") (breaks 2))' out/proto-break.log
-expect    "breaks-listed"     '(break (id "b1") (relation "edge") (rule #f) (position #f) (pattern "") (hits 0))' out/proto-break.log
+expect    "breaks-listed"     '(break (id "b1") (relation "edge") (rule #f) (source "") (position #f) (pattern "") (hits 0))' out/proto-break.log
 expect    "breaks-end"        '(breaks-end 2)' out/proto-break.log
 expect_rx "unbreak-unknown"   '\(refused break-binding [0-9]+ \(verb unbreak\) \(detail "no break with id b9"\)\)' out/proto-break.log
 expect    "break-removed"     '(break-removed (id "b1") (breaks 1))' out/proto-break.log
@@ -750,6 +750,16 @@ racket tests/api/drive.rkt '(set-evaluation "e7")' "(protocol-mode)" \
 expect "set-evaluation-answers" "(evaluation-set)" out/proto-mode3.log
 expect "set-evaluation-mode-neutral" "(protocol-mode path)" out/proto-mode3.log
 expect_rx "set-evaluation-needs-id" '\(refused parse [0-9]+ \(verb set-evaluation\)' out/proto-mode3.log
+# import-path imports a frozen fact database as a verb (the session's route
+# for a program's peeled ground facts) and answers once it is in.
+rm -rf build/proto-frozen
+make -C daemon slog-freeze > /dev/null
+printf '(table e 2)\n(e 1 2)\n' | daemon/slog-freeze build/proto-frozen > /dev/null
+racket tests/api/drive.rkt '(import-path "build/proto-frozen")' "(protocol-mode)" \
+  "(import-path)" > out/proto-import.log 2>&1
+expect "import-path-answers" "(imported)" out/proto-import.log
+expect "import-path-mode-neutral" "(protocol-mode path)" out/proto-import.log
+expect_rx "import-path-needs-dir" '\(refused parse [0-9]+ \(verb import-path\)' out/proto-import.log
 
 # --- 5b. T0(d) uniform command-stack pause record ----------------------------
 # The pure wire formatter has one checked-in transcript corpus covering budget,

@@ -2429,6 +2429,27 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // (import-path "DIR"): import a static database directory -- a
+    // program's frozen ground facts, under build/frozen/<content hash>/.
+    // As an action plugin its source named the directory, so every new
+    // fact set cost a clang build.  Lease-admitted like the plugin path it
+    // replaces: a session imports frozen facts inside its prepared
+    // boundary.  Answers (imported) or importPath's suspended refusal.
+    if (verb == "import-path")
+    {
+        if (argc != 1 || form.children[1].kind != slog::sexp::SExp::K::string
+            || form.children[1].text.empty())
+        {
+            refuse(d, "parse", "(verb import-path) (detail \"expected "
+                   "(import-path \\\"DIR\\\")\")");
+            return;
+        }
+        if (d->refuseIfSuspended("import")) return;
+        d->importPath(form.children[1].text);
+        d->emit("(imported)");
+        return;
+    }
+
     // T0(c) c2: rule-meta registration and its introspection twin live
     // ABOVE the protocol-mode mark and the boundary lease, deliberately.
     // Mode-neutral: registration is session METADATA -- a driver that
