@@ -505,10 +505,11 @@ impl App {
             }
             KeyCode::Enter => self.submit(),
             // Some terminals map their multiline shortcut to LF rather than
-            // reporting a modified Enter. In raw mode Crossterm preserves LF
-            // as a character; accept it as a newline. This also makes Ctrl+J
-            // a portable fallback when modified Enter is not distinguishable.
-            KeyCode::Char('\n') => {
+            // reporting a modified Enter. In raw mode Crossterm reports LF as
+            // the key that types it, Ctrl+J; accept it as a newline. This
+            // also makes Ctrl+J a portable fallback when modified Enter is not
+            // distinguishable.
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.editor.insert("\n");
                 Effect::None
             }
@@ -2558,8 +2559,9 @@ text = "The mutable database is called {{database}}."
     fn line_feed_is_a_portable_multiline_fallback() {
         let mut app = App::new();
         app.editor.insert("first line");
+        // What Crossterm reports for a raw LF byte, and for Ctrl+J.
         app.on_terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('\n'),
+            KeyCode::Char('j'),
             KeyModifiers::CONTROL,
         )));
         assert_eq!(app.editor.text(), "first line\n");
