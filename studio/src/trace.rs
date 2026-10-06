@@ -41,7 +41,7 @@ pub struct Debugger {
     session: Mutex<(Session, Option<(u32, u64)>)>,
     /// Per thread: lines of its proposed program where `debug_run` stops,
     /// and the trace of its latest completed traced run.
-    breakpoints: std::sync::Mutex<HashMap<u32, BTreeSet<u32>>>,
+    breakpoints: std::sync::Mutex<HashMap<u32, BTreeSet<AgentBreak>>>,
     traces: std::sync::Mutex<HashMap<u32, Value>>,
 }
 
@@ -62,6 +62,25 @@ impl Debugger {
     }
 }
 
+/// One of an agent's breakpoints: a line of its proposed program, a clause
+/// (`demand (infer _ (app _ _))`), or both, with what narrows it.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AgentBreak {
+    line: Option<u32>,
+    /// `demand (f t ...) when (OP a b) ignore N log`, or empty
+    rest: String,
+}
+
+impl AgentBreak {
+    fn command(&self, path: &str) -> String {
+        match self.line {
+            Some(line) if self.rest.is_empty() => format!("break {path}:{line}"),
+            Some(line) => format!("break {path}:{line} {}", self.rest),
+            None => format!("break {}", self.rest),
+        }
+    }
+}
+
 const LEGEND: &str = "One `deltas` entry per iteration, in order; the empty iteration is the fixpoint. \
 `+n` rows inserted, `-n` retracted, `~n` derivations of rows already present (support changed, membership did not).";
 
@@ -74,15 +93,25 @@ impl Studio {
             "trace_run" => self.trace_fork(thread).await,
             "debug_run" => self.debug_fork(thread).await,
             "get_trace" => self.get_trace(thread, arguments),
-            "set_breakpoint" => self.agent_breakpoint(thread, text("at"), true),
-            "clear_breakpoint" => self.agent_breakpoint(thread, text("at"), false),
+            "set_breakpoint" => self.agent_breakpoint(thread, arguments, true),
+            "clear_breakpoint" => self.agent_breakpoint(thread, arguments, false),
             "step" => match text("grain") {
                 None => self.held_command(thread, "step").await,
-                Some(grain @ ("match" | "fire" | "emit" | "tuple")) => {
+                Some(grain @ ("match" | "fire" | "emit" | "tuple" | "into" | "over" | "out")) => {
                     self.held_command(thread, &format!("step {grain}")).await
                 }
-                Some(other) => Err(format!("grain {other:?} is not one of match, fire, emit, tuple")),
+                Some(other) => Err(format!("grain {other:?} is not one of match, fire, emit, tuple, into, over, out")),
             },
+            "calls" => {
+                let line = match (text("call"), text("view")) {
+                    (Some(call), _) => format!("calls {call} depth {}", arguments["depth"].as_u64().unwrap_or(2)),
+                    (None, Some(view @ ("stack" | "failed"))) => format!("calls {view}"),
+                    (None, Some(other)) => return Some(Err(format!("view {other:?} is not stack or failed"))),
+                    (None, None) => "calls".to_owned(),
+                };
+                self.inspect(thread, &line).await
+            }
+            "logs" => self.inspect(thread, "logs").await,
             "continue" => self.held_command(thread, "continue").await,
             "frames" => self.held_command(thread, "frames").await,
             "abort" => self.held_command(thread, "abort").await,
@@ -132,8 +161,9 @@ impl Studio {
         }
         let path = self.preview_path();
         let path = run_argument(&path).ok_or("the program's directory cannot be named by `break`")?;
-        let prepare: Vec<String> = std::iter::once(ARM.to_owned())
-            .chain(lines.iter().map(|line| format!("break {path}:{line}")))
+        let prepare: Vec<String> = [ARM.to_owned(), "calls on".to_owned()]
+            .into_iter()
+            .chain(lines.iter().map(|point| point.command(path)))
             .collect();
         let mut debug = self.debugger.session.lock().await;
         let (session, loaded) = &mut *debug;
@@ -211,27 +241,47 @@ impl Studio {
         }
     }
 
-    /// Set or clear a breakpoint at `at`: `LINE` or `FILE:LINE` of the
-    /// proposed program.
-    fn agent_breakpoint(&self, thread: u32, at: Option<&str>, set: bool) -> Result<Value, String> {
+    /// Set or clear a breakpoint: at `at` (`LINE` or `FILE:LINE` of the
+    /// proposed program), on a `clause`, or both, narrowed by `condition`,
+    /// `ignore` and `log`.
+    fn agent_breakpoint(&self, thread: u32, arguments: &Value, set: bool) -> Result<Value, String> {
         let program = self.main_name();
-        let at = at.ok_or("missing `at`, e.g. \"14\" or the program's FILE:LINE")?;
-        let line = match at.rsplit_once(':') {
-            Some((file, line)) if file == program => line,
-            Some((file, _)) => return Err(format!("{file} is not the program; its file is {program}")),
-            None => at,
+        let text = |key: &str| arguments[key].as_str().map(str::trim).filter(|value| !value.is_empty());
+        let line = match text("at") {
+            None => None,
+            Some(at) => {
+                let line = match at.rsplit_once(':') {
+                    Some((file, line)) if file == program => line,
+                    Some((file, _)) => return Err(format!("{file} is not the program; its file is {program}")),
+                    None => at,
+                };
+                Some(line.parse().ok().filter(|&line: &u32| line > 0).ok_or_else(|| format!("{at:?} names no line"))?)
+            }
         };
-        let line: u32 = line.parse().ok().filter(|&line| line > 0).ok_or_else(|| format!("{at:?} names no line"))?;
+        let mut rest = text("clause").unwrap_or("").to_owned();
+        if line.is_none() && rest.is_empty() {
+            return Err("give `at` (a rule's line), `clause` (e.g. \"demand (infer _ (app _ _))\"), or both".to_owned());
+        }
+        if let Some(condition) = text("condition") {
+            rest += &format!(" when {condition}");
+        }
+        if let Some(ignore) = arguments["ignore"].as_u64().filter(|&n| n > 0) {
+            rest += &format!(" ignore {ignore}");
+        }
+        if arguments["log"].as_bool() == Some(true) {
+            rest += " log";
+        }
+        let point = AgentBreak { line, rest: rest.trim().to_owned() };
         let mut breakpoints = self.debugger.breakpoints.lock().expect("breakpoints lock");
-        let lines = breakpoints.entry(thread).or_default();
+        let points = breakpoints.entry(thread).or_default();
         if set {
-            lines.insert(line);
+            points.insert(point);
         } else {
-            lines.remove(&line);
+            points.retain(|p| p.line != point.line || (!point.rest.is_empty() && p.rest != point.rest));
         }
         Ok(json!({
-            "breakpoints": lines.iter().map(|line| format!("{program}:{line}")).collect::<Vec<_>>(),
-            "note": "a breakpoint stops a debug_run when the rule starting on that line of get_program's text fires",
+            "breakpoints": points.iter().map(|p| p.command(&program).trim_start_matches("break ").to_owned()).collect::<Vec<_>>(),
+            "note": "a debug_run stops at the first of these a rule reaches; a breakpoint that cannot stop says why after the run (`breaks` in its result)",
         }))
     }
 
@@ -439,13 +489,33 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_breakpoint",
-            "description": "Stop debug_run when the rule starting at this line of your proposed program fires.",
-            "inputSchema": object(json!({ "at": at }), &["at"]),
+            "description": "Stop debug_run where a rule of your proposed program fires (`at` its line), or at one clause: `clause` is `demand (f t ...)` (f is asked of a matching call), `answer (f t ... a ...)` (such a call is answered), `match (R t ...)` or `emit (R t ...)`. Patterns are Slog terms: `_`, variables, constructors `(app _ _)`, lists `[a g ...]`; with `at`, a variable the rule binds means the rule's value. `condition` is guards `(OP a b)` over the pattern's and the rule's variables; `ignore` skips that many hits; `log` records hits (the `logs` tool) without stopping.",
+            "inputSchema": object(json!({
+                "at": at,
+                "clause": { "type": "string", "description": "e.g. \"demand (infer _ (app _ _))\" or \"answer (nf T T)\"" },
+                "condition": { "type": "string", "description": "e.g. \"(/= T V) (< n 3)\"" },
+                "ignore": { "type": "integer" },
+                "log": { "type": "boolean" },
+            }), &[]),
         }),
         json!({
             "name": "clear_breakpoint",
-            "description": "Remove a breakpoint set_breakpoint set.",
-            "inputSchema": object(json!({ "at": at }), &["at"]),
+            "description": "Remove breakpoints set_breakpoint set: every one at `at`, or the one with this `clause` there.",
+            "inputSchema": object(json!({ "at": at, "clause": { "type": "string" } }), &[]),
+        }),
+        json!({
+            "name": "calls",
+            "description": "A debug run's demand calls (it records them): with nothing, the calls no rule asked and where failure starts (calls without an answer whose subcalls all have one -- failure is absence); `call` (\"#3\" or the call written out) for one call's answers, the stratum and iteration they were found in, and its subcalls to `depth`; `view` \"stack\" for the chain of calls a held run is in, \"failed\" for the failures.",
+            "inputSchema": object(json!({
+                "call": { "type": "string" },
+                "depth": { "type": "integer" },
+                "view": { "type": "string", "enum": ["stack", "failed"] },
+            }), &[]),
+        }),
+        json!({
+            "name": "logs",
+            "description": "What the logpoints (set_breakpoint with log) recorded in the latest debug run.",
+            "inputSchema": none(),
         }),
         json!({
             "name": "debug_run",
@@ -456,7 +526,7 @@ pub fn tools() -> Vec<Value> {
             "name": "step",
             "description": "Move the held run to its next interpreter port, or to the next port of one kind.",
             "inputSchema": object(json!({
-                "grain": { "type": "string", "enum": ["match", "fire", "emit", "tuple"], "description": "Which port to stop at; any port if omitted." },
+                "grain": { "type": "string", "enum": ["match", "fire", "emit", "tuple", "into", "over", "out"], "description": "Which port to stop at; any port if omitted. At a demand call: into it, over it to its answer, or out to the answer of the call the run is inside." },
             }), &[]),
         }),
         json!({
@@ -562,6 +632,55 @@ mod tests {
         call("clear_breakpoint", json!({ "at": "14" })).await;
         let aborted = call("abort", json!({})).await;
         assert_eq!(aborted["held"], false);
+
+        studio.preview.shutdown().await;
+        studio.debugger.lane.shutdown().await;
+        studio.lane.shutdown().await;
+        std::fs::remove_dir_all(data).expect("cleanup");
+    }
+
+    /// The agent debugs a demand program a call at a time: a pattern
+    /// breakpoint on a call that does not exist until the run builds it,
+    /// the stack it stops in, a step into it, and the call tree with the
+    /// ill-typed program's missing answer.
+    #[tokio::test]
+    async fn an_agent_debugs_demand_calls_through_mcp() {
+        let data = std::env::temp_dir().join(format!("studio-calls-{}", std::process::id()));
+        std::fs::create_dir_all(&data).expect("temporary directory");
+        let root = project_root().expect("repository root");
+        let file = data.join("stlc.slog");
+        std::fs::copy(root.join("tests/dem_stlc.slog"), &file).expect("the program");
+        let registry = Registry::new(root, data.clone(), Mode::Fast, Some(file), None);
+        let studio = registry.open(LOCAL_USER, "").expect("the studio");
+        let thread = studio.review.lock().expect("review lock").new_thread("calls".into());
+        let call = async |name: &str, arguments: Value| -> Value {
+            let mut headers = HeaderMap::new();
+            let bearer = format!("Bearer {}", studio.agent.mcp_token);
+            headers.insert(header::AUTHORIZATION, HeaderValue::from_str(&bearer).unwrap());
+            headers.insert(crate::agent::THREAD_HEADER, HeaderValue::from(thread));
+            let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": { "name": name, "arguments": arguments } });
+            let response = crate::mcp::handle(&registry, headers, body.to_string()).await;
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+            let answer: Value = serde_json::from_slice(&bytes).expect("JSON-RPC");
+            let result = &answer["result"];
+            assert_eq!(result["isError"], false, "{name}: {}", result["content"][0]["text"]);
+            result["structuredContent"].clone()
+        };
+
+        call("set_breakpoint", json!({ "clause": "demand (ck _ (app (num 3) _))" })).await;
+        let stop = call("debug_run", json!({})).await;
+        assert_eq!(stop["held"], true, "{stop}");
+        let stack = call("calls", json!({ "view": "stack" })).await;
+        assert!(stack["lines"].to_string().contains("(ck (mt) (app (num 3) (num 4)))"), "{stack}");
+        let into = call("step", json!({ "grain": "into" })).await;
+        assert!(into["lines"].to_string().contains("demand ask of (ck (mt) (num 3))"), "{into}");
+        call("clear_breakpoint", json!({ "clause": "demand (ck _ (app (num 3) _))" })).await;
+        call("continue", json!({})).await;
+        let tree = call("calls", json!({})).await;
+        let lines = tree["lines"].to_string();
+        assert!(lines.contains("where failure starts"), "{tree}");
+        assert!(lines.contains("(ck (mt) (app (num 3) (num 4)))  · no answer"), "{tree}");
 
         studio.preview.shutdown().await;
         studio.debugger.lane.shutdown().await;
