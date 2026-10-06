@@ -1,16 +1,8 @@
 // trace.js's model over traces a real session server sent (fixtures.js).
-// Run with JavaScriptCore, from studio/: make test-web
 
 import { grid, parkedAt, ruleLine, signed, steps, traceModel } from "../trace.js";
 import { dred, reach } from "./fixtures.js";
-
-let failures = 0;
-function check(what, actual, expected) {
-  const [a, e] = [JSON.stringify(actual), JSON.stringify(expected)];
-  if (a === e) return;
-  failures++;
-  print(`FAIL ${what}\n  expected ${e}\n  actual   ${a}`);
-}
+import { equal as check } from "./check.js";
 
 const entry = (entries, line) => entries.find((e) => e.line === line || e.line.endsWith(` ${line}`));
 const model = (entries, line, file) => traceModel(entry(entries, line), file);
@@ -84,6 +76,3 @@ check("ruleLine: this file", ruleLine("reach.slog:14:1", "/work/reach.slog"), 14
 check("ruleLine: another file", ruleLine("lib.slog:14:1", "/work/reach.slog"), null);
 check("parkedAt", parkedAt(["717a6082 · iteration 2 · phase read", "port b1:fire@reach.slog:14:1:delta:path"]),
   { name: "717a6082", iteration: 2, phase: "read" });
-
-if (failures) throw new Error(`${failures} failed`);
-print("trace.test.mjs: ok");
