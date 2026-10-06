@@ -111,9 +111,10 @@ The numeric body guards are:
 (>= A B)
 ```
 
-They accept integers and floats, including mixed pairs. A false comparison
-fails the current rule match. These forms do not return `1` or `0` at the
-language level.
+They accept integers and floats, including mixed pairs. An operand whose
+type cannot hold a number, such as a string, is a compile error; strings have
+no ordering comparison. A false comparison fails the current rule match.
+These forms do not return `1` or `0` at the language level.
 
 `(= A B)` unifies, binds, destructures, or tests depending on which values are
 known. It is also the normal way to bind a primitive result:
