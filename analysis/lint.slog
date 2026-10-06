@@ -1,0 +1,8 @@
+;; slog-lint, every tier as one program over a program's facts: what
+;; analysis/test.rkt runs, and what slog-lint.slog runs over facts.slog.
+;; Studio runs the tiers one at a time instead, each as a layer on the
+;; session of the tiers before it (studio/src/lint.rs).
+
+include "lint-local.slog"
+include "lint-graph.slog"
+include "lint-deep.slog"

@@ -1,0 +1,79 @@
+;; slog-lint's findings: how each kind of issue is worded.
+;;
+;; A check (lint-local.slog, lint-graph.slog, lint-deep.slog) derives an
+;; `issue`: what is wrong, where, and the names it is about.  Here each kind
+;; is worded once, into a `report`, and the reports outside the compiler's
+;; own lib/ become `finding`s.  Severity is error, warning, info, or hint:
+;; worth knowing, but most likely meant (a name that documents an ignored
+;; value).
+;;
+;; Every tier includes this file.  Run as layers, one tier after another
+;; on one session, each words the issues there are so far: a tier's rules
+;; see only the rows of the tiers before it, never those of the tiers after.
+
+include "schema.slog"
+
+table (issue str loc str (list str))   ;; (issue Severity Loc Code Subject)
+table (report str loc str str)         ;; (report Severity Loc Code Message)
+
+rule (report Sev (loc F Line Col) Code Msg) (source_file F Path) ~(library_file F)
+  --> (finding Sev Path Line Col Code Msg)
+
+;; ---- each rule on its own ----
+
+rule (issue S L "missing-include" [Target])
+  --> (report S L "missing-include"
+              (+ "include " (+ Target " is not found, so the compiler skips it and its declarations are missing")))
+rule (issue S L "singleton" [X])
+  --> (report S L "singleton"
+              (+ X (+ " is used only once in this rule; if that is intended, write _ (or _" (+ X ")"))))
+rule (issue S L "bare-constructor" [X "matched"])
+  --> (report S L "bare-constructor"
+              (+ X (+ " is a variable here, so it matches any value; the constructor is written with parentheses, (" (+ X ")"))))
+rule (issue S L "bare-constructor" [X "unbound"])
+  --> (report S L "bare-constructor"
+              (+ X (+ " is a variable here; the constructor is written with parentheses, (" (+ X ")"))))
+rule (issue S L "unbound" [X "head"])
+  --> (report S L "unbound" (+ X " in the head is never bound: no positive body clause gives it a value"))
+rule (issue S L "unbound" [X "body"])
+  --> (report S L "unbound"
+              (+ X " is never bound: only a positive body clause gives a variable its value, not ~, a guard or a computation"))
+rule (issue S L "arity" [Owner "arguments" N M])
+  --> (report S L "arity" (+ Owner (+ " is called with " (+ M (+ " arguments but takes " N)))))
+rule (issue S L "arity" [Owner What N M]) (/= What "arguments")
+  --> (report S L "arity" (+ Owner (+ " takes " (+ N (+ " " (+ What (+ " but is given " M)))))))
+rule (issue S L "type" ["literal" Ty O I Want])
+  --> (report S L "type"
+              (+ "this is a " (+ Ty (+ " literal, but argument " (+ I (+ " of " (+ O (+ " holds " Want))))))))
+rule (issue S L "type" ["constructor" C O I Want])
+  --> (report S L "type"
+              (+ C (+ " values are not of type " (+ Want (+ ", which argument " (+ I (+ " of " (+ O " holds"))))))))
+
+;; ---- the dependency graph ----
+
+rule (issue S L "negation-cycle" [Rel H])
+  --> (report S L "negation-cycle"
+              (+ Rel (+ " is negated here, but it depends on " (+ H ", which this rule derives: negation through recursion has no stratification"))))
+rule (issue S L "negation-cycle" [Rel])
+  --> (report S L "negation-cycle"
+              (+ Rel " is negated in a rule that derives it: negation through recursion has no stratification"))
+rule (issue S L "ascending-lattice" [X Rel H])
+  --> (report S L "ascending-lattice"
+              (+ X (+ " is the still-growing value of the lattice " (+ Rel (+ ", but " (+ H " keeps every value it sees and feeds back into it; the compiler rejects this"))))))
+rule (issue S L "never-written" [Rel])
+  --> (report S L "never-written"
+              (+ "nothing writes " (+ Rel ", so it stays empty unless it is filled from outside (add, an import, a database)")))
+rule (issue S L "unused" [Name]) --> (report S L "unused" (+ Name " is declared but never used"))
+rule (issue S L "dead-rule" [Rel])
+  --> (report S L "dead-rule" (+ "this rule never fires: no rule can ever derive a row of " Rel))
+
+;; ---- demands and constructors ----
+
+rule (issue S L "unanswered" [F])
+  --> (report S L "unanswered" (+ F " is asked here, but no rule answers it, so the call never returns a value"))
+rule (issue S L "never-asked" [F])
+  --> (report S L "never-asked" (+ "nothing asks " (+ F ", so the rules answering it never run")))
+rule (issue S L "never-built" [C "matched"])
+  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so this pattern never matches")))
+rule (issue S L "never-built" [C "enumerated"])
+  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so enumerating them finds none")))

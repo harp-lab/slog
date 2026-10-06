@@ -16,6 +16,10 @@
 ;; a Slog program, analyzes it, and holds the analysis's negation cycles to
 ;; the compiler's stratifier: a program has one exactly when the compiler
 ;; refuses it for negation through recursion.
+;;
+;; Every program is analyzed both ways Studio can: the tiers as one program
+;; (lint.slog), and as layers, each tier a program run on the session of
+;; the tiers before it.  The two must find the same.
 
 (require "../compiler/reify.rkt"
          (only-in "../compiler/repl.rkt" make-server-state dispatch-command)
@@ -26,7 +30,10 @@
 ;; the interpreter, as Studio runs the analysis: no C++ toolchain in the loop
 (void (putenv "SLOG_OPT" "interp"))
 
-(define analysis (path->string (path->complete-path "analysis/lint-deep.slog")))
+(define analysis (path->string (path->complete-path "analysis/lint.slog")))
+(define tiers
+  (for/list ([tier '("lint-local" "lint-graph" "lint-deep")])
+    (path->string (path->complete-path (format "analysis/~a.slog" tier)))))
 (define database "slog-lint-test")
 (define state (make-server-state))
 (define out (path->string (make-temporary-file "slog-lint-~a.csv")))
@@ -37,13 +44,18 @@
     (error 'test "~a: ~a" line (hash-ref result 'error)))
   result)
 
-;; path -> (listof (list severity file line col code message))
-(define (analyze path)
+;; path -> (listof (list severity file line col code message)), sorted;
+;; layered, each tier run on the session of the ones before
+(define (analyze path #:layered? [layered? #f])
   (facts->database (reify-file path) database)
   (with-handlers ([exn:fail? void]) (dispatch-command state "discard session"))
   (command (format "open ~a" database))
-  (command (format "run ~a" analysis))
+  (for ([program (in-list (if layered? tiers (list analysis)))])
+    (command (format "run ~a" program)))
   (command (format "dump ?(finding S F L C K M) to ~a" out))
+  (sort (findings-of out) string<? #:key ~s))
+
+(define (findings-of out)
   (for/list ([row (in-list (cdr (file->lines out)))])
     (match-define (list severity file line col code message) (csv-fields row))
     (list severity file (string->number line) (string->number col) code message)))
@@ -74,7 +86,8 @@
 (define (check-case path)
   (define lines (file->lines path))
   (define main (path->string (path->complete-path path)))
-  (define found (filter (lambda (f) (equal? (second f) main)) (analyze path)))
+  (define all (analyze path))
+  (define found (filter (lambda (f) (equal? (second f) main)) all))
   (define-values (left problems)
     (for/fold ([left (expectations lines)] [problems '()])
               ([f (in-list found)])
@@ -91,6 +104,7 @@
           (values left (cons (format "~a:~a:~a: unexpected ~a ~a: ~a" path line col severity code message)
                              problems)))))
   (append (reverse problems)
+          (layered-agrees path all)
           (for*/list ([(line wanted) (in-hash left)] [e (in-list wanted)])
             (match-define (list code severity mark) e)
             (format "~a:~a: missing ~a~a at ~a" path line code
@@ -113,11 +127,23 @@
     (parameterize ([parse-errors-raise? #t])
       (parse-source "facts.slog" (facts->program facts)))
     (define found (analyze path))
+    (append
+     (layered-agrees path found)
+     (cycle-agrees path found))))
+
+(define (layered-agrees path found)
+  (define layered (analyze path #:layered? #t))
+  (if (equal? found layered)
+      '()
+      (list (format "~a: layered, the tiers find ~a, not ~a" path
+                    (remove* found layered) (remove* layered found)))))
+
+(define (cycle-agrees path found)
     (define cycle? (for/or ([f (in-list found)]) (equal? (fifth f) "negation-cycle")))
     (if (equal? cycle? (compiler-negation-cycle? path))
         '()
         (list (format "~a: the analysis ~a a negation cycle, the compiler ~a"
-                      path (if cycle? "finds" "finds no") (if cycle? "does not" "does"))))))
+                      path (if cycle? "finds" "finds no") (if cycle? "does not" "does")))))
 
 (module+ main
   (define corpus? (member "--corpus" (vector->list (current-command-line-arguments))))

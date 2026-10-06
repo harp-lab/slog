@@ -1,28 +1,12 @@
-;; slog-lint, tier 0: what each rule says on its own.
+;; slog-lint, tier 1: what each rule says on its own.
 ;;
 ;; Variables (used once, never bound), the arity and shape of every atom
-;; and constructor, and which rules write and read each relation.
+;; and constructor, and which rules write and read each relation.  Each
+;; check derives an `issue`; findings.slog words it.
 
-include "schema.slog"
-
-;; ---- findings ----
-;;
-;; A check derives an `issue`: what is wrong, where, and the names it is
-;; about.  Each kind of issue is worded once, by the rule that turns it
-;; into a `report`; reports outside the compiler's lib/ become `finding`s.
-;; Severity is error, warning, info, or hint: worth knowing, but most
-;; likely meant (a name that documents an ignored value).
-
-table (issue str loc str (list str))   ;; (issue Severity Loc Code Subject)
-table (report str loc str str)         ;; (report Severity Loc Code Message)
-
-rule (report Sev (loc F Line Col) Code Msg) (source_file F Path) ~(library_file F)
-  --> (finding Sev Path Line Col Code Msg)
+include "findings.slog"
 
 rule (missing_include _ Target L) --> (issue "warning" L "missing-include" [Target])
-rule (issue S L "missing-include" [Target])
-  --> (report S L "missing-include"
-              (+ "include " (+ Target " is not found, so the compiler skips it and its declarations are missing")))
 
 ;; ---- names ----
 
@@ -182,9 +166,6 @@ rule (names_column O I X R L) (names_column O I X R2 _) (/= R R2) --> (documents
 
 rule (singleton R X L) ~(documents R X L) --> (issue "warning" L "singleton" [X])
 rule (singleton R X L) (documents R X L) --> (issue "hint" L "singleton" [X])
-rule (issue S L "singleton" [X])
-  --> (report S L "singleton"
-              (+ X (+ " is used only once in this rule; if that is intended, write _ (or _" (+ X ")"))))
 
 ;; a variable no positive clause binds: in a head, under ~, in a guard or
 ;; in a computation, it has no value to give
@@ -203,18 +184,6 @@ rule (in_head R X L) ~(bound R X) (nullary X) --> (issue "error" L "bare-constru
 rule (in_head R X L) ~(bound R X) ~(nullary X) --> (issue "error" L "unbound" [X "head"])
 rule (occurs R X L) ~(bound R X) ~(in_head R X L) (nullary X) --> (issue "error" L "bare-constructor" [X "unbound"])
 rule (occurs R X L) ~(bound R X) ~(in_head R X L) ~(nullary X) --> (issue "error" L "unbound" [X "body"])
-
-rule (issue S L "bare-constructor" [X "matched"])
-  --> (report S L "bare-constructor"
-              (+ X (+ " is a variable here, so it matches any value; the constructor is written with parentheses, (" (+ X ")"))))
-rule (issue S L "bare-constructor" [X "unbound"])
-  --> (report S L "bare-constructor"
-              (+ X (+ " is a variable here; the constructor is written with parentheses, (" (+ X ")"))))
-rule (issue S L "unbound" [X "head"])
-  --> (report S L "unbound" (+ X " in the head is never bound: no positive body clause gives it a value"))
-rule (issue S L "unbound" [X "body"])
-  --> (report S L "unbound"
-              (+ X " is never bound: only a positive body clause gives a variable its value, not ~, a guard or a computation"))
 
 ;; ---- atoms: arity ----
 
@@ -241,11 +210,6 @@ rule (term_in _ (call C Args L)) (constructor C N _) (= M (llen Args)) (/= M N)
 rule (term_in _ (call F Args L)) (inputs_of F N) (= M (llen Args)) (/= M N)
   --> (issue "error" L "arity" [F "arguments" (i2s N) (i2s M)])
 
-rule (issue S L "arity" [Owner "arguments" N M])
-  --> (report S L "arity" (+ Owner (+ " is called with " (+ M (+ " arguments but takes " N)))))
-rule (issue S L "arity" [Owner What N M]) (/= What "arguments")
-  --> (report S L "arity" (+ Owner (+ " takes " (+ N (+ " " (+ What (+ " but is given " M)))))))
-
 ;; ---- atoms: the shape of each argument ----
 
 ;; (slot Owner I Type): argument I of a relation or constructor has Type
@@ -269,9 +233,6 @@ rule (base_type "int") (base_type "float") (base_type "str")
 
 rule (arg_at O I T _) (literal T Ty L) (slot O I Want) (base_type Want) (/= Ty Want)
   --> (issue "error" L "type" ["literal" Ty O (i2s (+ I 1)) Want])
-rule (issue S L "type" ["literal" Ty O I Want])
-  --> (report S L "type"
-              (+ "this is a " (+ Ty (+ " literal, but argument " (+ I (+ " of " (+ O (+ " holds " Want))))))))
 
 ;; (fits C Type): a value built by constructor C has type Type
 table (fits str str)
@@ -288,9 +249,6 @@ rule (base_type T) --> (closed_type T)
 rule (arg_at O I (call C _ L) _) (is_constructor C) (slot O I Want) (closed_type Want)
      ~(fits C Want)
   --> (issue "error" L "type" ["constructor" C O (i2s (+ I 1)) Want])
-rule (issue S L "type" ["constructor" C O I Want])
-  --> (report S L "type"
-              (+ C (+ " values are not of type " (+ Want (+ ", which argument " (+ I (+ " of " (+ O " holds"))))))))
 
 ;; ---- who writes and reads each relation ----
 

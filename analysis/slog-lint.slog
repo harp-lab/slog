@@ -7,8 +7,9 @@
 ;; Message) -- along with the relations Studio shows beside the program
 ;; (writer, reader, dep, recursive, inhabited, never_fires, demand_calls).
 ;;
-;; It comes in three tiers, each including the one before, so a runner can
-;; show the quick findings first:
+;; It comes in three tiers, each over the relations of the ones before, so
+;; a runner can show the quick findings first; findings.slog words what
+;; they find:
 ;;   lint-local.slog   each rule on its own: variables, arity, shapes
 ;;   lint-graph.slog   the dependency graph: recursion, negation, dead rules
 ;;   lint-deep.slog    demands and constructors across the program
@@ -24,5 +25,5 @@
 ;; from, so the analysis can be run, debugged and edited like any program.
 ;; analysis/test.rkt holds it to its tests.
 
-include "lint-deep.slog"
+include "lint.slog"
 include "facts.slog"

@@ -1,10 +1,34 @@
-;; slog-lint, tier 2: demands and constructors across the whole program.
+;; slog-lint, tier 3: demands and constructors across the whole program.
 ;;
 ;; Which demands ask which, demands asked that nothing answers, and how
 ;; constructor values flow: built in heads and computations, matched in
 ;; patterns.
+;;
+;; It runs over the relations of tiers 1 and 2, as a layer on the session
+;; that ran them (lint.slog runs the tiers as one program).
 
-include "lint-graph.slog"
+include "findings.slog"
+
+;; ---- what it reads of tier 1 (lint-local.slog) ----
+
+union (origin (argument_of str) (request_of str) (equation))
+table (pattern int term origin)
+table (term_in int term)
+table (element (list term) int term)
+table (atom int str (list term) loc)
+table (is_constructor str)
+table (is_demand str)
+table (inputs_of str int)
+table (fits str str)
+table (writes int str loc)
+table (asks int str loc)
+
+;; ---- ... and of tier 2 (lint-graph.slog) ----
+
+table (written str)
+table (input str)
+table (has_rules int)
+table (loads_others int)
 
 ;; ---- the demand call graph ----
 
@@ -25,11 +49,6 @@ rule (demand_reaches F F) --> (recursive_demand F)
 rule (asks _ F L) (is_demand F) ~(written F) --> (issue "warning" L "unanswered" [F])
 rule (relation F "demand" _ L) ~(asked F) (main_file M) ~(loads_others M)
   --> (issue "info" L "never-asked" [F])
-
-rule (issue S L "unanswered" [F])
-  --> (report S L "unanswered" (+ F " is asked here, but no rule answers it, so the call never returns a value"))
-rule (issue S L "never-asked" [F])
-  --> (report S L "never-asked" (+ "nothing asks " (+ F ", so the rules answering it never run")))
 
 ;; ---- constructor flow ----
 
@@ -64,11 +83,6 @@ rule (body _ _ C _ L) (is_constructor C) ~(built C) ~(arrives C) (main_file M) ~
   --> (issue "warning" L "never-built" [C "enumerated"])
 rule (constructor C _ (loc F Line Col)) ~(mentioned C) ~(arrives C) (has_rules F)
   --> (issue "info" (loc F Line Col) "unused" [C])
-
-rule (issue S L "never-built" [C "matched"])
-  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so this pattern never matches")))
-rule (issue S L "never-built" [C "enumerated"])
-  --> (report S L "never-built" (+ "no rule ever builds a " (+ C " value, so enumerating them finds none")))
 
 ;; (flows Rel I C): Rel's column I holds values built by constructor C
 table (flows str int str)
