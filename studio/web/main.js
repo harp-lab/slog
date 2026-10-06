@@ -7,6 +7,8 @@ import { createFiles } from "./files.js";
 import { formAt, forms } from "./forms.js";
 import { initAgent } from "./agent.js";
 import { createHistory } from "./history.js";
+import { createHints } from "./hints.js";
+import { createPalette } from "./palette.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
@@ -43,15 +45,6 @@ const editor = await createEditor($("editor"), {
   snapBreakpoint: (line) => {
     const form = formAt(forms(editor.get()), line);
     return form?.keyword === "rule" ? form.line : null;
-  },
-  keysAt: (line) => {
-    const form = formAt(forms(editor.get()), line);
-    const keys = ["⌘↵ run", "⌘S save"];
-    if (form?.keyword === "rule") {
-      keys.push(editor.breakpoints().includes(form.line) ? "Debug stops here" : "click the margin to break here");
-    }
-    keys.push(structure.keysAt(editor.get(), line)); // paredit and completion
-    return keys.join(" · ");
   },
 });
 
@@ -240,7 +233,7 @@ const prompt = $("prompt");
 // rules `break` can name are those of the file shown.
 structure.bindPrompt(prompt, { program: () => ({ file: files.active() ?? "", text: editor.get() }) });
 prompt.addEventListener("focus", () => send({ t: "databases" }));
-structure.mountControls(document.querySelector("header .controls"));
+const controls = structure.mountControls();
 const historyKey = () => `slog-studio.history:${files.project()}`;
 const history = {
   lines: [],
@@ -338,32 +331,35 @@ function pill(id, text, dot = null, className = "") {
   node.append(text);
 }
 
+// The status strip says little while all is well: the mode and a dot, the
+// session's database. Trouble (no connection, a dead session server) says
+// more, and offers what helps.
 function renderStatus() {
   const online = socket?.readyState === WebSocket.OPEN;
   pill("connection",
-    online ? "connected"
+    online ? ""
       : failedAttempts >= 3 ? ($("account")
         ? "not connected — is the studio running? If your login ended, reload to log in again"
         : "not connected — is the studio running? A link from an earlier launch needs the address it printed")
       : "reconnecting…",
-    online ? "ok" : "bad");
+    online ? null : "bad");
 
   const { state: lane, detail, starts, mode } = state.lane;
   const restarts = starts > 1 ? ` · restarted ${starts - 1}×` : "";
   const laneDot = { ready: "ok", idle: "ok", busy: "busy", starting: "busy" }[lane] ?? "bad";
-  pill("lane", `session server ${lane}${restarts}${detail ? ` — ${detail}` : ""}`, laneDot);
+  const well = lane === "ready" || lane === "idle";
+  pill("lane", [mode, well ? "ready" : `session server ${lane}${restarts}${detail ? ` — ${detail}` : ""}`]
+    .filter(Boolean).join(" · "), laneDot);
+  $("restart").hidden = laneDot !== "bad";
 
   const { current, held } = state.session;
   pill("session",
-    held ? "run held" : current ? `database ${current}` : "no session",
+    held ? "run held" : current ? `database ${current}` : "",
     null, held ? "held" : "");
   pill("evaluation", state.evaluating ? "running…" : "", state.evaluating ? "busy" : null);
 
   $("held").hidden = !held;
   $("held-title").textContent = `run held — ${state.heldTitle || "paused"}`;
-  for (const button of $("mode").querySelectorAll("button")) {
-    button.setAttribute("aria-checked", String(button.dataset.mode === mode));
-  }
   $("stop").disabled = lane !== "busy";
   $("evaluate").disabled = state.evaluating;
   $("debug").disabled = state.evaluating;
@@ -420,7 +416,7 @@ function line(className, text) {
   return Object.assign(document.createElement("div"), { className, textContent: text });
 }
 
-// The drawer shows one tab; its header button toggles it.
+// The drawer shows one tab; its header button, or the palette, toggles it.
 function showTab(tab) {
   const drawer = $("drawer");
   const open = !(drawer.hidden === false && drawer.dataset.tab === tab);
@@ -430,6 +426,7 @@ function showTab(tab) {
   for (const button of document.querySelectorAll(".panel-toggle")) {
     button.setAttribute("aria-pressed", String(open && button.dataset.tab === tab));
   }
+  renderReview();
   if (open && tab === "scenarios") send({ t: "scenarios" });
   if (open && tab === "history") versions.render();
 }
@@ -437,48 +434,106 @@ for (const button of document.querySelectorAll(".panel-toggle")) {
   button.addEventListener("click", () => showTab(button.dataset.tab));
 }
 
+const isOpen = (tab) => $("drawer").hidden === false && $("drawer").dataset.tab === tab;
+
+// Review earns its place in the header while proposals wait, or while open.
+let pending = 0;
+function renderReview() {
+  $("review-toggle").hidden = pending === 0 && !isOpen("review");
+  $("pending").hidden = pending === 0;
+  $("pending").textContent = String(pending);
+}
+
 const agent = initAgent({
   send,
   onPending(count) {
-    $("pending").hidden = count === 0;
-    $("pending").textContent = String(count);
+    pending = count;
+    renderReview();
   },
 });
 
-// Hints (key bindings, placeholders, empty-panel notes, the summary's note
-// for the form at the cursor) show only while Alt+H is held. A tap locks
-// them on, like caps lock, and the next tap releases them.
-const TAP_MS = 300;
-const hints = { locked: false, held: null };  // held: when the press began
-function renderHints() {
-  const on = hints.locked || hints.held !== null;
-  document.body.classList.toggle("hints", on);
-  editor.hints(on);
-  $("hints").textContent = hints.locked ? "hints locked · Alt+H" : "Alt+H for hints";
-}
-function release() {
-  if (hints.held === null) return;
-  if (performance.now() - hints.held < TAP_MS) hints.locked = true;
-  hints.held = null;
-  renderHints();
-}
-// `code`, not `key`: on a Mac, Option+H types a character.
-const isHintKey = (event) => event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyH";
+// Hints, Commands and focus ------------------------------------------------
+
+// The keys worth naming at `line`, most useful first; the hint card shows
+// the first few (hints.js).
+const RUN_KEY = structure.MAC ? "⌘↵" : "Ctrl+Enter";
+const hints = createHints({
+  editor,
+  element: $("editor"),
+  keysAt(line) {
+    const form = formAt(forms(editor.get()), line);
+    const rule = form?.keyword === "rule"
+      ? [editor.breakpoints().includes(form.line) ? "Debug stops here" : "click the margin to break here"]
+      : [];
+    return [...rule, ...structure.keysAt(editor.get(), line), `${RUN_KEY} run`];
+  },
+  onChange(shown, locked) {
+    $("hints").textContent = locked ? "hints locked · Esc" : `${structure.MAC ? "⌥H" : "Alt+H"} hints`;
+    $("hints").classList.toggle("locked", locked);
+  },
+});
+$("hints").addEventListener("click", () => hints.toggle());
+
+// Every action by name: the home of what the header and the status strip
+// do not show (palette.js).
+const palette = createPalette(() => {
+  const mode = state.lane.mode;
+  const panel = (tab, title) => ({ title, note: isOpen(tab) ? "open" : "", run: () => showTab(tab) });
+  return [
+    { title: "Run", keys: RUN_KEY, run: evaluate },
+    { title: "Debug: run, stopping at the margin's breakpoints", run: debug },
+    { title: "Stop the running command", note: state.lane.state === "busy" ? "" : "nothing running", run: () => send({ t: "interrupt" }) },
+    { title: "Save", keys: structure.MAC ? "⌘S" : "Ctrl+S", run: save },
+    ...[
+      ["fast", "the interpreter on every thread"],
+      ["debug", "one thread: breakpoints and steps stop at the same place"],
+      ["compiled", "native code (-O2), for performance work"],
+    ].map(([name, about]) => ({
+      title: `Mode: ${name} — ${about}`,
+      note: name === mode ? "current" : "",
+      run: () => send({ t: "mode", mode: name }),
+    })),
+    { title: "Restart the session server", run: () => send({ t: "restart" }) },
+    panel("ask", "Ask the agent"),
+    panel("review", "Review proposals"),
+    panel("scenarios", "Scenarios"),
+    panel("history", "History: every version of the project"),
+    { title: "New file", run: () => $("new-file").click() },
+    { title: "Focus the editor", keys: "Esc", run: () => editor.focus() },
+    { title: "Focus the REPL prompt", keys: "Ctrl+`", run: () => prompt.focus() },
+    { title: "Structured editing", note: controls.structured() ? "on" : "off", run: () => controls.setStructured(!controls.structured()) },
+    { title: "Structured editing keys", run: controls.showKeys },
+    { title: "Hints", keys: structure.MAC ? "⌥H" : "Alt+H", note: hints.locked ? "locked" : "", run: hints.toggle },
+  ];
+});
+const PALETTE_KEY = structure.MAC ? "⌘K" : "Ctrl+Shift+P";
+$("commands").title = `Commands: modes, panels, history, restart (${PALETTE_KEY})`;
+$("commands").addEventListener("click", () => palette.open());
+$("palette-key").textContent = `${PALETTE_KEY} commands`;
+$("palette-key").addEventListener("click", () => palette.open());
+$("lane").addEventListener("click", () => palette.open("mode"));
+
 addEventListener("keydown", (event) => {
-  if (!isHintKey(event)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.repeat) return;
-  if (hints.locked) hints.locked = false;
-  else hints.held = performance.now();
-  renderHints();
+  const command = event.metaKey || event.ctrlKey;
+  // Cmd+K on a Mac (Ctrl+K kills to the end of the list), and
+  // Cmd/Ctrl+Shift+P everywhere.
+  if ((command && event.shiftKey && event.code === "KeyP") || (structure.MAC && event.metaKey && !event.shiftKey && event.code === "KeyK")) {
+    event.preventDefault();
+    event.stopPropagation();
+    palette.open();
+  } else if (event.ctrlKey && event.code === "Backquote") {
+    // between the editor and the prompt
+    event.preventDefault();
+    event.stopPropagation();
+    if (document.activeElement === prompt) editor.focus();
+    else prompt.focus();
+  }
 }, true);
-addEventListener("keyup", (event) => {
-  if (event.code === "KeyH" || event.key === "Alt") release();
-}, true);
-addEventListener("blur", () => { hints.held = null; renderHints(); });
-$("hints").addEventListener("click", () => { hints.locked = !hints.locked; renderHints(); });
-renderHints();
+// Esc, unclaimed, goes back to the editor.
+addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || $("editor").contains(document.activeElement)) return;
+  editor.focus();
+});
 
 // Layout -----------------------------------------------------------------
 
@@ -486,9 +541,6 @@ $("evaluate").addEventListener("click", evaluate);
 $("debug").addEventListener("click", debug);
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
-for (const button of $("mode").querySelectorAll("button")) {
-  button.addEventListener("click", () => send({ t: "mode", mode: button.dataset.mode }));
-}
 for (const button of $("held").querySelectorAll("button")) {
   button.addEventListener("click", () => send({ t: "command", line: button.dataset.command }));
 }

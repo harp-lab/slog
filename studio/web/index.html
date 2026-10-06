@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="/static/studio.css">
 <link rel="stylesheet" href="/static/results.css">
 <link rel="stylesheet" href="/static/trace.css">
+<link rel="stylesheet" href="/static/hints.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 </head>
 <body>
@@ -16,36 +17,25 @@
   </div>
   <div class="controls">
     <div class="group" role="group" aria-label="Run">
-      <button id="evaluate" class="primary" title="Save and evaluate the program from nothing, in a fresh session">
+      <button id="evaluate" class="primary" title="Save and evaluate the program from nothing, in a fresh session (⌘↵)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
-        Run <kbd>⌘↵</kbd>
+        Run
       </button>
       <button id="debug" class="secondary" title="Run with a break armed at each margin breakpoint, stopping in the first marked rule the run reaches">
         Debug
       </button>
-      <button id="stop" class="danger" title="Pause the running command at its next slice boundary" disabled>
+      <button id="stop" class="icon danger" title="Stop: pause the running command at its next slice boundary" aria-label="Stop" disabled>
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
-        Stop
       </button>
     </div>
-    <div id="mode" class="segmented" role="radiogroup" aria-label="Evaluation mode"
-         title="How the session server evaluates. Switching restarts it.">
-      <button data-mode="fast" role="radio" title="The interpreter on every thread: no wait for the C++ toolchain">fast</button>
-      <button data-mode="debug" role="radio" title="The interpreter on one thread: breakpoints and stepping stop at the same place every run">debug</button>
-      <button data-mode="compiled" role="radio" title="Native code (-O2) from the start, for performance work">compiled</button>
-    </div>
-    <div class="group" role="group" aria-label="Session">
-      <button id="restart" class="icon" title="Restart the session server (its session is discarded)" aria-label="Restart the session server">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke-width="1.6"/><path d="M13.5 2v3.5H10"/></svg>
-      </button>
-    </div>
+    <!-- The mode, restart, Scenarios, History and structured editing live in
+         the command palette (palette.js); Review shows while proposals wait. -->
     <div class="group" role="group" aria-label="Panels">
       <button class="panel-toggle ask" data-tab="ask" aria-pressed="false" title="Ask the agent to build or change the program">✦ Ask</button>
-      <button class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals waiting for you to accept or reject">
+      <button id="review-toggle" class="panel-toggle" data-tab="review" aria-pressed="false" title="Proposals waiting for you to accept or reject" hidden>
         Review <span id="pending" class="count" hidden></span>
       </button>
-      <button class="panel-toggle" data-tab="scenarios" aria-pressed="false" title="Scenarios: tests and debugging sessions beside the program">Scenarios</button>
-      <button class="panel-toggle" data-tab="history" aria-pressed="false" title="History: every version of the project">History</button>
+      <button id="commands" class="icon" aria-label="Commands">⋯</button>
     </div>
     <!--account-->
   </div>
@@ -110,10 +100,14 @@
 </main>
 <footer id="status">
   <span id="connection" class="pill"></span>
-  <span id="lane" class="pill"></span>
+  <span id="lane" class="pill" title="The session server and its evaluation mode: click to switch modes"></span>
+  <button id="restart" class="quiet-link" title="Restart the session server (its session is discarded)" hidden>restart</button>
   <span id="session" class="pill"></span>
   <span id="evaluation" class="pill"></span>
-  <button id="hints" class="hints-key" title="Show or hide hints: key bindings, placeholders, empty-panel notes">Alt+H for hints</button>
+  <span class="status-keys">
+    <button id="hints" class="quiet-link" title="Hints for the form at the cursor: hold Alt+H to peek, tap to lock, Esc to unlock"></button>
+    <button id="palette-key" class="quiet-link" title="Every command, by name"></button>
+  </span>
 </footer>
 <script type="module" src="/static/main.js"></script>
 </body>

@@ -80,6 +80,9 @@ fn asset(name: &str) -> Response {
         "results.css" => (include_str!("../web/results.css"), "text/css; charset=utf-8"),
         "trace.js" => (include_str!("../web/trace.js"), "text/javascript; charset=utf-8"),
         "trace.css" => (include_str!("../web/trace.css"), "text/css; charset=utf-8"),
+        "hints.js" => (include_str!("../web/hints.js"), "text/javascript; charset=utf-8"),
+        "hints.css" => (include_str!("../web/hints.css"), "text/css; charset=utf-8"),
+        "palette.js" => (include_str!("../web/palette.js"), "text/javascript; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()

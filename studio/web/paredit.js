@@ -11,8 +11,9 @@
 //   observe(result)                keep what a REPL result says about live
 //                                  state (the catalog after every Run)
 //   setDatabases(names)            the saved databases, from the studio
-//   mountControls(container)       the structured-mode toggle and key help
-//   keysAt(text, line)             a line of the keys for the Alt+H hints
+//   mountControls()                structured mode and the key help, for
+//                                  the command palette
+//   keysAt(text, line)             the keys the Alt+H hints name there
 //
 // The same adapters bind emacs.js's Emacs keys, in structured mode or not.
 //
@@ -73,17 +74,16 @@ const TYPING = {
   Delete: paredit.deleteForward,
 };
 
-// The keys the Alt+H hints name, with a word each: on a line with a list,
-// the structural ones; anywhere, completion.
-const HINTED = { slurpForward: "slurp", barfForward: "barf", expandSelection: "select", formatForm: "format" };
+// The keys the Alt+H hints name, most useful first, with a word each: on a
+// line with a list, the structural ones; anywhere, completion.
+const HINTED = [["expandSelection", "select"], ["slurpForward", "slurp"], ["barfForward", "barf"], ["formatForm", "format"]];
 
-// One line of hints for `line` (1-based) of `text`.
+// The hints for `line` (1-based) of `text`, most useful first.
 export function keysAt(text, line) {
   const listy = /[([{]/.test(text.split("\n")[line - 1] ?? "");
-  const keys = structured.on && listy
-    ? BINDINGS.filter(([name]) => HINTED[name]).map(([name, chords]) => `${symbols(chords.at(-1))} ${HINTED[name]}`)
-    : [];
-  return [...keys, `${symbols("Alt-/")} complete`].join(" · ");
+  const chords = Object.fromEntries(BINDINGS.map(([name, keys]) => [name, keys.at(-1)]));
+  const keys = structured.on && listy ? HINTED.map(([name, word]) => `${symbols(chords[name])} ${word}`) : [];
+  return [...keys, `${symbols("Alt-/")} complete`];
 }
 
 // "Ctrl-Alt-Right" as ⌃⌥→ on a Mac, as it is elsewhere.
@@ -134,7 +134,7 @@ function locations({ file, text }) {
 
 // Chords ---------------------------------------------------------------
 
-const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+export const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 
 // The kill ring's text also goes to the clipboard, for Cmd-V and other apps.
 ring.copy = (text) => navigator.clipboard?.writeText(text).catch(() => {});
@@ -457,24 +457,11 @@ export function bindPrompt(area, { program }) {
 
 // Controls -------------------------------------------------------------
 
-// The structured-mode toggle and the key help, as a group of buttons.
-export function mountControls(container) {
+// Structured mode and the key help, for the command palette:
+// { structured(), setStructured(on), showKeys() }.
+export function mountControls() {
   const link = document.head.appendChild(document.createElement("link"));
   Object.assign(link, { rel: "stylesheet", href: "/static/structure.css" });
-  const group = container.appendChild(Object.assign(document.createElement("div"), { className: "group" }));
-  group.setAttribute("role", "group");
-  group.setAttribute("aria-label", "Structured editing");
-  const toggle = group.appendChild(Object.assign(document.createElement("button"), {
-    className: "icon", textContent: "( )", title: "Structured editing: brackets stay balanced, and the paredit keys work",
-  }));
-  const show = (on) => toggle.setAttribute("aria-pressed", String(on));
-  show(structured.on);
-  structured.listeners.add(show);
-  toggle.addEventListener("click", () => structured.set(!structured.on));
-
-  const help = group.appendChild(Object.assign(document.createElement("button"), {
-    className: "icon", textContent: "?", title: "Structured editing keys",
-  }));
   const popover = document.body.appendChild(Object.assign(document.createElement("div"), { className: "key-help", hidden: true }));
   const rows = [
     ...BINDINGS.map(([, chords, about]) => [chords.join("  ·  "), about]),
@@ -490,13 +477,11 @@ export function mountControls(container) {
     tr.append(Object.assign(document.createElement("td"), { className: "keys", textContent: keys }));
     tr.append(Object.assign(document.createElement("td"), { textContent: about }));
   }
-  help.addEventListener("click", (event) => {
-    event.stopPropagation();
-    popover.hidden = !popover.hidden;
-    const box = help.getBoundingClientRect();
-    popover.style.top = `${box.bottom + 6}px`;
-    popover.style.right = `${Math.max(8, innerWidth - box.right)}px`;
-  });
-  document.addEventListener("click", (event) => { if (!popover.contains(event.target)) popover.hidden = true; });
+  document.addEventListener("pointerdown", (event) => { if (!popover.contains(event.target)) popover.hidden = true; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") popover.hidden = true; });
+  return {
+    structured: () => structured.on,
+    setStructured: (on) => structured.set(on),
+    showKeys() { popover.hidden = false; },
+  };
 }

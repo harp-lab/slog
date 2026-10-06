@@ -1,0 +1,79 @@
+/* Hints and the command palette (hints.js, palette.js), in studio.css's
+   palette. Hints never move anything: the card floats over the editor's
+   bottom edge, and the notes they reveal keep their space when hidden. */
+
+/* ---- Hints ------------------------------------------------------------- */
+
+/* Placeholders and empty-panel notes show only in the region near the
+   user, while hints are shown there. */
+:is(#repl, #drawer, #files):not([data-hinting]) .hint { visibility: hidden; }
+:is(#repl, #drawer):not([data-hinting]) ::placeholder { color: transparent; }
+
+#editor { position: relative; }
+.hint-card {
+  position: absolute;
+  right: 22px;
+  bottom: 10px;
+  z-index: 5;
+  display: grid;
+  gap: 1px;
+  max-width: min(560px, 60%);
+  padding: 6px 11px;
+  background: rgba(255, 253, 246, 0.96);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(7, 54, 66, 0.08);
+  font: 12px/1.5 var(--sans);
+  color: var(--text);
+  pointer-events: none;
+}
+.hint-card.top { top: 10px; bottom: auto; }
+.hint-card > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint-here { color: var(--strong); }
+.hint-near { color: var(--muted); font-size: 11.5px; }
+.hint-keys { display: flex; gap: 14px; margin-top: 2px; color: var(--blue); font-size: 11.5px; }
+.hint-keys:first-child { margin-top: 0; }
+.hint-lock { margin-left: auto; padding-left: 10px; color: var(--muted); }
+
+/* ---- Command palette --------------------------------------------------- */
+
+.palette-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(7, 54, 66, 0.06); }
+.palette {
+  position: absolute;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(7, 54, 66, 0.16);
+  overflow: hidden;
+}
+.palette input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+  background: white;
+  color: var(--strong);
+  font: 14px var(--sans);
+}
+.palette input::placeholder { color: var(--muted); }
+.palette-list { max-height: 50vh; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none; }
+.palette-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+.palette-list li.chosen { background: var(--chrome); color: var(--strong); }
+.palette-list .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-list .note { color: var(--green-dark); font-size: 11.5px; }
+.palette-list kbd { color: var(--muted); background: var(--chrome); border: 1px solid var(--border); }
+.palette-list li.empty { color: var(--muted); cursor: default; }
