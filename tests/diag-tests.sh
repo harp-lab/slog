@@ -229,6 +229,28 @@ if echo "$o" | grep -qF 'quote_const.slog:4:1: "s" : int' \
   ok errors-quote-source
 else bad errors-quote-source "$o"; fi
 
+# 15. an enum member written without parentheses is a located error saying
+#     how to write it (was: in a head, `internal error ... key: 'red`; in a
+#     body, a variable silently matching every value).
+cat > "$D/enum_bare_head.slog" <<'EOF'
+enum (color red green)
+table (c color)
+rule (c red)
+EOF
+cat > "$D/enum_bare_body.slog" <<'EOF'
+enum (color red green)
+table (c color)
+table (out int)
+rule (c (red))
+rule (out 1) <-- (c green)
+EOF
+o="$(run enum_bare_head; run enum_bare_body)"
+if echo "$o" | grep -qF 'enum_bare_head.slog:3:6: red is an enum member, not a variable: write it with parentheses, (red)' \
+   && echo "$o" | grep -qF 'enum_bare_body.slog:5:18: green is an enum member' \
+   && ! echo "$o" | grep -qi 'internal error'; then
+  ok enum-member-needs-parens
+else bad enum-member-needs-parens "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
