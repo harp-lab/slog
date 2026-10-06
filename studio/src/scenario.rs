@@ -282,7 +282,7 @@ impl Runner<'_> {
         let mut transcript = Vec::new();
         let evaluated = self
             .session
-            .evaluate(self.lane, harness, &mut |outcome| transcript.push(outcome.clone()))
+            .evaluate(self.lane, harness, &[], &mut |outcome| transcript.push(outcome.clone()))
             .await;
         self.transcript = transcript;
         let mut report = Report {

@@ -81,7 +81,7 @@ impl Session {
                     .get("current")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                held: result.get("kind").and_then(Value::as_str) == Some("paused"),
+                held: result.get("held").and_then(Value::as_bool).unwrap_or(false),
             };
         }
         Outcome {
@@ -94,13 +94,15 @@ impl Session {
     }
 
     /// Evaluate `file` from nothing: resolve any held run, discard the
-    /// current session, run the program, and list its relations. `each`
-    /// sees every command's outcome in order; the result is whether all of
-    /// them succeeded.
+    /// current session, send `prepare` (e.g. breaks to arm) to the fresh
+    /// one, run the program, and list its relations. `each` sees every
+    /// command's outcome in order; the result is whether all of them
+    /// succeeded.
     pub async fn evaluate(
         &mut self,
         lane: &Lane,
         file: &Path,
+        prepare: &[String],
         each: &mut (dyn FnMut(&Outcome) + Send),
     ) -> bool {
         let Some(path) = run_argument(file) else {
@@ -123,6 +125,7 @@ impl Session {
         if self.view.current.is_some() {
             steps.push("discard session".to_owned());
         }
+        steps.extend_from_slice(prepare);
         steps.push(format!("run {path}"));
         steps.push("tables".to_owned());
         for line in steps {

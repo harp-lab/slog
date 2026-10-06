@@ -211,6 +211,27 @@ impl Studio {
 
     /// Save, then evaluate the file from nothing in a fresh session.
     pub async fn evaluate(&self) {
+        self.evaluate_with(Vec::new()).await;
+    }
+
+    /// Evaluate with a break armed at each breakpoint line first, so the
+    /// run stops in the first marked rule it reaches.
+    pub async fn debug(&self) {
+        let prepare = match run_argument(&self.file) {
+            Some(path) => self
+                .breakpoints
+                .lock()
+                .expect("breakpoints lock")
+                .iter()
+                .map(|line| format!("break {path}:{line}"))
+                .collect(),
+            // evaluate reports a path `run` cannot name
+            None => Vec::new(),
+        };
+        self.evaluate_with(prepare).await;
+    }
+
+    async fn evaluate_with(&self, prepare: Vec<String>) {
         let started = Instant::now();
         let mut session = self.session.lock().await;
         self.publish(Event::Evaluation {
@@ -227,7 +248,7 @@ impl Studio {
             Ok(()) => {
                 let mut shown = session.view().clone();
                 session
-                    .evaluate(&self.lane, &self.file, &mut |outcome| {
+                    .evaluate(&self.lane, &self.file, &prepare, &mut |outcome| {
                         self.publish_outcome(Origin::Evaluate, &shown, outcome);
                         shown = outcome.session.clone();
                     })
@@ -280,56 +301,6 @@ impl Studio {
             Ok(report) => publish(false, Some(report), None),
             Err(error) => publish(false, None, Some(error)),
         }
-    }
-
-    /// Evaluate, then arm a break at each breakpoint line and run the
-    /// program again into the session, so the run stops in those rules.
-    /// A break needs the rule resident, hence the evaluation first; the
-    /// re-run of the same program derives nothing new, it only passes the
-    /// rules' ports again.
-    pub async fn debug(&self) {
-        let started = Instant::now();
-        let mut session = self.session.lock().await;
-        self.publish(Event::Evaluation {
-            phase: Phase::Start,
-            ok: false,
-            ms: 0,
-        });
-        let ok = self.debug_in(&mut session).await;
-        self.publish(Event::Evaluation {
-            phase: Phase::Done,
-            ok,
-            ms: started.elapsed().as_millis() as u64,
-        });
-    }
-
-    async fn debug_in(&self, session: &mut Session) -> bool {
-        if let Err(message) = self.save() {
-            let failure = session.failure("save", "save", &message);
-            self.publish_outcome(Origin::Evaluate, session.view(), &failure);
-            return false;
-        }
-        let mut shown = session.view().clone();
-        let evaluated = session
-            .evaluate(&self.lane, &self.file, &mut |outcome| {
-                self.publish_outcome(Origin::Evaluate, &shown, outcome);
-                shown = outcome.session.clone();
-            })
-            .await;
-        // evaluate has already refused a path `run` cannot name
-        let (true, Some(path)) = (evaluated, run_argument(&self.file)) else {
-            return false;
-        };
-        let lines = self.breakpoints.lock().expect("breakpoints lock").clone();
-        for line in lines {
-            let before = session.view().clone();
-            let outcome = session.execute(&self.lane, &format!("break {path}:{line}")).await;
-            self.publish_outcome(Origin::Evaluate, &before, &outcome);
-        }
-        let before = session.view().clone();
-        let outcome = session.execute(&self.lane, &format!("run {path}")).await;
-        self.publish_outcome(Origin::Evaluate, &before, &outcome);
-        outcome.ok()
     }
 
     /// Publish an entry, and the session state when it moved past `before`.
@@ -405,8 +376,9 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
-    /// A debug run stops in the rule on a breakpoint line, and a breakpoint
-    /// on a line without a rule is reported rather than silently ignored.
+    /// A debug run arms its breaks before the program's first run and stops
+    /// in the rule on a breakpoint line. A line without a rule cannot be
+    /// told from a rule not yet run, so its break waits and never fires.
     #[tokio::test]
     async fn a_debug_run_stops_at_a_breakpoint_line() {
         let directory = std::env::temp_dir().join(format!("studio-debug-{}", std::process::id()));
@@ -424,11 +396,15 @@ mod tests {
         studio.set_breakpoints(vec![5, 2]);
         studio.debug().await;
         let outcomes = outcomes(&mut events);
-        let missing = outcomes.iter().find(|o| o.line.ends_with(":2")).expect("break at line 2");
-        assert!(missing.error.as_ref().is_some_and(|e| e.message.contains("no rule at chain.slog:2")));
-        let stop = outcomes.last().and_then(|o| o.result.clone()).expect("the re-run answered");
-        assert_eq!(stop["title"], "Paused · break b1");
-        assert!(stop["lines"].to_string().contains("chain.slog:5:1"));
+        let run = outcomes
+            .iter()
+            .find(|o| o.line.starts_with("run "))
+            .and_then(|o| o.result.clone())
+            .expect("the run answered");
+        // b1 is line 2's waiting break; b2 is the rule on line 5
+        assert_eq!(run["title"], "Paused · break b2");
+        assert!(run["lines"].to_string().contains("chain.slog:5:1"));
+        assert!(outcomes.last().is_some_and(|o| o.session.held));
         studio.lane.shutdown().await;
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
