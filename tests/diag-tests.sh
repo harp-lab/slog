@@ -254,6 +254,22 @@ if echo "$o" | grep -qF 'ctor_prim.slog:1:23: The constructor neg has the name o
 else bad constructor-named-like-primitive-rejected "$o
 $o2"; fi
 
+# 16. an int/float mix in a polymorphic prim names the rule's location and
+#     quotes it, like every other type error (was: a bare
+#     `Arguments X : int and _tconst... : float do not match`).
+cat > "$D/numeric_mix.slog" <<'EOF'
+table (a int)
+table (b float)
+rule (a 1)
+rule (a X) --> (b (+ X 1.5))
+EOF
+o="$(run numeric_mix)"
+if echo "$o" | grep -qE 'numeric_mix\.slog:4:1: Arguments .* do not match' \
+   && echo "$o" | grep -qF 'rule (a X) --> (b (+ X 1.5))' \
+   && ! echo "$o" | grep -qE '_t[A-Za-z]*[0-9]'; then
+  ok numeric-mismatch-located
+else bad numeric-mismatch-located "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

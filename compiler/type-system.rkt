@@ -253,6 +253,31 @@
               [else
                (loop (append rest (hash-ref local-env-proto `(= ,s) '()))
                      (set-add seen s))])])))
+     ;; How a mismatch error names a side of the conflict: a member of sym's
+     ;; link class whose DIRECT type is t, as the user wrote it.  The vars
+     ;; being unified may be gensyms (the result of a nested call), so name
+     ;; a grounded member instead -- the column variable or literal that
+     ;; brought t in.  Compiler names (leading `_`) go last, and sorting
+     ;; keeps the choice deterministic across hash orders.
+     (define (class-member-of-type sym t)
+       (define members
+         (let loop ([frontier (list sym)] [seen (set)])
+           (match frontier
+             ['() seen]
+             [(cons s rest)
+              (if (set-member? seen s)
+                  (loop rest seen)
+                  (loop (append rest (hash-ref local-env-proto `(= ,s) '()))
+                        (set-add seen s)))])))
+       (define names
+         (for/list ([m (in-set members)]
+                    #:when (equal? (hash-ref local-env-proto m #f) t))
+           (variable-display m rule)))
+       (define-values (internal user)
+         (partition (lambda (n) (string-prefix? n "_")) (sort names string<?)))
+       (match (append user internal)
+         ['() (format "~a" sym)]
+         [(cons n _) n]))
      ;; ---- second pass: connect variables via polymorphic instantiations
      (define local-env
        (foldl (lambda (k env)
@@ -275,7 +300,11 @@
                          [(eq? acc 'any) yt]
                          [(eq? yt 'any) acc]
                          [else
-                          (error (format "Arguments ~a : ~a and ~a : ~a do not match" x acc y yt))])))
+                          (error (format "~a: Arguments ~a : ~a and ~a : ~a do not match in\n  ~a"
+                                         (rule-location-string rule)
+                                         (class-member-of-type x acc) acc
+                                         (class-member-of-type x yt) yt
+                                         (syn-source rule)))])))
                    (hash-set env x t*)]
                   [(? symbol? x) (hash-set env x (hash-ref local-env-proto x))]))
               (hash)
