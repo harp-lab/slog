@@ -5231,13 +5231,15 @@
     (check-equal? (length (file->lines dump-file)) 67)
     (delete-file dump-file)
     ;; watches: registration echoes the exact bound VersionKey; closing the
-    ;; 12-cycle fires the relation watch at every propagation barrier
-    ;; (aggregated to one heartbeat line) and moves the query count 66->144
+    ;; 12-cycle fires the relation watch at its 12 propagation barriers
+    ;; (aggregated to one heartbeat line; the count round this first edit
+    ;; runs changes no membership, so it is not one) and moves the query
+    ;; count 66->144
     (check-regexp-match #px"◆ Watch w1\n  path @ v1:" transcript)
     (check-regexp-match
      #px"◆ Watch w2\n  \\?count \\(path X Y\\) — 66 rows now" transcript)
     (check-regexp-match
-     #px"watch w1: [0-9]+ hits, last at [0-9a-f]+_maint1 iter 12" transcript)
+     #px"watch w1: 12 hits, last at [0-9a-f]+_maint1 iter 12" transcript)
     (check-regexp-match
      #px"watch w2: \\?count \\(path X Y\\) — 66 -> 144 \\(\\+78\\)" transcript)
     (check-regexp-match
