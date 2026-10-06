@@ -32,6 +32,7 @@ const editor = await createEditor($("editor"), {
   onChange: scheduleEdit,
   onEvaluate: evaluate,
   onSave: save,
+  onBreakpoints: (lines) => send({ t: "breakpoints", lines }),
 });
 
 // Edits ------------------------------------------------------------------
@@ -60,6 +61,11 @@ function evaluate() {
   send({ t: "evaluate" });
 }
 
+function debug() {
+  flushEdit();
+  send({ t: "debug" });
+}
+
 // Messages from the studio -------------------------------------------------
 
 const receive = {
@@ -72,6 +78,7 @@ const receive = {
     $("file").textContent = snapshot.file;
     document.title = `${snapshot.file.split("/").pop()} — Slog Studio`;
     editor.set(snapshot.text);
+    editor.setBreakpoints(snapshot.breakpoints);
     history.load();
     renderSaved();
     renderStatus();
@@ -88,6 +95,9 @@ const receive = {
     state.version = version;
     editor.set(text);
     renderSaved();
+  },
+  breakpoints({ lines }) {
+    editor.setBreakpoints(lines);
   },
   saved({ version }) {
     state.savedVersion = version;
@@ -271,6 +281,7 @@ function renderStatus() {
   $("mode").value = state.lane.mode;
   $("stop").hidden = lane !== "busy";
   $("evaluate").disabled = state.evaluating;
+  $("debug").disabled = state.evaluating;
 }
 
 // Scenarios --------------------------------------------------------------
@@ -331,6 +342,7 @@ $("scenarios-toggle").addEventListener("click", () => {
 // Layout -----------------------------------------------------------------
 
 $("evaluate").addEventListener("click", evaluate);
+$("debug").addEventListener("click", debug);
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
 $("mode").addEventListener("change", (event) => send({ t: "mode", mode: event.target.value }));

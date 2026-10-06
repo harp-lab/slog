@@ -7,7 +7,7 @@
 
 use crate::lane::{Lane, LaneStatus};
 use crate::scenario::{self, Report};
-use crate::session::{Outcome, Session, SessionView};
+use crate::session::{Outcome, Session, SessionView, run_argument};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct Snapshot {
     pub saved: bool,
     pub lane: LaneStatus,
     pub session: SessionView,
+    pub breakpoints: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -31,6 +32,8 @@ pub enum Event {
     /// The text changed; `origin` is the connection that changed it.
     Text { version: u64, text: String, origin: u64 },
     Saved { version: u64 },
+    /// The lines carrying breakpoints changed.
+    Breakpoints { lines: Vec<u32> },
     Lane(LaneStatus),
     Session(SessionView),
     /// A line of the session server's stderr.
@@ -79,6 +82,8 @@ struct Doc {
 pub struct Studio {
     file: PathBuf,
     doc: std::sync::Mutex<Doc>,
+    /// 1-based lines whose rule a debug run stops in (`break FILE:LINE`).
+    breakpoints: std::sync::Mutex<Vec<u32>>,
     pub lane: Lane,
     /// Held across each command, and across a whole evaluation, so commands
     /// from different tabs never interleave within one.
@@ -96,6 +101,7 @@ impl Studio {
                 version: 0,
                 saved_version: 0,
             }),
+            breakpoints: std::sync::Mutex::new(Vec::new()),
             session: Mutex::new(Session::new(&lane)),
             lane,
             events: broadcast::channel(1024).0,
@@ -149,7 +155,16 @@ impl Studio {
             saved: doc.saved_version == doc.version,
             lane: self.lane.status().borrow().clone(),
             session,
+            breakpoints: self.breakpoints.lock().expect("breakpoints lock").clone(),
         }
+    }
+
+    /// Replace the breakpoint lines; the editor tracks them as text moves.
+    pub fn set_breakpoints(&self, mut lines: Vec<u32>) {
+        lines.sort_unstable();
+        lines.dedup();
+        *self.breakpoints.lock().expect("breakpoints lock") = lines.clone();
+        self.publish(Event::Breakpoints { lines });
     }
 
     /// Replace the text of version `base`. Returns the new version, or the
@@ -267,6 +282,56 @@ impl Studio {
         }
     }
 
+    /// Evaluate, then arm a break at each breakpoint line and run the
+    /// program again into the session, so the run stops in those rules.
+    /// A break needs the rule resident, hence the evaluation first; the
+    /// re-run of the same program derives nothing new, it only passes the
+    /// rules' ports again.
+    pub async fn debug(&self) {
+        let started = Instant::now();
+        let mut session = self.session.lock().await;
+        self.publish(Event::Evaluation {
+            phase: Phase::Start,
+            ok: false,
+            ms: 0,
+        });
+        let ok = self.debug_in(&mut session).await;
+        self.publish(Event::Evaluation {
+            phase: Phase::Done,
+            ok,
+            ms: started.elapsed().as_millis() as u64,
+        });
+    }
+
+    async fn debug_in(&self, session: &mut Session) -> bool {
+        if let Err(message) = self.save() {
+            let failure = session.failure("save", "save", &message);
+            self.publish_outcome(Origin::Evaluate, session.view(), &failure);
+            return false;
+        }
+        let mut shown = session.view().clone();
+        let evaluated = session
+            .evaluate(&self.lane, &self.file, &mut |outcome| {
+                self.publish_outcome(Origin::Evaluate, &shown, outcome);
+                shown = outcome.session.clone();
+            })
+            .await;
+        // evaluate has already refused a path `run` cannot name
+        let (true, Some(path)) = (evaluated, run_argument(&self.file)) else {
+            return false;
+        };
+        let lines = self.breakpoints.lock().expect("breakpoints lock").clone();
+        for line in lines {
+            let before = session.view().clone();
+            let outcome = session.execute(&self.lane, &format!("break {path}:{line}")).await;
+            self.publish_outcome(Origin::Evaluate, &before, &outcome);
+        }
+        let before = session.view().clone();
+        let outcome = session.execute(&self.lane, &format!("run {path}")).await;
+        self.publish_outcome(Origin::Evaluate, &before, &outcome);
+        outcome.ok()
+    }
+
     /// Publish an entry, and the session state when it moved past `before`.
     fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome) {
         if outcome.session != *before {
@@ -336,6 +401,34 @@ mod tests {
             .expect("a positioned syntax error");
         assert_eq!((span.file.as_str(), span.line, span.col), (file.to_str().unwrap(), 2, 14));
 
+        studio.lane.shutdown().await;
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    /// A debug run stops in the rule on a breakpoint line, and a breakpoint
+    /// on a line without a rule is reported rather than silently ignored.
+    #[tokio::test]
+    async fn a_debug_run_stops_at_a_breakpoint_line() {
+        let directory = std::env::temp_dir().join(format!("studio-debug-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("temporary directory");
+        let file = directory.join("chain.slog");
+        let lane = Lane::new(project_root().expect("repository root"), Mode::Debug);
+        let studio = Studio::new(
+            file.clone(),
+            "table (edge int int)\ntable (path int int)\nrule (edge 1 2) (edge 2 3)\n\
+             rule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\n"
+                .to_owned(),
+            lane,
+        );
+        let mut events = studio.subscribe();
+        studio.set_breakpoints(vec![5, 2]);
+        studio.debug().await;
+        let outcomes = outcomes(&mut events);
+        let missing = outcomes.iter().find(|o| o.line.ends_with(":2")).expect("break at line 2");
+        assert!(missing.error.as_ref().is_some_and(|e| e.message.contains("no rule at chain.slog:2")));
+        let stop = outcomes.last().and_then(|o| o.result.clone()).expect("the re-run answered");
+        assert_eq!(stop["title"], "Paused · break b1");
+        assert!(stop["lines"].to_string().contains("chain.slog:5:1"));
         studio.lane.shutdown().await;
         std::fs::remove_dir_all(directory).expect("cleanup");
     }

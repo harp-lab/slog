@@ -3,14 +3,14 @@
 //   get() / set(text)       the text; set keeps the cursor and does not fire onChange
 //   mark(span, message)     underline a 1-based position, or clear with null
 //   reveal(span)            put the cursor at a position
+//   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
+// `onBreakpoints(lines)` fires when a margin click or an edit changes them.
 
 const MONACO = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs";
 
-export async function createEditor(element, { onChange, onEvaluate, onSave }) {
+export async function createEditor(element, handlers) {
   const monaco = await loadMonaco();
-  return monaco
-    ? monacoEditor(monaco, element, { onChange, onEvaluate, onSave })
-    : textareaEditor(element, { onChange, onEvaluate, onSave });
+  return monaco ? monacoEditor(monaco, element, handlers) : textareaEditor(element, handlers);
 }
 
 function loadMonaco() {
@@ -54,7 +54,7 @@ const SLOG = {
   },
 };
 
-function monacoEditor(monaco, element, { onChange, onEvaluate, onSave }) {
+function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints }) {
   monaco.languages.register({ id: "slog" });
   monaco.languages.setMonarchTokensProvider("slog", SLOG);
   monaco.languages.setLanguageConfiguration("slog", {
@@ -92,10 +92,42 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave }) {
     wordWrapColumn: 100,
     fontFamily: "\"JetBrains Mono\", \"SF Mono\", Menlo, Consolas, monospace",
     fontSize: 14,
+    glyphMargin: true,
   });
   const model = editor.getModel();
   let quiet = false;
-  editor.onDidChangeModelContent(() => { if (!quiet) onChange(); });
+
+  // Breakpoints are decorations, so they move with the text they mark.
+  const dots = editor.createDecorationsCollection([]);
+  const dotLines = () => [...new Set(dots.getRanges().map((range) => range.startLineNumber))].sort((a, b) => a - b);
+  const showDots = (lines) => dots.set(lines.map((line) => ({
+    range: new monaco.Range(line, 1, line, 1),
+    options: {
+      glyphMarginClassName: "breakpoint",
+      glyphMarginHoverMessage: { value: "breakpoint: a debug run stops in the rule on this line" },
+      stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+    },
+  })));
+  let reported = "[]";
+  const reportDots = () => {
+    const lines = dotLines();
+    if (JSON.stringify(lines) === reported) return;
+    reported = JSON.stringify(lines);
+    onBreakpoints(lines);
+  };
+  editor.onMouseDown((event) => {
+    if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+    const line = event.target.position.lineNumber;
+    const lines = dotLines();
+    showDots(lines.includes(line) ? lines.filter((l) => l !== line) : [...lines, line]);
+    reportDots();
+  });
+
+  editor.onDidChangeModelContent(() => {
+    if (quiet) return;
+    onChange();
+    reportDots();
+  });
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, onEvaluate);
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
   return {
@@ -103,9 +135,13 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave }) {
     set(text) {
       if (model.getValue() === text) return;
       const selection = editor.getSelection();
+      // Replacing the whole text would collapse every breakpoint onto its
+      // start, so they are kept by line number instead.
+      const lines = dotLines();
       quiet = true;
       // An edit operation, not setValue, so undo can step back over it.
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
+      showDots(lines.filter((line) => line <= model.getLineCount()));
       quiet = false;
       if (selection) editor.setSelection(selection);
     },
@@ -125,9 +161,14 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave }) {
       editor.setPosition({ lineNumber: span.line, column: span.col });
       editor.focus();
     },
+    setBreakpoints(lines) {
+      reported = JSON.stringify([...lines].sort((a, b) => a - b));
+      showDots(lines);
+    },
   };
 }
 
+// The fallback has no margin: breakpoints need the Monaco editor.
 function textareaEditor(element, { onChange, onEvaluate, onSave }) {
   const area = document.createElement("textarea");
   area.spellcheck = false;
@@ -155,5 +196,6 @@ function textareaEditor(element, { onChange, onEvaluate, onSave }) {
       area.focus();
       area.setSelectionRange(offset(span), offset(span) + 1);
     },
+    setBreakpoints() {},
   };
 }

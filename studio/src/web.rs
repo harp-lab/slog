@@ -57,6 +57,10 @@ enum Request {
     Edit { base: u64, text: String },
     Save,
     Evaluate,
+    /// Evaluate, then re-run under the breakpoints.
+    Debug,
+    /// The full set of breakpoint lines.
+    Breakpoints { lines: Vec<u32> },
     Command { line: String },
     Interrupt,
     /// Kill the session server; the next command starts a fresh one.
@@ -195,6 +199,10 @@ fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::Unbo
         Request::Evaluate => {
             tokio::spawn(async move { studio.evaluate().await });
         }
+        Request::Debug => {
+            tokio::spawn(async move { studio.debug().await });
+        }
+        Request::Breakpoints { lines } => studio.set_breakpoints(lines),
         Request::Command { line } => {
             tokio::spawn(async move { studio.command(&line).await });
         }

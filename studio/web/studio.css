@@ -81,6 +81,9 @@ main { flex: 1; display: flex; min-height: 0; }
   outline: none;
 }
 
+/* A breakpoint dot in the editor's glyph margin */
+.breakpoint { background: var(--red); border-radius: 50%; width: 10px !important; height: 10px !important; margin: 4px 0 0 6px; }
+
 /* Transcript */
 .entry { margin: 0 0 10px; }
 .entry.evaluate { opacity: 0.8; }
