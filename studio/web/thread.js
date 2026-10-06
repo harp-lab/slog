@@ -38,6 +38,11 @@ export function describe(data) {
     case "query": return { label: "Queried", detail: input.q ?? "" };
     case "get_proposals": return { label: "Checked its proposals", detail: "" };
     case "get_notes": return { label: "Read the notes", detail: "" };
+    case "trace_run": return { label: "Traced a run", detail: "" };
+    case "get_trace": return { label: "Read the trace", detail: first };
+    case "debug_run": return { label: "Ran to a breakpoint", detail: "" };
+    case "why": return { label: "Asked why", detail: first };
+    case "whynot": return { label: "Asked why not", detail: first };
     case "Read": return { label: "Read", detail: shortPath(input.file_path) };
     case "Grep": return { label: "Searched code", detail: [input.pattern, shortPath(input.path)].filter(Boolean).join(" in ") };
     case "Glob": return { label: "Found files", detail: input.pattern ?? "" };
@@ -55,6 +60,8 @@ const ACTIVE = {
   record_note: "Recording a note", get_notes: "Reading the notes", Read: "Reading", Grep: "Searching code",
   Glob: "Finding files", WebSearch: "Searching the web", WebFetch: "Fetching", Task: "Running a subagent",
   Agent: "Running a subagent", TodoWrite: "Planning", TaskCreate: "Planning", TaskUpdate: "Planning",
+  trace_run: "Tracing a run", get_trace: "Reading the trace", debug_run: "Running to a breakpoint",
+  why: "Asking why", whynot: "Asking why not",
 };
 
 const humanize = (name) => {
