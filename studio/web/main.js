@@ -211,6 +211,9 @@ const history = {
   },
 };
 
+// The arrows walk the history, as do C-p and C-n, as in a shell.
+const previous = (event) => event.key === "ArrowUp" || (event.ctrlKey && !event.altKey && event.code === "KeyP");
+const next = (event) => event.key === "ArrowDown" || (event.ctrlKey && !event.altKey && event.code === "KeyN");
 prompt.addEventListener("keydown", (event) => {
   const text = prompt.value;
   if (event.key === "Enter" && !event.shiftKey && balanced(text)) {
@@ -221,12 +224,12 @@ prompt.addEventListener("keydown", (event) => {
     send({ t: "command", line });
     prompt.value = "";
     fitPrompt();
-  } else if (event.key === "ArrowUp" && !text.slice(0, prompt.selectionStart).includes("\n")) {
+  } else if (previous(event) && !text.slice(0, prompt.selectionStart).includes("\n")) {
     if (history.index === 0) return;
     event.preventDefault();
     prompt.value = history.lines[--history.index];
     fitPrompt();
-  } else if (event.key === "ArrowDown" && !text.slice(prompt.selectionEnd).includes("\n")) {
+  } else if (next(event) && !text.slice(prompt.selectionEnd).includes("\n")) {
     if (history.index >= history.lines.length) return;
     event.preventDefault();
     prompt.value = history.lines[++history.index] ?? "";

@@ -14,6 +14,8 @@
 //   mountControls(container)       the structured-mode toggle and key help
 //   keysAt(text, line)             a line of the keys for the Alt+H hints
 //
+// The same adapters bind emacs.js's Emacs keys, in structured mode or not.
+//
 // Structured mode (balanced typing and the paredit keys) is on unless
 // turned off, and remembered in localStorage. Completion is always on.
 
@@ -22,6 +24,7 @@ import { format, formatForm } from "./format.js";
 import { complete, expand } from "./complete.js";
 import { completeCommand, observe as observed, slogAt } from "./commands.js";
 import { forms } from "./forms.js";
+import { EMACS, EMACS_KEYS, ring } from "./emacs.js";
 
 // The bindings: [operation, chords, what it does]. A chord names keys by
 // their position (event.code), so Alt does not change them on a Mac;
@@ -126,11 +129,18 @@ function locations({ file, text }) {
 
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 
+// The kill ring's text also goes to the clipboard, for Cmd-V and other apps.
+ring.copy = (text) => navigator.clipboard?.writeText(text).catch(() => {});
+
+// The Emacs keys this platform binds (emacs.js), with their options.
+const EMACS_BOUND = EMACS_KEYS
+  .map(([name, chords, options = {}]) => ({ name, chords, ...options }))
+  .filter((key) => !key.mac || MAC);
+
 // "Ctrl-Alt-F" for a keydown, naming the key by its position.
+const PUNCTUATION = { BracketLeft: "[", BracketRight: "]", Slash: "/" };
 function chord(event) {
-  const key = event.code
-    .replace(/^Key|^Digit|^Arrow/, "")
-    .replace("BracketLeft", "[").replace("BracketRight", "]").replace("Slash", "/");
+  const key = PUNCTUATION[event.code] ?? event.code.replace(/^Key|^Digit|^Arrow/, "");
   return [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Meta", key]
     .filter(Boolean).join("-");
 }
@@ -143,7 +153,7 @@ function keybinding(monaco, text) {
   const modifiers = { Ctrl: MAC ? KeyMod.WinCtrl : KeyMod.CtrlCmd, Alt: KeyMod.Alt, Shift: KeyMod.Shift };
   const code = /^\d$/.test(key) ? KeyCode[`Digit${key}`]
     : /^[A-Z]$/.test(key) ? KeyCode[`Key${key}`]
-      : { "[": KeyCode.BracketLeft, "]": KeyCode.BracketRight, "/": KeyCode.Slash }[key] ?? KeyCode[`${key}Arrow`];
+      : { "[": KeyCode.BracketLeft, "]": KeyCode.BracketRight, "/": KeyCode.Slash }[key] ?? KeyCode[key] ?? KeyCode[`${key}Arrow`];
   return parts.reduce((binding, part) => binding | modifiers[part], code);
 }
 
@@ -208,6 +218,19 @@ export function bindMonaco(monaco, editor) {
         if (name === "expandSelection") grown.push({ before: selection, after: result.selection });
         else if (name !== "contractSelection") grown.length = 0;
         apply(text, result);
+      },
+    });
+  }
+
+  for (const key of EMACS_BOUND) {
+    editor.addAction({
+      id: `emacs.${key.name}`,
+      label: `Emacs: ${key.name.replace(/[A-Z]/g, (c) => ` ${c.toLowerCase()}`)}`,
+      keybindings: key.chords.map((text) => keybinding(monaco, text)),
+      precondition: key.structured === false ? "!slogStructured" : undefined,
+      run() {
+        if (key.monaco) for (const id of [key.monaco].flat()) editor.trigger("emacs", id, {});
+        else run(EMACS[key.name]);
       },
     });
   }
@@ -289,15 +312,25 @@ export function bindTextarea(area) {
   area.addEventListener("keydown", structureKeys(area));
 }
 
-// A keydown handler for a textarea's paredit keys, which says whether it
-// took the key.
+// A keydown handler for a textarea's paredit and Emacs keys, which says
+// whether it took the key.
 function structureKeys(area) {
   const commands = new Map(BINDINGS.flatMap(([name, chords]) => chords.map((text) => [text, name])));
+  const emacs = new Map(EMACS_BOUND.filter((key) => !key.monaco).flatMap((key) => key.chords.map((text) => [text, key])));
   const grown = [];
   const keydown = (event) => {
-    if (!structured.on || event.isComposing) return false;
+    if (event.isComposing) return false;
     const text = area.value;
     const selection = { start: area.selectionStart, end: area.selectionEnd };
+    const key = emacs.get(chord(event));
+    if (key && (key.structured !== false || !structured.on)) {
+      const result = EMACS[key.name](text, selection);
+      if (!result) return false;
+      event.preventDefault();
+      applyTo(area, result);
+      return true;
+    }
+    if (!structured.on) return false;
     const name = commands.get(chord(event));
     let result;
     if (name === "contractSelection" && grown.length && same(grown.at(-1).after, selection)) {
@@ -379,7 +412,8 @@ export function bindPrompt(area, { program }) {
 
   const structure = structureKeys(area);
   area.addEventListener("keydown", (event) => {
-    const keys = shown && {
+    const quit = event.ctrlKey && event.code === "KeyG"; // Emacs's C-g
+    const keys = shown && quit ? close : shown && {
       ArrowDown: () => { shown.index = (shown.index + 1) % shown.items.length; render(); },
       ArrowUp: () => { shown.index = (shown.index + shown.items.length - 1) % shown.items.length; render(); },
       Enter: () => accept(shown.index),

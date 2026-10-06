@@ -67,6 +67,7 @@ fn asset(name: &str) -> Response {
         "complete.js" => (include_str!("../web/complete.js"), "text/javascript; charset=utf-8"),
         "commands.js" => (include_str!("../web/commands.js"), "text/javascript; charset=utf-8"),
         "paredit.js" => (include_str!("../web/paredit.js"), "text/javascript; charset=utf-8"),
+        "emacs.js" => (include_str!("../web/emacs.js"), "text/javascript; charset=utf-8"),
         "structure.css" => (include_str!("../web/structure.css"), "text/css; charset=utf-8"),
         "agent.js" => (include_str!("../web/agent.js"), "text/javascript; charset=utf-8"),
         "summary.js" => (include_str!("../web/summary.js"), "text/javascript; charset=utf-8"),
