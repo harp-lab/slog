@@ -43,9 +43,19 @@ Nothing is desugared: facts describe the program as written.
 `finding(Severity File Line Col Code Message)`, at the exact atom, variable
 or literal.  Findings in `lib/` files are dropped.
 
+A check derives `issue(Severity Loc Code Subject)` -- what is wrong and
+the names it concerns, no strings built -- and each kind is worded once,
+by a rule turning issues into `report`s.  So a finding's derivation reads
+finding ← report ← issue ← the evidence, the message's string staging out
+of the way.  Severity is error, warning, info or **hint**: a singleton is
+a hint when its name documents what it ignores -- it is an input of a
+request the rule answers, or the program gives that column or field the
+same name in another rule (`names_column`).  A misspelling has a name of
+its own, so it stays a warning.  arithm.slog: 4 warnings, 53 hints.
+
 | tier | code | severity | what |
 |---|---|---|---|
-| 0 | `singleton` | warning | variable used once in a rule (names starting `_` exempt) |
+| 0 | `singleton` | warning or hint | variable used once in a rule (names starting `_` exempt) |
 | 0 | `unbound` | error | head variable, or one under `~`/guard/computation, that no positive clause binds |
 | 0 | `bare-constructor` | error/warning | `red` where the enum member `(red)` was meant |
 | 0 | `arity` | error | atom, constructor or demand call with the wrong count (a lattice negated by its key is fine) |
@@ -108,12 +118,23 @@ tier reruns, the previous run's findings of that tier stay, marked stale.
 ## 6. Editor
 
 - Markers owner `slog-lint`, distinct from the check's `check` errors:
-  lint error → Monaco Warning, warning → Info, info → Hint.
-- A Problems list in the summary strip; a click jumps.  "why?" reruns the
+  lint error → Monaco Warning, warning → Info, info and hint → Hint (faint
+  dots).
+- One quiet line under the summary: "analysis · 4 warnings · 53 hints",
+  hints muted, plus "tier 1/3 · dependencies coming" while deeper tiers
+  run.  A click drops the Problems list over the editor (it never opens on
+  its own, Esc or a click elsewhere closes it), grouped by severity and
+  kind: a group of up to five shows its findings, a larger one or any group
+  of hints is one line until opened.  A click jumps.  "why?" reruns the
   analysis on the analysis lane with `watch finding level 1 why` armed
   (after `run schema.slog`, so `finding` is live before the run) and shows
   `why (finding ...)`: the derivation through the analysis's own rules and
-  facts.  The daemon's proof budget (4096 records per event) is too small
+  facts.  `why` now also answers its tree as data (`nodes`); web/lint-why.js
+  tells it as a short chain in words ("rest occurs once in the rule at line
+  73 ← rest names a value the rule ignores ← rest is matched against the
+  input of a request to lookup ← the head (lookup …) at line 73"), with the
+  tree behind "details", compiler temp relations and constructor relations
+  left out and the project's files named by their project paths.  The daemon's proof budget (4096 records per event) is too small
   for findings at the end of long chains; `SLOG_PROOF_RECORDS` (new) raises
   it for the analysis lane.
 - "related": the dependency neighbourhood of the finding's relation, laid

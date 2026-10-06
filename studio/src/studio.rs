@@ -454,8 +454,8 @@ impl Studio {
         let _ = self.analysis.set(analysis);
     }
 
-    /// Why the analysis made `finding`, as the lines of its derivation.
-    pub async fn lint_why(&self, finding: &lint::Finding) -> Result<Vec<String>, String> {
+    /// Why the analysis made `finding`: its derivation's nodes.
+    pub async fn lint_why(&self, finding: &lint::Finding) -> Result<Vec<serde_json::Value>, String> {
         self.linter.get().ok_or("the analysis is not running")?.why(finding).await
     }
 

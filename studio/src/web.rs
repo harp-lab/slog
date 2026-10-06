@@ -110,6 +110,7 @@ fn asset(name: &str) -> Response {
         "timeline.css" => (include_str!("../web/timeline.css"), "text/css; charset=utf-8"),
         "debugger.css" => (include_str!("../web/debugger.css"), "text/css; charset=utf-8"),
         "lint.js" => (include_str!("../web/lint.js"), "text/javascript; charset=utf-8"),
+        "lint-why.js" => (include_str!("../web/lint-why.js"), "text/javascript; charset=utf-8"),
         "lint.css" => (include_str!("../web/lint.css"), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -266,7 +267,7 @@ enum Reply<'a> {
     /// The answer to a `Quiet` request.
     Quiet { tag: u64, #[serde(flatten)] outcome: &'a crate::session::Outcome },
     /// The derivation of a finding, as `why` renders it, or why there is none.
-    LintWhy { tag: u64, lines: Vec<String>, error: Option<String> },
+    LintWhy { tag: u64, nodes: Vec<serde_json::Value>, error: Option<String> },
     /// A project to open in a tab of its own.
     OpenProject { name: String },
     /// The rows asked for, as many as exist; or why they cannot be had.
@@ -553,11 +554,11 @@ fn handle(
         Request::LintWhy { finding, tag } => {
             let direct = direct.clone();
             tokio::spawn(async move {
-                let (lines, error) = match studio.lint_why(&finding).await {
-                    Ok(lines) => (lines, None),
+                let (nodes, error) = match studio.lint_why(&finding).await {
+                    Ok(nodes) => (nodes, None),
                     Err(why) => (Vec::new(), Some(why)),
                 };
-                let _ = direct.send(json(&Reply::LintWhy { tag, lines, error }));
+                let _ = direct.send(json(&Reply::LintWhy { tag, nodes, error }));
             });
         }
         Request::EditAnalysis => {

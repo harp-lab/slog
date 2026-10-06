@@ -2,13 +2,15 @@
 // Slog (analysis/, studio/src/lint.rs) finds in the program being edited.
 //
 // - Markers of owner "slog-lint", a step milder than the check's errors:
-//   a lint error shows as a Monaco warning, a warning as info, info as a
-//   hint.
-// - A strip under the summary: which tier of the analysis has run, the
-//   counts, and on opening, the Problems list. A problem jumps to its
-//   place; "why?" shows the analysis's own derivation of it (the REPL's
-//   `why`, on the analysis lane); "related" draws its relation's
-//   dependencies in the change-graph panel.
+//   a lint error shows as a Monaco warning, a warning as info; notes and
+//   hints only as faint dots.
+// - One quiet line under the summary: what is worth attention ("2
+//   warnings", hints muted beside it) and whether deeper tiers are still
+//   to come. A click drops the Problems list over the editor, grouped by
+//   kind; Esc or a click elsewhere puts it away. A problem jumps to its
+//   place; "why?" tells the analysis's own derivation of it (the REPL's
+//   `why`, on the analysis lane; lint-why.js), "related" draws its
+//   relation's dependencies in the change-graph panel.
 // - A hover part for the relation under the cursor, after the check's
 //   (Monaco shows the latest registered provider's part first, so main.js
 //   creates this before the check),
@@ -22,25 +24,39 @@
 // elsewhere, and a changed form's wait for the next analysis.
 
 import { forms } from "./forms.js";
+import { details, explain } from "./lint-why.js";
 
-const SEVERITY = { error: "Warning", warning: "Info", info: "Hint" };
+const SEVERITY = { error: "Warning", warning: "Info", info: "Hint", hint: "Hint" };
+const RANK = { error: 0, warning: 1, info: 2, hint: 3 };
+const WORD = { error: "error", warning: "warning", info: "note", hint: "hint" };
 const TIER_NAMES = ["rules", "dependencies", "demands and constructors"];
 
 export function createLint(element, { editor, files, send, changes }) {
   let view = null;
   let open = false;
+  const expanded = new Set(); // the groups opened by hand, "severity code"
   let rows = new Map(); // relation -> rows in the last Run
-  const whys = new Map(); // tag -> the row to show it in
+  const whys = new Map(); // tag -> the element to show it in
   let whyTag = 0;
 
-  const head = element.appendChild(div("lint-head"));
-  const state = head.appendChild(span("lint-state"));
-  const counts = head.appendChild(span("lint-counts"));
-  const toggle = head.appendChild(Object.assign(document.createElement("button"), {
-    className: "icon small", title: "Show the analysis's findings",
+  const head = element.appendChild(Object.assign(document.createElement("button"), {
+    className: "lint-head", title: "The analysis's findings (slog-lint)",
   }));
-  const body = element.appendChild(Object.assign(div("lint-body"), { hidden: true }));
-  toggle.addEventListener("click", () => { open = !open; render(); });
+  const pop = element.appendChild(Object.assign(div("lint-pop"), { hidden: true }));
+  const setOpen = (value) => {
+    open = value;
+    render();
+  };
+  head.addEventListener("click", () => setOpen(!open));
+  addEventListener("keydown", (event) => {
+    if (open && event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+    }
+  });
+  addEventListener("mousedown", (event) => {
+    if (open && !element.contains(event.target)) setOpen(false);
+  });
 
   const placed = (path, text) => place(view?.findings ?? [], path, text);
 
@@ -60,59 +76,119 @@ export function createLint(element, { editor, files, send, changes }) {
     }
   }
 
-  // ---- the strip ----------------------------------------------------------
+  // ---- the line, and the Problems list -------------------------------------
+
+  // "2 warnings", the counts worth attention, and the hints apart
+  function counts(findings) {
+    const by = (level) => findings.filter((f) => f.severity === level).length;
+    const say = (level) => {
+      const n = by(level);
+      return n ? `${n} ${WORD[level]}${n === 1 ? "" : "s"}` : null;
+    };
+    return {
+      attention: ["error", "warning", "info"].map(say).filter(Boolean).join(" · "),
+      hints: say("hint"),
+    };
+  }
 
   function render() {
     element.hidden = !view;
     if (!view) return;
     const { working, tier, tiers, findings, error, ms } = view;
-    const fresh = findings.filter((f) => !f.stale);
-    const total = (level) => fresh.filter((f) => f.severity === level).length;
+    const { attention, hints } = counts(findings.filter((f) => !f.stale));
     const deeper = tier < tiers;
-    state.replaceChildren(dot(error ? "bad" : working || deeper ? "busy" : "ok"));
-    state.append(error ? "analysis failed"
-      : tier === 0 ? "analyzing…"
-      : deeper ? `analysis: tier ${tier} of ${tiers} (${TIER_NAMES[tier - 1]}) · deeper results coming`
-      : working ? `analysis: ${tiers} tiers · rerunning`
-      : `analysis: ${tiers} tiers · ${(ms.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} s`);
-    state.title = ms.length ? `reify ${ms[0]} ms; ${ms.slice(1).map((t, i) => `tier ${i + 1} ${t} ms`).join(", ")}` : "";
-    counts.textContent = [["error", "error"], ["warning", "warning"], ["info", "note"]]
-      .map(([level, word]) => [total(level), word])
-      .filter(([n]) => n)
-      .map(([n, word]) => `${n} ${word}${n === 1 ? "" : "s"}`)
-      .join(" · ") || (tier ? "nothing found" : "");
-    toggle.textContent = open ? "▴" : "▾";
-    toggle.hidden = !findings.length && !error;
+    head.replaceChildren(span("lint-label", "analysis"));
+    const part = (className, text) => head.append(span("lint-sep", "·"), span(className, text));
+    if (error) part("lint-bad", "failed");
+    else if (tier === 0 && !findings.length) part("lint-quiet", "checking…");
+    else {
+      part(attention ? "lint-attention" : "lint-quiet", attention || "nothing to note");
+      if (hints) part("lint-quiet", hints);
+    }
+    if (!error && (deeper || working)) {
+      part("lint-quiet", deeper && tier > 0 ? `tier ${tier}/${tiers} · ${TIER_NAMES[tier]} coming` : "rechecking");
+    }
+    head.title = ms.length
+      ? `slog-lint: reify ${ms[0]} ms; ${ms.slice(1).map((t, i) => `${TIER_NAMES[i]} ${t} ms`).join(", ")}`
+      : "slog-lint";
+    head.setAttribute("aria-expanded", String(open));
     element.classList.toggle("open", open);
-    body.hidden = !open;
-    if (!open) return;
-    body.replaceChildren();
-    if (error) body.append(div("summary-error", error));
-    const order = { error: 0, warning: 1, info: 2 };
-    const sorted = [...findings].sort((a, b) => order[a.severity] - order[b.severity]
-      || a.file.localeCompare(b.file) || a.line - b.line || a.col - b.col);
-    for (const finding of sorted) body.append(problem(finding));
+    pop.hidden = !open;
+    if (open) list(findings, error);
+  }
+
+  // The findings grouped by severity and kind, the most pressing first; a
+  // small group shows its findings, a large one or a group of hints is one
+  // line until opened.
+  function list(findings, error) {
+    pop.replaceChildren();
+    if (error) pop.append(div("lint-error", error));
+    if (!findings.length && !error) pop.append(div("lint-none", "Nothing to note."));
+    const groups = new Map();
+    for (const f of findings) {
+      const key = `${f.severity} ${f.code}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+    const ordered = [...groups].sort(([a, x], [b, y]) =>
+      RANK[a.split(" ")[0]] - RANK[b.split(" ")[0]] || y.length - x.length);
+    for (const [key, members] of ordered) {
+      const [severity, code] = key.split(" ");
+      const shown = expanded.has(key) || (severity !== "hint" && members.length <= 5);
+      const group = pop.appendChild(div(`lint-group ${severity}`));
+      const title = group.appendChild(Object.assign(document.createElement("button"), { className: "lint-group-head" }));
+      title.append(span("lint-twist", shown ? "▾" : "▸"), span("lint-code", code),
+        span("lint-quiet", `${members.length} ${WORD[severity]}${members.length === 1 ? "" : "s"}`));
+      if (!shown) title.append(span("lint-sample", members[0].message));
+      title.addEventListener("click", () => {
+        if (shown) expanded.delete(key);
+        else expanded.add(key);
+        render();
+      });
+      if (!shown) continue;
+      const sorted = [...members].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.col - b.col);
+      for (const finding of sorted) group.append(problem(finding));
+    }
   }
 
   function problem(finding) {
-    const row = div(`lint-row ${finding.severity}${finding.stale ? " stale" : ""}`);
+    const row = div(`lint-row${finding.stale ? " stale" : ""}`);
     const line = row.appendChild(div("lint-line"));
     const at = line.appendChild(Object.assign(document.createElement("a"), {
       textContent: `${finding.file}:${finding.line}:${finding.col}`,
     }));
-    at.addEventListener("click", () => reveal(finding));
-    line.append(span("lint-code", finding.code), span("lint-message", finding.message));
-    const why = line.appendChild(button("why?", "The analysis's derivation of this finding"));
+    at.addEventListener("click", () => {
+      setOpen(false);
+      reveal(finding);
+    });
+    line.append(Object.assign(span("lint-message", finding.message), { title: finding.message }));
+    const why = line.appendChild(button("why?", "Why the analysis says this: its derivation, in its own rules"));
     const related = line.appendChild(button("related", "What this relation depends on, and what depends on it"));
     why.addEventListener("click", () => {
       const tag = ++whyTag;
-      const out = row.querySelector(".lint-why") ?? row.appendChild(Object.assign(document.createElement("pre"), { className: "lint-why" }));
-      out.textContent = "rerunning the analysis, recording its derivations…";
+      row.querySelector(".lint-why")?.remove();
+      const out = row.appendChild(div("lint-why"));
+      out.append(div("lint-quiet", "rerunning the analysis, recording its derivations…"));
       whys.set(tag, out);
       send({ t: "lint-why", tag, finding });
     });
-    related.addEventListener("click", () => neighbourhood(relationOf(finding)));
+    related.addEventListener("click", () => {
+      setOpen(false);
+      neighbourhood(relationOf(finding));
+    });
     return row;
+  }
+
+  // A derivation: the chain in words, the tree behind "details".
+  function showWhy(out, nodes) {
+    const chain = explain(nodes);
+    out.replaceChildren();
+    const words = out.appendChild(div("lint-chain"));
+    chain.forEach((text, i) => words.append(div(i ? "lint-step" : "lint-claim", i ? `← ${text}` : text)));
+    if (!chain.length) words.append(div("lint-quiet", "No derivation was recorded for this finding."));
+    const more = out.appendChild(document.createElement("details"));
+    more.append(Object.assign(document.createElement("summary"), { textContent: "details" }));
+    more.append(Object.assign(document.createElement("pre"), { textContent: details(nodes).join("\n") }));
   }
 
   // Jump to a finding where it stands now.
@@ -217,10 +293,12 @@ export function createLint(element, { editor, files, send, changes }) {
         rows = new Map(relations.map(({ name, rows: n }) => [name, n]));
       }
     },
-    why({ tag, lines, error }) {
+    why({ tag, nodes, error }) {
       const out = whys.get(tag);
       whys.delete(tag);
-      if (out) out.textContent = error ? `✗ ${error}` : lines.join("\n");
+      if (!out) return;
+      if (error) out.replaceChildren(div("lint-error", error));
+      else showWhy(out, nodes);
     },
     // "Edit the analysis"
     edit: () => send({ t: "edit-analysis" }),
@@ -263,10 +341,6 @@ function div(className, text) {
 
 function span(className, text) {
   return Object.assign(document.createElement("span"), { className, textContent: text ?? "" });
-}
-
-function dot(kind) {
-  return span(`state ${kind}`);
 }
 
 function button(text, title) {

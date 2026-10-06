@@ -535,9 +535,10 @@ impl Linter {
     }
 
     /// Why the analysis made `finding`: rerun it on the analysis lane with
-    /// its derivations recorded, and ask. The derivation's lines, as the
-    /// REPL's `why` renders them.
-    pub async fn why(&self, finding: &Finding) -> Result<Vec<String>, String> {
+    /// its derivations recorded, and ask. The proof tree's nodes, as the
+    /// REPL's `why` gives them, with the project's files named as it names
+    /// them (web/lint-why.js tells them).
+    pub async fn why(&self, finding: &Finding) -> Result<Vec<serde_json::Value>, String> {
         let (job, analysis) = {
             let state = self.state.lock().expect("lint lock");
             (state.last.clone().ok_or("nothing has been analyzed yet")?, self.config.analysis.current())
@@ -567,16 +568,28 @@ impl Linter {
             quote(&finding.code),
             quote(&finding.message)
         );
-        let outcome = session.execute(&self.lane, &format!("why {fact} depth 12")).await;
+        let outcome = session.execute(&self.lane, &format!("why {fact} depth 16")).await;
         // the run waits at its watch; nothing of it is kept
         session.execute(&self.lane, "abort").await;
         if let Some(error) = outcome.error {
             return Err(error.message);
         }
-        Ok(outcome
+        // the directory as the facts spell it, and as it is
+        let mut prefixes = vec![format!("\"{}/", job.directory.display())];
+        if let Ok(real) = std::fs::canonicalize(&job.directory) {
+            prefixes.push(format!("\"{}/", real.display()));
+        }
+        let mut nodes: Vec<serde_json::Value> = outcome
             .result
-            .and_then(|result| serde_json::from_value(result["lines"].clone()).ok())
-            .unwrap_or_default())
+            .and_then(|result| serde_json::from_value(result["nodes"].clone()).ok())
+            .unwrap_or_default();
+        for node in &mut nodes {
+            if let Some(row) = node["row"].as_str() {
+                let row = prefixes.iter().fold(row.to_owned(), |row, prefix| row.replace(prefix, "\""));
+                node["row"] = row.into();
+            }
+        }
+        Ok(nodes)
     }
 
     /// Write `job`'s facts as the analysis's own `facts.slog`, the program
