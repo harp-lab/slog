@@ -19,7 +19,7 @@
 #include "gzfile.h"
 #include "index.h"
 #include "counts.h"
-#include "protocol.h"   // quoteString, for the value adapter's CELL records
+#include "protocol.h"   // quoteString, for string values and CELL records
 #include <string>
 #include <vector>
 #include <set>
@@ -7183,8 +7183,14 @@ public:
       return "...";
     if (is_int(v))
       return decodeIntString(v);                           // s32 or bignum
+    // A string renders as the Slog literal that reads back to it: this text
+    // is re-read (line-framed (dumprow ...) replies, a REPL row pasted back
+    // as a fact), where a raw `"` or newline would end the value early.
+    // quoteString emits only escapes the Slog lexer decodes.
     else if (is_str(v))
-      return std::string("\"") + decodeString(v) + "\"";   // mono or rope
+      return signature_strings
+        ? std::string("\"") + decodeString(v) + "\""        // see signatureOf
+        : slog::protocol::quoteString(decodeString(v));     // mono or rope
     else if (is_float(v))
     {
       // Shortest round-trippable form, but keep floats visually distinct from
@@ -7342,8 +7348,19 @@ public:
   // order-independent (commutative XOR) and comparable across runs that
   // reassign ids.  Computed over the FULL relation at save (before sampling)
   // and recomputed after replay to detect drift.
+  // Signatures are stored with saved databases and recomputed after every
+  // replay, so they must not move when display rendering does: inside
+  // signatureOf, strings render as they did when signatures were introduced
+  // (unescaped, between quotes), at any nesting depth.
+  static inline thread_local bool signature_strings = false;
+
   std::pair<u64,u64> signatureOf(Relation* rel)
   {
+    struct CanonicalStrings
+    {
+      CanonicalStrings() { signature_strings = true; }
+      ~CanonicalStrings() { signature_strings = false; }
+    } canonical;
     u64 count = 0, checksum = 0;
     const std::vector<u16>* ordp = rel->getAnyIndex();
     if (!ordp) return {0, 0};
