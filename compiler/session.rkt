@@ -1272,10 +1272,70 @@
 
 ;; Send one action and hand its response stream to `read!` (called with
 ;; the session's output port; may read as many lines as the action's
-;; protocol emits -- nothing for silent actions).
+;; protocol emits -- nothing for silent actions).  Actions that carry data
+;; (tuples, names, a counter) go as commands of the same shape: as plugins
+;; the data would be compiled into the source, a clang build per new value.
 (define (session-action! s spec [read! void])
-  (send-plugin! s (action-so spec))
+  (define command (data-action-command spec))
+  (cond
+    [command
+     (write-wire command (session-in s))
+     (newline (session-in s))
+     (flush-output (session-in s))]
+    [else (send-plugin! s (action-so spec))])
   (read! (session-out s)))
+
+;; The command for a data-carrying action spec, or #f for a plugin action.
+;; Names travel as strings and symbol values as the strings they encode as
+;; (the plugin's str_encode of the name), so no datum depends on how a
+;; symbol happens to spell.
+(define (data-action-command spec)
+  (define (name n) (if (symbol? n) (symbol->string n) n))
+  (define (value v) (if (symbol? v) (symbol->string v) v))
+  (define (tuple t) (map value t))
+  (match spec
+    [`(input-state ,rel ,pos (,ts ...))
+     `(input-state ,(name rel) ,pos ,(map tuple ts))]
+    [`(set-overlay ,rel ,pos (,rows ...))
+     `(set-overlay ,(name rel) ,pos
+                   ,(for/list ([row (in-list rows)])
+                      (list (first row) (tuple (second row)))))]
+    [`(,(and verb (or 'set-overlay-positive 'set-overlay-negative
+                      'set-overlay-negative-dred))
+       ,rel (,ts ...))
+     `(,verb ,(name rel) ,(map tuple ts))]
+    [`(begin-update ,(? exact-nonnegative-integer? n)) spec]
+    [`(,(and verb (or 'journal-signs 'dred-reseed)) ,rels ...)
+     `(,verb ,@(map name rels))]
+    [`(stage-update-transitions signed ,(and sign (or 1 -1)) ,rels ...)
+     `(stage-update-transitions signed ,sign ,@(map name rels))]
+    [`(dump-cells ,rel) `(dump-cells ,(name rel))]
+    [`(lookup ,rel ,vals ...) `(lookup ,(name rel) ,@(map value vals))]
+    [_ #f]))
+
+;; `write` for the daemon's reader: lists, atoms, integers, reals, and
+;; strings with only the escapes the reader accepts (Racket's own `write`
+;; may emit \e or \uXXXX, which it refuses).
+(define (write-wire v out)
+  (cond
+    [(pair? v)
+     (write-string "(" out)
+     (for ([x (in-list v)] [i (in-naturals)])
+       (unless (zero? i) (write-string " " out))
+       (write-wire x out))
+     (write-string ")" out)]
+    [(null? v) (write-string "()" out)]
+    [(string? v)
+     (write-string "\"" out)
+     (for ([c (in-string v)])
+       (write-string (case c
+                       [(#\\) "\\\\"] [(#\") "\\\""] [(#\newline) "\\n"]
+                       [(#\tab) "\\t"] [(#\return) "\\r"] [else (string c)])
+                     out))
+     (write-string "\"" out)]
+    [(and (real? v) (not (exact-integer? v)))
+     (write-string (number->string (exact->inexact v)) out)]
+    [else (write v out)]))
 
 (define (read-one-line! s)
   (define line (read-line (session-out s)))

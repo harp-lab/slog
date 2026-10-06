@@ -721,12 +721,23 @@ expect_rx "set-evaluation-needs-id" '\(refused parse [0-9]+ \(verb set-evaluatio
 # for a program's peeled ground facts) and answers once it is in.
 rm -rf build/proto-frozen
 make -C daemon slog-freeze > /dev/null
-printf '(table e 2)\n(e 1 2)\n' | daemon/slog-freeze build/proto-frozen > /dev/null
+printf '(table e 2)\n(e 1 2)\n(e "a b" 3000000000)\n' \
+  | daemon/slog-freeze build/proto-frozen > /dev/null
 racket tests/api/drive.rkt '(import-path "build/proto-frozen")' "(protocol-mode)" \
   "(import-path)" > out/proto-import.log 2>&1
 expect "import-path-answers" "(imported)" out/proto-import.log
 expect "import-path-mode-neutral" "(protocol-mode path)" out/proto-import.log
 expect_rx "import-path-needs-dir" '\(refused parse [0-9]+ \(verb import-path\)' out/proto-import.log
+# Data-carrying actions take their values on the wire and encode them as the
+# plugin's encode-val compiled them: the lookups below match only if a
+# string, an s32 and an mpz-sized integer all encode to the frozen words.
+racket tests/api/drive.rkt '(import-path "build/proto-frozen")' \
+  '(lookup "e" 1 2)' '(lookup "e" "a b" 3000000000)' '(lookup "e" 1 3)' \
+  "(lookup)" > out/proto-lookup.log 2>&1
+if [ "$(grep -c '(found e 1)' out/proto-lookup.log)" -eq 2 ] \
+   && [ "$(grep -c '(found e 0)' out/proto-lookup.log)" -eq 1 ]; then
+  ok "data-verb-values-encode"; else bad "data-verb-values-encode"; fi
+expect_rx "data-verb-malformed" '\(refused parse [0-9]+ \(verb lookup\)' out/proto-lookup.log
 
 # --- 5b. T0(d) uniform command-stack pause record ----------------------------
 # The pure wire formatter has one checked-in transcript corpus covering budget,
