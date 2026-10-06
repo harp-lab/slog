@@ -6092,7 +6092,30 @@
         (string-join (hash-ref maint-result 'lines) "\n"))
       (check-regexp-match #px"watch w2: .*hit" maint-text)
       (check-regexp-match #px"counts valid" maint-text)
-      (void (run3! ":quit"))))
+      (void (run3! ":quit"))
+      ;; prepare-time binding serves level 0 too: a watch on the prepared
+      ;; successor key reports the very run that creates it.  path settles
+      ;; over three non-empty iterations, one hit per barrier.
+      (define s (make-session #:echo void))
+      (define prepared-hits 0)
+      (parameterize
+          ([session-prepare-hook
+            (lambda (_s plan)
+              (match (assq 'actions (cdr (boundary-plan->datum plan)))
+                [(cons _ actions)
+                 (for ([action (in-list actions)])
+                   (match action
+                     [`(create (qname "path") ,key ,_ ,_)
+                      (register-daemon-watch! s "p0" key)]
+                     [_ (void)]))]))]
+           [session-pause-hook
+            (lambda (_s line)
+              (when (regexp-match? #px"\\(cause \\(watch \\(watch-id \"p0\"\\)\\)\\)"
+                                   line)
+                (set! prepared-hits (add1 prepared-hits))))])
+        (session-run! s "tests/reach.slog"))
+      (check-equal? prepared-hits 3)
+      (void (session-close! s))))
 
   ;; T5 slice (c): `replay` at the pre-commit gate.  The parked read's send
   ;; shards are discarded and the SAME read runs again from its origin, so
