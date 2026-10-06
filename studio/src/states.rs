@@ -21,16 +21,21 @@
 //! The notes are in docs/REPL-exploration-kris/notes/repl-timestamps.md.
 
 use crate::lane::Lane;
+use crate::results::{self, Lineage, Plan, Row, SetId};
 use crate::session::{Outcome, Session, SessionView, run_argument};
 use crate::studio::{Event, Origin, Phase, Studio};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::time::Instant;
+
+/// The project store's record of the states.
+pub(crate) const RECORD: &str = "states";
 
 /// Prompts kept per state, the newest.
 const PROMPTS: usize = 50;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// The session before anything.
@@ -43,15 +48,25 @@ pub enum Kind {
     Branch,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Prompt {
     pub line: String,
     pub ok: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+/// A relation's size moved by a state's change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Delta {
+    pub relation: String,
+    pub net: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct State {
     pub id: u64,
+    /// What the author named it (`baseline`), if anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The state this one was derived from; none for t0.
     pub pred: Option<u64>,
     pub kind: Kind,
@@ -67,16 +82,25 @@ pub struct State {
     /// The queries asked at this state, oldest first.
     pub prompts: Vec<Prompt>,
     /// The `stage` and `unstage` lines its change committed, before `line`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub staged: Vec<String>,
+    /// How long making it took, in milliseconds.
+    #[serde(default)]
+    pub ms: Option<u64>,
+    /// The strata its change ran, and the relations whose sizes moved most.
+    #[serde(default)]
+    pub strata: Option<u64>,
+    #[serde(default)]
+    pub deltas: Vec<Delta>,
 }
 
 /// The tree of states, which one the session is at, and which one, if any,
 /// the prompt explores.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct States {
     pub states: Vec<State>,
     pub current: u64,
+    #[serde(default)]
     pub exploring: Option<u64>,
     /// The main lane's server the states were made on (`Lane::generation`).
     #[serde(skip)]
@@ -88,7 +112,7 @@ pub struct States {
 
 /// What a state's entry says of it: `{id, pred}`, on transcript entries and
 /// result sets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Stamp {
     pub id: u64,
     pub pred: Option<u64>,
@@ -99,6 +123,7 @@ impl Default for States {
         Self {
             states: vec![State {
                 id: 0,
+                name: None,
                 pred: None,
                 kind: Kind::Start,
                 line: String::new(),
@@ -107,6 +132,9 @@ impl Default for States {
                 boundary: None,
                 prompts: Vec::new(),
                 staged: Vec::new(),
+                ms: None,
+                strata: None,
+                deltas: Vec::new(),
             }],
             current: 0,
             exploring: None,
@@ -148,8 +176,19 @@ impl States {
         // a change commits what was staged; anything else starts afresh
         let staged = std::mem::take(&mut self.staged);
         let staged = if kind == Kind::Change { staged } else { Vec::new() };
+        let change = result.and_then(|result| result.get("change"));
+        let strata = change.and_then(|change| change["strata"].as_array()).map(|strata| strata.len() as u64);
+        let deltas = change
+            .and_then(|change| change["size-deltas"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|delta| Some(Delta { relation: delta["relation"].as_str()?.to_owned(), net: delta["net"].as_i64()? }))
+            .filter(|delta| delta.net != 0)
+            .take(4)
+            .collect();
         self.states.push(State {
             id,
+            name: None,
             pred: Some(pred),
             kind,
             line: line.to_owned(),
@@ -158,6 +197,9 @@ impl States {
             boundary,
             prompts: Vec::new(),
             staged,
+            ms: None,
+            strata,
+            deltas,
         });
         self.current = id;
         self.exploring = None;
@@ -172,6 +214,30 @@ impl States {
             state.revision = revision.or(state.revision);
             state.boundary = boundary.or(state.boundary.take());
         }
+    }
+
+    /// How long the current state took to make.
+    pub fn timed(&mut self, ms: u64) {
+        let current = self.current as usize;
+        if let Some(state) = self.states.get_mut(current) {
+            state.ms = Some(ms);
+        }
+    }
+
+    /// A state as the author knows it: its name, else `tN`.
+    pub fn label(&self, id: u64) -> String {
+        self.get(id).and_then(|state| state.name.clone()).unwrap_or_else(|| format!("t{id}"))
+    }
+
+    /// The states kept from an earlier studio, whose session is gone: a
+    /// state from nothing, unless the current one already is.
+    pub fn reopened(mut self) -> Self {
+        self.exploring = None;
+        let fresh = self.get(self.current).is_some_and(|state| state.kind == Kind::Start);
+        if !fresh && self.get(self.current).is_some() {
+            self.derive(Kind::Start, "studio restarted", None, None);
+        }
+        self
     }
 
     /// A server that restarted has none of the session: a state from
@@ -233,6 +299,14 @@ pub fn committed(result: &Value) -> bool {
         .is_some_and(|change| change.get("update-revision").is_some_and(|r| !r.is_null()))
 }
 
+/// The kept relations (`r1`, `r2`, …) `text` names.
+pub fn kept_names(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || "()[]".contains(c))
+        .filter(|word| word.len() > 1 && word.starts_with('r') && word[1..].bytes().all(|b| b.is_ascii_digit()))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The update revision and boundary key an answer reports, if any.
 fn names(result: &Value) -> (Option<u64>, Option<String>) {
     let revision = result.pointer("/change/update-revision").and_then(Value::as_u64);
@@ -245,13 +319,32 @@ fn names(result: &Value) -> (Option<u64>, Option<String>) {
 
 // ---- Studio's side ------------------------------------------------------------
 
-/// A past state, re-derived on a lane of its own and made read-only, which
-/// the prompt's commands go to while it is explored.
-pub(crate) struct Explorer {
+/// Lanes kept re-deriving past states, the least recently used reused.
+const PAST_LANES: usize = 2;
+
+/// A past state, re-derived on a lane of its own and made read-only: the
+/// explored state's prompt, and the rows of every view bound to it, are
+/// read here.
+pub(crate) struct Past {
     lane: Lane,
     session: Session,
-    at: u64,
+    /// The state the lane holds; none until one is re-derived.
+    at: Option<u64>,
+    /// The kept relations (`r1`, …) defined on it.
+    defined: BTreeSet<String>,
+    /// The set holding the lane's query cursor.
+    holder: Option<SetId>,
+    used: u64,
 }
+
+#[derive(Default)]
+pub(crate) struct Pasts {
+    lanes: Vec<Past>,
+    clock: u64,
+}
+
+/// Lines the explored state refuses: they would leave it, or unprotect it.
+const LEAVES: [&str; 8] = ["mode", "run", "discard", "open", "use", "save", "activate", "abort"];
 
 impl Studio {
     pub(crate) fn states(&self) -> std::sync::MutexGuard<'_, States> {
@@ -264,8 +357,12 @@ impl Studio {
         states.stamp(states.current)
     }
 
-    fn publish_states(&self) {
+    /// Show every tab the states, and keep them in the project's store.
+    pub(crate) fn publish_states(&self) {
         let view = self.states().clone();
+        if let Err(error) = self.store_write(RECORD, &view) {
+            self.trouble(&format!("cannot keep the session's states: {error}"));
+        }
         self.publish(Event::States(view));
     }
 
@@ -281,15 +378,18 @@ impl Studio {
             match (origin, &outcome.result) {
                 (Origin::Evaluate, Some(result)) if outcome.line.starts_with("run ") && !outcome.session.held => {
                     states.derive(Kind::Run, &outcome.line, version, Some(result));
+                    states.timed(outcome.ms);
                 }
                 (Origin::Evaluate, Some(result)) if outcome.line == "tables" => states.name(current, result),
                 (Origin::Evaluate, _) => return,
                 // a held run that commits is its Run's state
                 (Origin::Repl, Some(result)) if committed(result) && before.held => {
                     states.derive(Kind::Run, &outcome.line, version, Some(result));
+                    states.timed(outcome.ms);
                 }
                 (Origin::Repl, Some(result)) if committed(result) => {
                     states.derive(Kind::Change, &outcome.line, None, Some(result));
+                    states.timed(outcome.ms);
                 }
                 (Origin::Repl, _) => states.ask(current, &outcome.line, outcome.ok()),
             }
@@ -297,93 +397,240 @@ impl Studio {
         self.publish_states();
     }
 
-    /// Explore state `id`, read-only, on a lane of its own; `None`, or the
-    /// current state, returns the prompt to the current state.
+    /// Name state `id` (`baseline`, `after the fix`); an empty name removes
+    /// it.
+    pub fn name_state(&self, id: u64, name: &str) {
+        let name: String = name.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect();
+        if let Some(state) = self.states().states.get_mut(id as usize) {
+            state.name = (!name.is_empty()).then_some(name);
+        }
+        self.publish_states();
+    }
+
+    /// Explore state `id`, read-only; `None`, or the current state,
+    /// returns the prompt to the current state.
     pub async fn explore(&self, id: Option<u64>) {
-        let mut explorer = self.explorer.lock().await;
         let target = id.filter(|id| {
             let states = self.states();
             *id != states.current && states.get(*id).is_some()
         });
         let Some(target) = target else {
-            if let Some(gone) = explorer.take() {
-                gone.lane.shutdown().await;
-            }
             self.states().exploring = None;
             return self.publish_states();
         };
-        let started = Instant::now();
-        let steps = match self.replay_lines(target) {
-            Ok(steps) => steps,
-            Err(why) => return self.trouble_states(&format!("cannot explore t{target}: {why}")),
-        };
-        let replayed = steps.len();
-        let ex = explorer.get_or_insert_with(|| {
-            let lane = Lane::new(self.lane.root().to_path_buf(), self.lane.status().borrow().mode);
-            Explorer { session: Session::new(&lane), lane, at: target }
-        });
-        // each state is re-derived in a fresh session
-        let fresh = [
-            ex.session.view().held.then(|| "abort".to_owned()),
-            ex.session.view().current.is_some().then(|| "discard session".to_owned()),
-        ];
-        for line in fresh.into_iter().flatten().chain(steps) {
-            if let Some(error) = ex.session.execute(&ex.lane, &line).await.error {
-                if let Some(gone) = explorer.take() {
-                    gone.lane.shutdown().await;
-                }
+        let mut pasts = self.pasts.lock().await;
+        match self.past_lane(&mut pasts, target).await {
+            Ok(_) => self.states().exploring = Some(target),
+            Err(why) => {
                 self.states().exploring = None;
-                return self.trouble_states(&format!("cannot re-derive t{target}: `{line}`: {}", error.message));
+                self.trouble(&why);
             }
         }
-        // Protects the explored database; with none (t0) there is nothing
-        // to protect.
-        if ex.session.view().current.is_some()
-            && let Some(error) = ex.session.execute(&ex.lane, "mode readonly").await.error
-        {
-            self.trouble(&format!("t{target} could not be made read-only: {}", error.message));
-        }
-        ex.at = target;
-        self.states().exploring = Some(target);
-        self.publish(Event::Log {
-            line: format!(
-                "exploring t{target}, read-only: re-derived in {:.1} s from {replayed} step{}",
-                started.elapsed().as_secs_f64(),
-                if replayed == 1 { "" } else { "s" }
-            ),
-        });
+        drop(pasts);
         self.publish_states();
     }
 
     /// Answer `line` at the explored state, if one is explored.
     pub(crate) async fn explore_command(&self, line: &str) -> bool {
-        let mut explorer = self.explorer.lock().await;
-        let Some(ex) = explorer.as_mut() else { return false };
-        // a new state since (a Run) ended the exploring
-        if self.states().exploring != Some(ex.at) {
-            if let Some(gone) = explorer.take() {
-                gone.lane.shutdown().await;
-            }
-            return false;
-        }
+        let Some(at) = self.states().exploring else { return false };
+        self.run_past(line, None, at).await;
+        true
+    }
+
+    /// Run `line` at past state `at`, read-only: a query's answers open a
+    /// set bound to `at`, refining `lineage`'s set when given.
+    pub(crate) async fn run_past(&self, line: &str, lineage: Option<Lineage>, at: u64) {
         let started = Instant::now();
-        let mut outcome = ex.session.execute(&ex.lane, line).await;
-        outcome.ms = started.elapsed().as_millis() as u64;
-        let state = {
-            let mut states = self.states();
-            states.ask(ex.at, line, outcome.ok());
-            states.stamp(ex.at)
+        let stamp = self.states().stamp(at);
+        let verb = line.split_whitespace().next().unwrap_or("");
+        let mut pasts = self.pasts.lock().await;
+        let (mut shown, set) = match self.past_lane(&mut pasts, at).await {
+            Err(why) => (Session::failure_of(line, "state", &why), None),
+            Ok(_) if LEAVES.contains(&verb) => {
+                let why = format!("{} is read-only: `{verb}` would leave it; branch from it to change it", self.states().label(at));
+                (Session::failure_of(line, "state", &why), None)
+            }
+            Ok(past) => {
+                self.define_kept(past, line).await;
+                let outcome = past.session.execute(&past.lane, line).await;
+                past.holder = None;
+                let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
+                match (query, results::rows_line(line)) {
+                    (Some("rows" | "exists"), Some(read)) => {
+                        let (shown, set) = self
+                            .open_set(&mut past.session, &past.lane, line, &read, &outcome, lineage, stamp, false)
+                            .await;
+                        past.holder = set;
+                        (shown, set)
+                    }
+                    _ => (outcome, None),
+                }
+            }
         };
-        drop(explorer);
+        drop(pasts);
+        shown.ms = started.elapsed().as_millis() as u64;
+        self.states().ask(at, line, shown.ok());
+        self.publish_sets(set);
         self.publish(Event::Entry {
             origin: Origin::Repl,
-            set: None,
-            state,
+            set,
+            state: stamp,
             exploring: true,
-            outcome,
+            outcome: shown,
         });
         self.publish_states();
-        true
+    }
+
+    /// Rows `start..end` of set `id`, which is bound to past state `at`:
+    /// read on a lane holding `at`.
+    pub(crate) async fn rows_past(&self, id: SetId, start: u64, end: u64, at: u64) -> Result<Vec<Row>, String> {
+        let mut pasts = self.pasts.lock().await;
+        let label = self.states().label(at);
+        self.results().set_loading(id, Some(format!("reading at {label}")));
+        self.publish_sets([id]);
+        let served = async {
+            let past = self.past_lane(&mut pasts, at).await?;
+            let mut cursor_lost = false;
+            loop {
+                let plan = self.results().plan(id, start, end);
+                let line = match plan {
+                    Plan::Serve(rows) => break Ok(rows),
+                    Plan::Fail(why) => break Err(why),
+                    Plan::More if past.holder == Some(id) => "more".to_owned(),
+                    Plan::More | Plan::Rerun(_) => {
+                        let read = self.results().read_line(id).ok_or_else(|| format!("{id} is no longer kept"))?;
+                        self.define_kept(past, &read).await;
+                        read
+                    }
+                };
+                let outcome = past.session.execute(&past.lane, &line).await;
+                past.holder = Some(id);
+                let absorbed = match &outcome.result {
+                    Some(result) => self.results().absorb_past(id, result),
+                    None => Err(outcome.error.map_or_else(String::new, |error| error.message)),
+                };
+                match absorbed {
+                    Ok(()) => {}
+                    Err(_) if line == "more" && !cursor_lost => {
+                        cursor_lost = true;
+                        past.holder = None;
+                    }
+                    Err(why) => break Err(why),
+                }
+            }
+        }
+        .await;
+        drop(pasts);
+        self.results().set_loading(id, None);
+        self.publish_sets([id]);
+        served
+    }
+
+    /// Run set `id`'s query again at the current state, as a new set.
+    pub async fn show_now(&self, id: SetId) {
+        let Some(query) = self.results().query_line(id) else {
+            return self.trouble(&format!("{id} is no longer kept"));
+        };
+        self.run_main(&query, None).await;
+    }
+
+    /// A lane holding past state `at`: one that holds it already, else the
+    /// least recently used, re-derived.
+    async fn past_lane<'a>(&self, pasts: &'a mut Pasts, at: u64) -> Result<&'a mut Past, String> {
+        pasts.clock += 1;
+        let clock = pasts.clock;
+        let index = match pasts.lanes.iter().position(|past| past.at == Some(at)) {
+            Some(index) => index,
+            None => {
+                if pasts.lanes.len() < PAST_LANES {
+                    let lane = Lane::new(self.lane.root().to_path_buf(), self.lane.status().borrow().mode);
+                    pasts.lanes.push(Past {
+                        session: Session::new(&lane),
+                        lane,
+                        at: None,
+                        defined: BTreeSet::new(),
+                        holder: None,
+                        used: 0,
+                    });
+                }
+                let index = (0..pasts.lanes.len()).min_by_key(|&i| pasts.lanes[i].used).expect("a lane");
+                self.rederive(&mut pasts.lanes[index], at).await?;
+                index
+            }
+        };
+        let past = &mut pasts.lanes[index];
+        past.used = clock;
+        Ok(past)
+    }
+
+    /// Re-derive state `at` on `past`'s lane, in a fresh session, and make
+    /// it read-only.
+    async fn rederive(&self, past: &mut Past, at: u64) -> Result<(), String> {
+        let label = self.states().label(at);
+        past.at = None;
+        past.defined.clear();
+        past.holder = None;
+        let started = Instant::now();
+        let steps = self.replay_lines(at).map_err(|why| format!("cannot re-derive {label}: {why}"))?;
+        let replayed = steps.len();
+        let fresh = [
+            past.session.view().held.then(|| "abort".to_owned()),
+            past.session.view().current.is_some().then(|| "discard session".to_owned()),
+        ];
+        for line in fresh.into_iter().flatten().chain(steps) {
+            if let Some(error) = past.session.execute(&past.lane, &line).await.error {
+                return Err(format!("cannot re-derive {label}: `{line}`: {}", error.message));
+            }
+        }
+        // with no database (t0) there is nothing to protect
+        if past.session.view().current.is_some()
+            && let Some(error) = past.session.execute(&past.lane, "mode readonly").await.error
+        {
+            return Err(format!("{label} could not be made read-only: {}", error.message));
+        }
+        past.at = Some(at);
+        self.publish(Event::Log {
+            line: format!(
+                "{label} re-derived, read-only, in {:.1} s from {replayed} step{}",
+                started.elapsed().as_secs_f64(),
+                if replayed == 1 { "" } else { "s" }
+            ),
+        });
+        Ok(())
+    }
+
+    /// Define on `past` the kept relations `line` names, and those their
+    /// definitions name, that it does not have yet.
+    async fn define_kept(&self, past: &mut Past, line: &str) {
+        let mut wanted: Vec<(String, String)> = Vec::new();
+        let mut pending = vec![line.to_owned()];
+        while let Some(text) = pending.pop() {
+            for name in kept_names(&text) {
+                if past.defined.contains(&name) || wanted.iter().any(|(known, _)| *known == name) {
+                    continue;
+                }
+                if let Some(definition) = self.results().definition(&name).map(str::to_owned) {
+                    pending.push(definition.clone());
+                    wanted.push((name, definition));
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        // those named last are needed first
+        wanted.reverse();
+        let _ = past.session.execute(&past.lane, "mode mutable").await;
+        for (name, definition) in wanted {
+            match past.session.execute(&past.lane, &definition).await.error {
+                None => {
+                    past.defined.insert(name);
+                }
+                Some(error) => self.trouble(&format!("cannot keep {name} at a past state: {}", error.message)),
+            }
+        }
+        let _ = past.session.execute(&past.lane, "mode readonly").await;
+        past.holder = None;
     }
 
     /// Continue from state `id`: re-derive it in a fresh session on the main
@@ -392,13 +639,11 @@ impl Studio {
         if self.states().get(id).is_none() {
             return self.trouble_states(&format!("no state t{id}"));
         }
+        let label = self.states().label(id);
         let steps = match self.replay_lines(id) {
             Ok(steps) => steps,
-            Err(why) => return self.trouble_states(&format!("cannot branch from t{id}: {why}")),
+            Err(why) => return self.trouble_states(&format!("cannot branch from {label}: {why}")),
         };
-        if let Some(gone) = self.explorer.lock().await.take() {
-            gone.lane.shutdown().await;
-        }
         let mut session = self.session_lock().await;
         let started = Instant::now();
         self.publish(Event::Evaluation { phase: Phase::Start, ok: false, ms: 0 });
@@ -435,9 +680,14 @@ impl Studio {
                 break;
             }
         }
-        self.states().generation = self.lane.generation();
+        let ms = started.elapsed().as_millis() as u64;
+        {
+            let mut states = self.states();
+            states.generation = self.lane.generation();
+            states.timed(ms);
+        }
         self.publish_states();
-        self.publish(Event::Evaluation { phase: Phase::Done, ok, ms: started.elapsed().as_millis() as u64 });
+        self.publish(Event::Evaluation { phase: Phase::Done, ok, ms });
     }
 
     /// The lines that re-derive state `id` in a fresh session: its Run's
@@ -468,9 +718,12 @@ impl Studio {
         let files = self.version_files(version)?;
         let (_, main, project) = self.program();
         let project: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        // named by its contents: another project's version 3 is another
+        // directory
+        let contents = crate::hash::Hash::of(serde_json::to_string(&files).unwrap_or_default().as_bytes());
         let directory = std::env::temp_dir()
             .join(format!("slog-studio-{}", std::process::id()))
-            .join(format!("{project}-v{version}"));
+            .join(format!("{project}-v{version}-{}", &contents.to_string()[..12]));
         for (path, text) in &files {
             let target = directory.join(path);
             if let Some(parent) = target.parent() {
@@ -494,8 +747,12 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::{Kind, States, committed};
-    use crate::lane::Mode;
+    use crate::lane::{Lane, Mode};
+    use crate::projects::Projects;
+    use crate::results::{self, SetId};
     use crate::store::tests::Scratch;
+    use crate::studio::Studio;
+    use slog_repl::server::project_root;
     use crate::studio::Event;
     use crate::studio::tests::studio;
     use serde_json::json;
@@ -640,6 +897,96 @@ mod tests {
         studio.command("?(path 1 X)").await;
         let seen = entries(&mut events);
         assert_eq!((seen[0].1, seen[0].2), (7, false), "{seen:?}");
+        studio.lane.shutdown().await;
+    }
+
+    /// A chain 1 → 2 → … → 15: its `path` has 105 rows, more than a page.
+    fn chain() -> String {
+        let mut text = "table (edge int int)\ntable (path int int)\nrule (edge X Y) --> (path X Y)\n\
+                        rule (path X Y) (edge Y Z) --> (path X Z)\n"
+            .to_owned();
+        for i in 1..15 {
+            text.push_str(&format!("rule (edge {i} {})\n", i + 1));
+        }
+        text
+    }
+
+    /// The set the newest entry opened.
+    fn opened(events: &mut tokio::sync::broadcast::Receiver<Event>) -> SetId {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                Event::Entry { set, .. } => set,
+                _ => None,
+            })
+            .last()
+            .expect("a set opened")
+    }
+
+    /// A set from t1 read past its first page while the session is at t2
+    /// reads t1's rows, not the live session's; its refinement runs at t1;
+    /// and "show now" runs its query at t2.
+    #[tokio::test]
+    async fn a_set_pages_at_its_own_state() {
+        let scratch = Scratch::new("paging");
+        let studio = studio(&scratch, Mode::Fast, &chain());
+        let mut events = studio.subscribe();
+        studio.evaluate().await;
+        studio.command("?(path X Y)").await;
+        let r1 = opened(&mut events);
+        studio.command("add (edge 15 16)").await;
+        assert_eq!(studio.states().current, 2);
+        assert_eq!(studio.results().past(r1, 2), Some(1));
+
+        let rows = studio.rows(r1, 0, 1000).await.expect("rows at t1");
+        assert_eq!(rows.len(), 105, "t1's path, not t2's 120");
+        assert_eq!(studio.result_views().iter().find(|v| v.id == r1).unwrap().state.unwrap().id, 1);
+
+        let (line, lineage) = studio
+            .refinement(r1, &results::Refinement::Filter { column: 0, value: "1".into(), guard: None })
+            .expect("a refinement");
+        studio.run(&line, Some(lineage)).await;
+        let r2 = opened(&mut events);
+        let view = studio.result_views().into_iter().find(|v| v.id == r2).unwrap();
+        assert_eq!((view.state.unwrap().id, view.total), (1, results::Total::Exact(14)), "refined at t1");
+
+        studio.show_now(r1).await;
+        let r3 = opened(&mut events);
+        let rows = studio.rows(r3, 0, 1000).await.expect("rows at t2");
+        assert_eq!(rows.len(), 120);
+        assert_eq!(studio.result_views().iter().find(|v| v.id == r3).unwrap().state.unwrap().id, 2);
+        studio.lane.shutdown().await;
+    }
+
+    /// A studio started again has the states, their names, and the result
+    /// sets, each still read at its state; the session is new.
+    #[tokio::test]
+    async fn states_and_sets_survive_a_restart() {
+        let scratch = Scratch::new("reopen");
+        let studio = studio(&scratch, Mode::Fast, &chain());
+        let mut events = studio.subscribe();
+        studio.evaluate().await;
+        studio.command("?(path X Y)").await;
+        let r1 = opened(&mut events);
+        studio.name_state(1, "  the   baseline ");
+        studio.command("add (edge 15 16)").await;
+        studio.lane.shutdown().await;
+        drop(studio);
+
+        let projects = Projects::new(scratch.path());
+        let (project, files) = projects.open("p").expect("open");
+        let lane = Lane::new(project_root().expect("repository root"), Mode::Fast);
+        let studio = Studio::new(projects, project, files, lane, "test".to_owned());
+        {
+            let states = studio.states();
+            assert_eq!(states.label(1), "the baseline");
+            assert_eq!(states.states.len(), 4, "t0, the Run, the add, and the restart");
+            let restarted = states.get(states.current).unwrap();
+            assert_eq!((restarted.kind.clone(), restarted.pred), (Kind::Start, Some(2)));
+        }
+        let view = studio.result_views().into_iter().find(|v| v.id == r1).expect("r1 is back");
+        assert_eq!(view.state.map(|stamp| stamp.id), Some(1));
+        let rows = studio.rows(r1, 0, 1000).await.expect("rows at t1");
+        assert_eq!(rows.len(), 105);
         studio.lane.shutdown().await;
     }
 

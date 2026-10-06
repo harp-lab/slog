@@ -22,6 +22,7 @@ import { initCalls } from "./calls.js";
 import { initTimeline } from "./timeline.js";
 import { createCheck } from "./check.js";
 import { createInspector } from "./inspect.js";
+import { installStamps, noteSet, stateName } from "./stamp.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -132,6 +133,7 @@ const trace = initTrace({
 // The session's states, by logical timestamp, at the prompt and in each
 // entry's gutter; a click explores a past one (timeline.js).
 const timeline = initTimeline({ at: $("stamp"), panel: $("state-tree"), send });
+installStamps({ send }); // every stamp's card, and its rename
 // The Calls tab: the run's demand calls (calls.js).
 const calls = initCalls({
   quiet,
@@ -173,9 +175,10 @@ const receive = {
     state.session = snapshot.session;
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
+    snapshot.results.forEach(noteSet);
+    timeline.states(snapshot.states); // before anything stamped
     results.init(snapshot.results);
     trace.tracing(snapshot.tracing);
-    timeline.states(snapshot.states);
     structure.observe({ result: snapshot.tables }); // completion: the session's relations, after a reload
     snapshot.results.forEach(offerRelation);
     history.load();
@@ -274,6 +277,7 @@ const receive = {
     structure.setDatabases(names);
   },
   "result-set": (view) => {
+    noteSet(view);
     results.update(view);
     offerRelation(view);
   },
@@ -388,6 +392,7 @@ function offerRelation(view) {
     name: view.relation,
     arity: view.columns.length,
     detail: view.columns.map((column) => column.type ?? ""),
+    at: view.state ? stateName(view.state) : null,
   });
 }
 

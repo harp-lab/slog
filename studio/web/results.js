@@ -10,6 +10,7 @@
 // set does besides (scrolling, the cursor, column layout, a sort of its
 // cached rows) it tells the other over a BroadcastChannel.
 
+import { isPast, onStates, stamped, stateName, states } from "./stamp.js";
 import { createTable, filterRefinement, openMenu, renderTree, sortedOrder, toCSV, toFacts, toTSV, treeOf } from "./table.js";
 
 const REQUEST = 200; // rows asked for at once while scrolling
@@ -70,6 +71,9 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     ["Copy selection as Slog facts", () => copySelection("facts")],
     ["Download the set as CSV", download],
   ]));
+  // A set of a past state reads there; this runs its query at the session's.
+  const nowButton = button("Show now", "Run the query again at the session's current state, as a new set",
+    () => shown && send({ t: "show-now", set: shown }));
   const expandButton = full ? null : button("Expand", "Show the set over the whole page", () => expand(!expanded));
   if (!full) button("Pop out ⧉", "Open the set in a window of its own, beside the studio", popOut);
   const status = panel.appendChild(element("div", "rs-status"));
@@ -422,6 +426,12 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
 
   // ---- rendering ----------------------------------------------------------
 
+  // A new current state makes sets past.
+  onStates(() => {
+    renderTabs();
+    renderStatus(sets.get(shown));
+  });
+
   function renderTabs() {
     transcriptTab?.setAttribute("aria-selected", String(shown === null));
     const existing = new Map([...tabs.querySelectorAll(".rs-tab[data-set]")].map((tab) => [tab.dataset.set, tab]));
@@ -431,7 +441,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
       if (!tab) {
         tab = tabs.appendChild(element("button", "rs-tab"));
         tab.dataset.set = id;
-        tab.append(element("span", "rs-dot"), element("span", "rs-name", id));
+        tab.append(element("span", "rs-dot"), stamped(id, view.state, { className: "rs-name" }));
         const close = tab.appendChild(element("span", "rs-close", "×"));
         close.title = "Close this tab";
         close.addEventListener("click", (event) => {
@@ -446,7 +456,8 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
       tab.title = view.parent ? `${view.query}\n${view.parent.parent} · ${view.parent.refinement}` : view.query;
       tab.setAttribute("aria-selected", String(id === shown));
       tab.classList.toggle("live", view.cursor === "live");
-      tab.classList.toggle("stale", view.stale);
+      tab.classList.toggle("stale", view.stale && !view.state);
+      tab.classList.toggle("past", isPast(view.state));
     }
     for (const tab of existing.values()) tab.remove();
   }
@@ -475,7 +486,12 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
     const { first, last } = table.range();
     const range = last > first ? `rows ${number(first + 1)}–${number(last)}` : "no rows";
     status.append(element("span", "rs-range", `${range} of ${totalText(view)}`));
-    const cursor = view.stale
+    const past = isPast(view.state);
+    nowButton.hidden = !past;
+    nowButton.textContent = `Show at ${stateName(states().current)}`;
+    const cursor = past
+      ? ["past", `read at ${stateName(view.state)}, read-only: rows past the cache re-derive it`]
+      : view.stale
       ? ["stale", "stale: the database changed since this ran; press Enter in the query to run it again"]
       : view.cursor === "live" ? ["live", "holds the query cursor"]
       : view.cursor === "parked" ? ["parked", "parked: rows past the cache run the query again"]
@@ -501,7 +517,7 @@ export function createResults({ tabs, panel, transcript, send, run, full = false
         "rows can repeat: the projection hides variables, and keeps one row per binding (audit Q-02)"));
     }
     // A stale set's refusal to read past its cache repeats its state.
-    if (set.error && !view.stale) status.append(element("span", "rs-error", set.error));
+    if (set.error && (!view.stale || view.state)) status.append(element("span", "rs-error", set.error));
     if (flash.textContent) status.append(flash);
   }
 

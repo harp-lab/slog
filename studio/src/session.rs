@@ -145,11 +145,19 @@ impl Session {
     /// An outcome for a step that failed before reaching the server.
     pub fn failure(&self, line: &str, kind: &str, message: &str) -> Outcome {
         Outcome {
+            session: self.view.clone(),
+            ..Self::failure_of(line, kind, message)
+        }
+    }
+
+    /// An outcome for a line refused before any session saw it.
+    pub fn failure_of(line: &str, kind: &str, message: &str) -> Outcome {
+        Outcome {
             line: line.to_owned(),
             ms: 0,
             result: None,
             error: Some(server_error(kind, message)),
-            session: self.view.clone(),
+            session: SessionView::default(),
         }
     }
 

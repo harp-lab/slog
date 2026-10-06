@@ -17,6 +17,7 @@ import "./breakpoints.test.js";
 import "./timeline.test.js";
 import "./static-check.test.js";
 import "./inspect.test.js";
+import "./stamp.test.js";
 import { finish } from "./check.js";
 
 finish();
