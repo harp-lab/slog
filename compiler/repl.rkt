@@ -4143,8 +4143,14 @@
   ;; The server outlives the programs it compiles: a syntax error must come
   ;; back as this command's failure, never print to the bootstrap pipe and
   ;; exit the process (the parser's command-line default).
-  (parameterize ([parse-errors-raise? #t])
-    (dispatch-command/held state source)))
+  (define result
+    (parameterize ([parse-errors-raise? #t])
+      (dispatch-command/held state source)))
+  ;; Whether a run is held after this command, read once it has finished:
+  ;; a resolved run's own result is built on the held thread before the
+  ;; hold is released, and an observation made at a stop (a query, frames)
+  ;; is not itself a pause, so neither answers this by its kind (audit D-34).
+  (hash-set result 'held (and (server-state-held state) #t)))
 
 (define (dispatch-command/held state source)
   (define held (server-state-held state))
@@ -4234,6 +4240,9 @@
                      (if rs (or (repl-session-database rs) "scratch") "none"))
              (format "resident databases: ~a"
                      (hash-count (server-state-sessions state))))
+       (if (server-state-held state)
+           (list "a run is held: continue, commit, replay or abort resolves it")
+           '())
        (for/list ([p (in-list pending)])
          (match-define (list anchor rel adds dels) p)
          (format "pending~a: ~a~a~a"
@@ -4836,6 +4845,24 @@
   (define framed (get-output-bytes out))
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
+
+  ;; Every answer says whether a run is held, including an observation made
+  ;; at the stop, and the answer that releases it says it is not.
+  (let ([held-environment (environment-variables-copy (current-environment-variables))])
+    (environment-variables-set! held-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! held-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables held-environment])
+      (define state (make-server-state))
+      (define (held? line) (hash-ref (dispatch-command state line) 'held))
+      (check-false (held? "run tests/reach.slog"))
+      (check-false (held? "break r1"))
+      (check-true (held? "run tests/reach.slog"))
+      (check-true (held? "?count (path X Y)"))
+      (check-regexp-match #px"a run is held"
+                          (string-join (hash-ref (dispatch-command state ":status") 'lines)))
+      (check-false (held? "abort"))
+      (void (dispatch-command state ":quit"))))
 
   ;; A syntax error is the command's failure, positioned at the offending
   ;; token -- the parser must not print to the bootstrap pipe and exit the
