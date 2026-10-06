@@ -101,6 +101,11 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
   function load(main, files) {
     state.main = main;
     const known = state.files;
+    // Typing not yet taken from the editor is unsent text too.
+    const typing = known.get(state.active);
+    if (state.editTimer !== null && typing) typing.local = editor.get();
+    clearTimeout(state.editTimer);
+    state.editTimer = null;
     state.files = new Map(files.map(({ path, text, version, saved }) => {
       const mine = known.get(path);
       const local = mine?.version === version ? mine.local : text;
@@ -111,8 +116,6 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
     if (!state.tabs.length) state.tabs = [main];
     const active = state.files.has(state.active) ? state.active : state.tabs[0];
     state.active = null;
-    clearTimeout(state.editTimer);
-    state.editTimer = null;
     open(active);
     pump();
   }
