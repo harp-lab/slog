@@ -12,7 +12,7 @@ use crate::agent::{Agent, AgentEvent};
 use crate::lane::{Lane, LaneStatus, Mode};
 use crate::projects::{Project, Projects, valid_file};
 use crate::results::{
-    self, Lineage, MAX_REQUEST_ROWS, Opening, Plan, Refinement, Results, Row, SORT_ROWS, SetId, Total,
+    self, Kept, Lineage, MAX_REQUEST_ROWS, Opening, Plan, Refinement, Results, Row, SORT_ROWS, SetId,
 };
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
@@ -954,12 +954,17 @@ impl Studio {
         self.run_main(line, lineage).await;
     }
 
-    /// Run a REPL line on the main lane, at the current state.
+    /// Run a REPL line on the main lane, at the current state. A query
+    /// makes the result set the studio names next.
     pub(crate) async fn run_main(&self, line: &str, lineage: Option<Lineage>) {
         let mut session = self.session.lock().await;
         let before = session.view().clone();
         let started = Instant::now();
-        let outcome = session.execute(&self.lane, line).await;
+        // A held stop's answers stay in the transcript: keeping them as a
+        // relation would define one in the middle of the held run.
+        let id = (!before.held && results::naming(line, None) != line.trim()).then(|| self.results().reserve());
+        let sent = results::naming(line, id);
+        let outcome = Outcome { line: line.to_owned(), ..session.execute(&self.lane, &sent).await };
         self.observe(Origin::Repl, &before, &outcome);
         let touched = {
             let mut results = self.results();
@@ -967,9 +972,12 @@ impl Studio {
             let mut touched: Vec<SetId> = results.park().into_iter().collect();
             if changes_database(&before, &outcome) {
                 touched = results.changed();
+                // the session's live sets, re-counted, are current again
+                if let Some(sets) = outcome.result.as_ref().and_then(|result| result.pointer("/change/sets")) {
+                    results.settled(sets, self.stamp());
+                }
             }
             if let Some(result) = &outcome.result {
-                results.learn(result);
                 self.keep_tables(Some(result));
             }
             touched
@@ -978,13 +986,10 @@ impl Studio {
             self.publish_database();
         }
         self.publish_sets(touched);
-        let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
-        let (mut shown, set) = match (query, results::rows_line(line)) {
-            // A held stop's answers stay in the transcript: keeping them as a
-            // relation would define one in the middle of the held run.
-            (Some("rows" | "exists"), Some(read)) if !session.view().held => {
+        let (mut shown, set) = match id {
+            Some(id) if outcome.result.as_ref().is_some_and(|result| result.get("set").is_some()) => {
                 let state = self.stamp();
-                self.open_set(&mut session, &self.lane, line, &read, &outcome, lineage, state, true).await
+                self.open_set(&mut session, &self.lane, id, &outcome, lineage, state, true).await
             }
             _ => (outcome, None),
         };
@@ -997,79 +1002,56 @@ impl Studio {
         }
     }
 
-    /// Open the set a query's answers make. They are kept as the relation
-    /// the set is named for and read back from it; if they cannot be kept,
-    /// the set reads the query itself, and says why. `read` is the query's
-    /// rows form and `answered` its answer as typed. Returns the entry to
-    /// show for the query, and the set.
-    /// `session` is on `lane`, at `state`; `main` when that is the main
-    /// lane, the only one whose answers are kept as a relation.
+    /// Open set `id`, which the session made answering `answered`. A rows
+    /// or existence query's answers are kept as the relation the set is
+    /// named for (`keep rN`), and read back from it; if they cannot be kept,
+    /// the set reads the query's rows, and says why. A count is of matches,
+    /// and stays the query's. Returns the entry to show for the query, and
+    /// the set. `session` is on `lane`, at `state`; `main` when that is the
+    /// main lane, the only one whose answers are kept as a relation.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open_set(
         &self,
         session: &mut Session,
         lane: &Lane,
-        line: &str,
-        read: &str,
+        id: SetId,
         answered: &Outcome,
         lineage: Option<Lineage>,
         state: Stamp,
         main: bool,
     ) -> (Outcome, Option<SetId>) {
-        let rows = answered.result.as_ref().is_some_and(|result| result["query-mode"] == "rows");
-        // A rows page's title names the projection. An existence answer has
-        // none: ask for the rows, which a query without variables also
-        // answers with an existence.
-        let page = if rows {
-            answered.result.clone()
-        } else {
-            match session.execute(lane, read).await.result {
-                Some(result) => Some(result).filter(|result| result["query-mode"] == "rows"),
-                None => return (answered.clone(), None),
+        let Some(answer) = &answered.result else { return (answered.clone(), None) };
+        let counted = answer["query-mode"] == "count";
+        let kept = if main && !counted {
+            let outcome = session.execute(lane, &format!("keep {id}")).await;
+            match (outcome.result.as_ref().and_then(Kept::of), outcome.error) {
+                (Some(kept), _) => Ok(kept),
+                (None, error) => Err(error.map_or_else(|| "the keep's answer was unreadable".to_owned(), |error| error.message)),
             }
-        };
-        let keep = if main {
-            self.results().keep(read, page.as_ref())
         } else {
             Err(String::new())
         };
-        let (read, kept) = match keep {
-            Ok(keep) => match session.execute(lane, &keep.definition).await.error {
-                None => (keep.read, Ok(keep.kept)),
-                Some(error) => (read.to_owned(), Err(error.message)),
-            },
-            Err(why) => (read.to_owned(), Err(why)),
+        let (read, columns, kept) = match kept {
+            Ok((kept, read, columns)) => (read, columns, Ok(kept)),
+            Err(why) => (
+                answer["set"]["read"].as_str().unwrap_or_default().to_owned(),
+                results::columns_of(answer),
+                Err(why),
+            ),
         };
-        // Counted before the cursor opens: once it does, any other command
-        // would discard it (audit Q-10).
-        let total = match results::count_line(&read) {
-            Some(count) => {
-                let counted = session.execute(lane, &count).await;
-                match (&counted.result, counted.error) {
-                    (Some(result), _) => {
-                        Total::of_count(result).ok_or_else(|| "the count's answer was unreadable".to_owned())
-                    }
-                    (None, error) => Err(error.map_or_else(String::new, |error| error.message)),
-                }
-            }
-            None => Ok(Total::Unknown),
+        // The first page: the answer's own, while it holds the cursor; else
+        // the set read again (`keep` discards the cursor, and a count shows
+        // no rows).
+        let page = if main || counted {
+            Outcome { line: answered.line.clone(), ..session.execute(lane, &format!("show {id}")).await }
+        } else {
+            answered.clone()
         };
-        let outcome = session.execute(lane, &read).await;
-        let opened = match &outcome.result {
+        let opened = match &page.result {
             Some(result) => {
-                let opening = Opening {
-                    query: line.to_owned(),
-                    read,
-                    kept,
-                    parent: lineage,
-                    state: Some(state),
-                };
+                let opening = Opening { id, query: answered.line.clone(), read, columns, kept, parent: lineage, state: Some(state) };
                 let mut results = self.results();
-                let opened = if main { results.open(opening, result) } else { results.open_past(opening, result) };
-                if let Ok(Some(id)) = opened {
-                    results.counted(id, total);
-                }
-                opened
+                if main { results.open(opening, result) } else { results.open_past(opening, result) }
             }
             None => Ok(None),
         };
@@ -1079,16 +1061,8 @@ impl Studio {
             });
             None
         });
-        // A rows query shows the rows it opened; an existence answer stays
-        // the answer, with its set beside it.
-        let shown = if rows && set.is_some() {
-            Outcome {
-                line: line.to_owned(),
-                ..outcome
-            }
-        } else {
-            answered.clone()
-        };
+        // A count shows its count; the rest, the rows the set opened with.
+        let shown = if counted || set.is_none() { answered.clone() } else { page };
         (shown, set)
     }
 
@@ -1120,7 +1094,7 @@ impl Studio {
                 Plan::Serve(rows) => break Ok(rows),
                 Plan::Fail(why) => break Err(why),
                 Plan::More => "more".to_owned(),
-                Plan::Rerun(query) => {
+                Plan::Rerun(_) => {
                     let parked = {
                         let mut results = self.results();
                         let note = format!("running the query again to reach row {}", start + 1);
@@ -1128,7 +1102,7 @@ impl Studio {
                         results.park()
                     };
                     self.publish_sets(parked.into_iter().chain([id]));
-                    query
+                    format!("show {id}")
                 }
             };
             let before = session.view().clone();
@@ -1279,7 +1253,6 @@ impl Studio {
         });
         let touched = {
             let mut results = self.results();
-            results.forget_catalog();
             self.keep_tables(None);
             results.changed()
         };
@@ -1335,9 +1308,6 @@ impl Studio {
                         self.observe(Origin::Evaluate, &shown, outcome);
                         self.publish_outcome(Origin::Evaluate, &shown, outcome, None);
                         shown = outcome.session.clone();
-                        if let Some(result) = &outcome.result {
-                            self.results().learn(result);
-                        }
                         if outcome.line == "tables" {
                             tables = outcome.result.clone();
                         }

@@ -203,7 +203,8 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
         rowClass: (i) => (view.added.has(rowKey(view.rows[i])) ? "added" : ""),
         want(first, last) {
           // a cell keeps to the state it was read at: no rows of a later one
-          if (view.pinned && behind()) return;
+          // (frozen is defined below: the table asks before it is)
+          if (view.pinned && frozen()) return;
           if (last > view.rows.length && view.more && view.rows.length < view.limit) read(view.rows.length, view.rows.length + PAGE);
         },
       },
@@ -251,8 +252,10 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
       render();
     }
 
-    // A cell is behind once the session moves past the state it was read at.
+    // A cell is behind once the session moves past the state it was read at,
+    // and stays there unless it follows the session.
     const behind = () => view.state != null && states().current != null && view.state !== states().current;
+    const frozen = () => view.pinned && !view.follows && behind();
 
     function render() {
       title.replaceChildren(stamped(source.title, view.state));
@@ -267,14 +270,14 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
       }
       // A cell shows the state it was read at; any other view, that it is
       // behind while it reads again.
-      if (view.pinned && behind()) {
+      if (frozen()) {
         const stale = meta.appendChild(element("span", "pk-stamp stale", `from ${stateName(view.state)}`));
         stale.title = `Read at ${stateName(view.state)}; the session is at ${stateName(states().current)} now. ⟳ reads it again.`;
       } else if (view.stale) {
         meta.append(element("span", "pk-stale", view.loading ? "stale · reading again…" : "stale"));
       }
       if (view.loading) meta.append(element("span", "pk-loading", "reading…"));
-      view.refreshButton?.classList.toggle("wanted", view.pinned ? behind() : view.stale);
+      view.refreshButton?.classList.toggle("wanted", view.pinned && !view.follows ? behind() : view.stale);
       foot.textContent = view.error ?? source.note?.(view) ?? "";
       foot.classList.toggle("error", Boolean(view.error));
     }
@@ -676,9 +679,10 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
 
   async function refreshAll() {
     if (tablesRead < epoch) await loadTables();
-    // stale views, and those a busy session kept from reading; not cells
+    // stale views, and those a busy session kept from reading; not cells,
+    // but those that follow the session
     for (const view of views) {
-      if (!view.pinned && (view.error || (view.epoch >= 0 && view.epoch < epoch))) view.refresh();
+      if ((!view.pinned || view.follows) && (view.error || (view.epoch >= 0 && view.epoch < epoch))) view.refresh();
     }
   }
 
@@ -709,10 +713,14 @@ export function createExplorer({ send, panel = null, openPanel = () => {}, run, 
       const columns = relationColumns(name, relation.types).map((c) => ({ ...c, var: null }));
       return relation.kind === "struct" ? [{ name, var: null, type: name }, ...columns] : columns;
     },
-    // Keep a query, or a relation, as a cell.
-    pinQuery(line, columns, title) {
+    // Keep a query, or a relation, as a cell. A query's cell that `follows`
+    // reads again as the session changes, as a live result set does; else
+    // it keeps to the state it was read at.
+    pinQuery(line, columns, title, follows = false) {
       const named = columns.map((c) => ({ ...c, numeric: /^(int|float)$/.test(c.type ?? "") }));
-      pin(createView({ kind: "query", line, columns: named, title }));
+      const view = createView({ kind: "query", line, columns: named, title });
+      view.follows = follows;
+      pin(view);
     },
     pinRelation: (name) => pin(createView({ kind: "relation", name })),
     show(name) {

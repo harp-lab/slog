@@ -6,7 +6,7 @@
 
 import { createTable } from "./table.js";
 import { factCells } from "./explorer.js";
-import { stamped } from "./stamp.js";
+import { isPast, stamped } from "./stamp.js";
 
 const ROW = 24; // a compact row, table.css
 const HEAD = 31; // the table's header and its border
@@ -33,6 +33,13 @@ export function shownFacts(result) {
   const lines = result.lines ?? [];
   const more = Number(lines.map((line) => line.match(/^… (\d+) more/)?.[1]).find(Boolean) ?? 0);
   return { name, rows: lines.map(factCells).filter(Boolean), more };
+}
+
+// A result set's view as a cell: its query's rows, and whether the cell
+// follows the session, as a live set does, or keeps to the state the set
+// was read at.
+export function cellOf({ query, stale, state }) {
+  return { line: query.replace(/^\?(exists|count)\b/, "?"), follows: !stale && !isPast(state) };
 }
 
 // `results` (results.js) serves sets' rows; `explorer` (explorer.js) keeps
@@ -73,8 +80,8 @@ export function createInline({ results, explorer, root }) {
       buttons: [
         ["⤢", "Open in the Results sheet, to refine, sort and export (Alt+R)", () => results.open(id)],
         ["→ cell", "Keep beside the transcript, as a cell", () => {
-          const { query, columns } = source.view();
-          explorer.pinQuery(query.replace(/^\?exists\b/, "?"), columns, id);
+          const { line, follows } = cellOf(source.view());
+          explorer.pinQuery(line, source.view().columns, id, follows);
         }],
       ],
     });

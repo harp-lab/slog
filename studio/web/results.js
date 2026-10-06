@@ -216,6 +216,13 @@ export function createResults({ tabs, panel, transcript, send, run, explorer = n
       return;
     }
     const columnsChanged = JSON.stringify(set.view.columns) !== JSON.stringify(view.columns);
+    // re-counted after a change in the session: its rows are read again
+    if (set.view.revision !== view.revision) {
+      set.rows.clear();
+      set.order = null;
+      set.pending = null;
+      set.error = null;
+    }
     set.view = view;
     renderTabs();
     set.watchers?.forEach((changed) => changed());
@@ -438,6 +445,8 @@ export function createResults({ tabs, panel, transcript, send, run, explorer = n
         });
         tab.addEventListener("click", () => show(id));
       }
+      // a live set moves on to the session's state
+      tab.querySelector(".rs-name").replaceWith(stamped(id, view.state, { className: "rs-name" }));
       tab.title = view.parent ? `${view.query}\n${view.parent.parent} · ${view.parent.refinement}` : view.query;
       tab.setAttribute("aria-selected", String(id === shown));
       tab.classList.toggle("live", view.cursor === "live");
@@ -490,7 +499,6 @@ export function createResults({ tabs, panel, transcript, send, run, explorer = n
     const busy = set.busy ?? view.loading
       ?? (set.pending ? `loading rows ${number(set.pending.start + 1)}–${number(set.pending.end)}…` : null);
     if (busy) status.append(element("span", "rs-loading", busy));
-    if (view.total_note) status.append(element("span", "rs-note", view.total_note));
     if (view.relation) {
       const kept = status.appendChild(element("span", "rs-relation", `relation ${view.relation}`));
       kept.title = `The answers are kept as ${view.relation}; later queries can read it, as ?(${view.relation} …)`;

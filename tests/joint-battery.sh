@@ -67,7 +67,7 @@ else
 fi
 # the saved recipe replays to the same content
 expect "s1-reload" "Opened joint_s1" out/joint-s1.log
-expect "s1-reload-count" "7 rows match" out/joint-s1.log
+expect_re "s1-reload-count" "r[0-9]+ · 7 rows" out/joint-s1.log
 
 rm -rf data/joint_s1
 
@@ -77,7 +77,7 @@ timeout 900 racket tests/joint/scratch-counted.rkt > out/joint-s2.log 2>&1
 # the scratch view compiles over counted state and answers
 expect "s2-scratch-view" "fragment 1 joined the scratch layer — writes hop2" \
   out/joint-s2.log
-expect "s2-view-rows" "3 rows match" out/joint-s2.log
+expect_re "s2-view-rows" "r[0-9]+ · 3 rows" out/joint-s2.log
 # the delete's cone covers the scratch stratum on the counted flavors,
 # with the watch firing at the epoch's barriers
 expect "s2-scratch-in-cone" "hop2 -1 (3 -> 2)" out/joint-s2.log
@@ -108,7 +108,7 @@ else
   echo "FAIL s2-sidecars-after-clear (path counts blocks differ or empty)"
   FAIL=$((FAIL+1))
 fi
-expect "s2-survivor-count" "6 rows match" out/joint-s2.log
+expect_re "s2-survivor-count" "r[0-9]+ · 6 rows" out/joint-s2.log
 
 # --- item 3: quiescence -- a query at the parked barrier of a counted epoch --
 timeout 900 racket tests/joint/quiescence.rkt > out/joint-s3.log 2>&1
@@ -118,8 +118,8 @@ expect_re "s3-epoch-parked" '\(quiescence \(pauses [1-9][0-9]*\)\)' \
   out/joint-s3.log
 # the query issued FROM the parked barrier is admitted (quiescent-master
 # class) and answers from committed masters
-expect "s3-barrier-admitted" '(barrier-query "6 rows match")' out/joint-s3.log
-expect "s3-settled-agrees" '(settled-query "6 rows match")' out/joint-s3.log
+expect_re "s3-barrier-admitted" '\(barrier-query "r[0-9]+ · 6 rows"\)' out/joint-s3.log
+expect_re "s3-settled-agrees" '\(settled-query "r[0-9]+ · 6 rows"\)' out/joint-s3.log
 # and that barrier's progress is the epoch's SIGNED net growth: retracting
 # (4 5) takes path's four (_ 5) rows (an unsigned count wrapped to 2^64-4)
 expect "s3-progress-signed" '(barrier (progress (tuples -4) (exact #t)))' \

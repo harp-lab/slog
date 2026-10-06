@@ -145,7 +145,7 @@ function usage(source) {
 }
 equal("usage: the argument to type", usage("state |"), ["state [«REL»]"]);
 equal("usage: about the command", signature("state ", 6).about, "summarize the pipeline or one relation's versions");
-equal("usage: the command word typed, every form", usage("watch|"), ["watch REL [level 1 [why]]", "watch ?QUERY", "watch cone REL [image KEY]"]);
+equal("usage: the command word typed, every form", usage("watch|"), ["watch REL [level 1 [why]]", "watch ?QUERY", "watch cone REL [image KEY]", "watch rN"]);
 equal("usage: only the forms that fit", usage("watch cone |"), ["watch cone «REL» [image KEY]"]);
 equal("usage: inside a fact, the fact", usage("why (path 1|"), ["why [«(REL t ...)» [depth N]]"]);
 equal("usage: past the end of a form", usage("count edge |"), ["count REL"]);
