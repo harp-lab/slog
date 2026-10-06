@@ -5463,6 +5463,27 @@
     ;; and the query observes it at the post-edit epoch
     (check-regexp-match #px"◆ Query count\n  16 rows match" transcript))
 
+  ;; A first run's later strata see every row its first stratum wrote, though
+  ;; that stratum kept `goal` in (1 0) alone and the later ones read it
+  ;; through (0 1): the identity ordering the relation was born with must
+  ;; not pass for a maintained one.  It did, kept empty at the boundary
+  ;; while (1 0) was dropped, and goal and answer read as empty.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/session/stale_identity.slog"
+                  "?count (goal G N)"
+                  "?count (every G)"
+                  "?count (answer G N)"
+                  ":quit")))])
+    (check-regexp-match
+     #px"› \\?count \\(goal G N\\)\n◆ Query count\n  3 rows match" transcript)
+    (check-regexp-match
+     #px"› \\?count \\(every G\\)\n◆ Query count\n  3 rows match" transcript)
+    (check-regexp-match
+     #px"› \\?count \\(answer G N\\)\n◆ Query count\n  3 rows match" transcript))
+
   ;; The held cursor, cell previews, and dump (R2 slice b) over a 12-node
   ;; chain whose closure (66 pairs) overflows one 50-row page, and a 5-deep
   ;; struct whose preview the daemon cuts at depth 4.
