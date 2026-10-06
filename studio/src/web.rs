@@ -101,6 +101,9 @@ fn asset(name: &str) -> Response {
         "palette.js" => (include_str!("../web/palette.js"), "text/javascript; charset=utf-8"),
         "assist.js" => (include_str!("../web/assist.js"), "text/javascript; charset=utf-8"),
         "assist.css" => (include_str!("../web/assist.css"), "text/css; charset=utf-8"),
+        "breakpoints.js" => (include_str!("../web/breakpoints.js"), "text/javascript; charset=utf-8"),
+        "calls.js" => (include_str!("../web/calls.js"), "text/javascript; charset=utf-8"),
+        "debugger.css" => (include_str!("../web/debugger.css"), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body).into_response()
@@ -116,8 +119,12 @@ enum Request {
     Evaluate,
     /// Evaluate, then re-run under the breakpoints.
     Debug,
-    /// The full set of breakpoint lines of `file`.
-    Breakpoints { file: String, lines: Vec<u32> },
+    /// The full set of breakpoints of `file`.
+    Breakpoints { file: String, points: Vec<crate::breakpoints::Breakpoint> },
+    /// A REPL line that observes the session (`calls`, `breaks`, `logs`,
+    /// `frames`), answered to this tab only and kept out of the
+    /// transcript: the debugger's panels read with it.
+    Quiet { line: String, tag: u64 },
     Command { line: String },
     Interrupt,
     /// Kill the session server; the next command starts a fresh one.
@@ -221,6 +228,8 @@ enum Reply<'a> {
         busy: bool,
     },
     Notice { message: &'a str },
+    /// The answer to a `Quiet` request.
+    Quiet { tag: u64, #[serde(flatten)] outcome: &'a crate::session::Outcome },
     /// The rows asked for, as many as exist; or why they cannot be had.
     Rows {
         set: SetId,
@@ -365,7 +374,18 @@ fn handle(
         Request::Debug => {
             tokio::spawn(async move { studio.debug().await });
         }
-        Request::Breakpoints { file, lines } => studio.set_breakpoints(file, lines),
+        Request::Breakpoints { file, points } => {
+            if studio.set_breakpoints(file, points) {
+                tokio::spawn(async move { studio.reconcile().await });
+            }
+        }
+        Request::Quiet { line, tag } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let outcome = studio.quiet(&line).await;
+                let _ = direct.send(json(&Reply::Quiet { tag, outcome: &outcome }));
+            });
+        }
         Request::Command { line } => {
             tokio::spawn(async move { studio.command(&line).await });
         }

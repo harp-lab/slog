@@ -17,6 +17,8 @@ import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
 import { initTrace } from "./trace.js";
 import { initAssist } from "./assist.js";
+import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
+import { initCalls } from "./calls.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -42,13 +44,6 @@ const editor = await createEditor($("editor"), {
   onChange: () => files.changed(),
   onEvaluate: evaluate,
   onSave: save,
-  onBreakpoints: (lines) => files.setBreakpoints(lines),
-  // A break names the line of a rule's `rule` keyword, which is where the
-  // compiler locates it; a click anywhere in the rule marks that line.
-  snapBreakpoint: (line) => {
-    const form = formAt(forms(editor.get()), line);
-    return form?.keyword === "rule" ? form.line : null;
-  },
 });
 
 const summary = createSummary($("summary"), {
@@ -59,13 +54,18 @@ const files = createFiles({
   editor,
   transmit,
   note,
-  onOpen() {
+  onOpen(path) {
     // The summary's notes and findings belong on the main file.
     summary.show();
     versions.opened();
     proposals.refresh();
+    breakpoints.show(path);
   },
   onSaved: () => summary.refresh(),
+  onBreakpoints: (path, points) => {
+    breakpoints.receive(path, points);
+    renderBreakpoints();
+  },
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
@@ -76,6 +76,34 @@ const versions = createHistory({ send, files, changes });
 const proposals = createProposals({
   editor, files, send, changes, history: versions, bar: $("proposals"), list: $("review-tab"),
 });
+// Set in the editor, kept with the project, armed by Debug (breakpoints.js).
+const breakpoints = createBreakpoints({
+  editor,
+  file: () => files.active() ?? "",
+  texts: () => files.texts(),
+  onChange(file, points) {
+    send({ t: "breakpoints", file, points });
+    renderBreakpoints();
+  },
+});
+// A REPL line answered to this tab only, kept out of the transcript.
+const asked = new Map();
+let quietTag = 0;
+function quiet(line) {
+  const tag = ++quietTag;
+  return new Promise((resolve) => {
+    asked.set(tag, resolve);
+    send({ t: "quiet", line, tag });
+  });
+}
+// A rule's location "main.slog:12:1", shown in the editor.
+function revealSource(loc) {
+  const match = /^(.*):(\d+):(\d+)$/.exec(loc ?? "");
+  const path = match && files.paths().find((p) => p.split("/").pop() === match[1].split("/").pop());
+  if (!path) return;
+  files.open(path);
+  editor.reveal({ line: Number(match[2]), col: Number(match[3]) });
+}
 const results = createResults({
   tabs: $("result-tabs"),
   panel: $("results"),
@@ -88,6 +116,14 @@ const trace = initTrace({
   editor,
   send,
   file: () => files.active() ?? "",
+  tabs: $("result-tabs"),
+  transcript: $("transcript"),
+  results: $("results"),
+});
+// The Calls tab: the run's demand calls (calls.js).
+const calls = initCalls({
+  quiet,
+  reveal: revealSource,
   tabs: $("result-tabs"),
   transcript: $("transcript"),
   results: $("results"),
@@ -131,6 +167,12 @@ const receive = {
   },
   session(view) {
     state.session = view;
+    // nothing held: no stop to show
+    if (!view.held) {
+      state.callsHeld = false;
+      stops++;
+      breakpoints.held(null);
+    }
     renderStatus();
   },
   log({ line }) {
@@ -143,8 +185,15 @@ const receive = {
     structure.observe(entry.result); // completion's catalog, breaks, watches
     if (entry.result?.kind === "paused") {
       state.heldTitle = entry.result.title;
+      state.callsHeld = Boolean(entry.result.calls?.stack?.length);
+      showStop(entry.result);
       renderStatus();
+    } else if (entry.result?.held === false) {
+      state.callsHeld = false;
+      stops++;
+      breakpoints.held(null);
     }
+    measured(entry);
     const node = append(renderEntry(entry, {
       inProject: (span) => files.pathOf(span.file) !== null,
       onSpan: (span) => files.reveal(span),
@@ -154,6 +203,7 @@ const receive = {
     // The area follows the newest output: a query's set, else the
     // transcript, unless the Execution tab shows what it was about.
     const executing = trace.entry(entry);
+    calls.entry(entry);
     if (entry.set) results.show(entry.set);
     else if (entry.origin === "repl" && !executing) results.show(null);
     const span = entry.error?.span;
@@ -200,7 +250,80 @@ const receive = {
   summary(view) {
     summary.show(view);
   },
+  "breakpoint-status": ({ statuses }) => {
+    breakpoints.status(statuses);
+    renderBreakpoints();
+  },
+  quiet(reply) {
+    asked.get(reply.tag)?.(reply);
+    asked.delete(reply.tag);
+  },
 };
+
+// A held stop, shown in the editor at its clause, with its bindings
+// beside it; another file's stop opens that file.
+let stops = 0; // counts stops and resumes, so a late answer is dropped
+async function showStop(result) {
+  const serial = ++stops;
+  const stop = stopOf(result);
+  if (!stop) return breakpoints.held(null);
+  const path = files.paths().find((p) => p.split("/").pop() === stop.file);
+  if (path && path !== files.active()) files.open(path);
+  breakpoints.held(path ? stop : null);
+  const frames = await quiet("frames");
+  if (serial === stops) breakpoints.held(path ? stop : null, frames.result?.bindings ?? []);
+}
+
+// The Breakpoints panel and the header's count.
+function renderBreakpoints() {
+  const all = breakpoints.list();
+  $("bp-badge").hidden = all.length === 0;
+  $("bp-count").textContent = String(all.length);
+  const list = $("bp-list");
+  list.replaceChildren();
+  if (!all.length) list.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "No breakpoints yet." }));
+  for (const { path, point, status } of all) {
+    const row = list.appendChild(document.createElement("div"));
+    row.className = `bp-row${point.enabled ? "" : " off"}`;
+    const toggle = row.appendChild(Object.assign(document.createElement("input"), { type: "checkbox", checked: point.enabled, title: "Enabled" }));
+    toggle.addEventListener("click", (event) => { event.stopPropagation(); breakpoints.toggle(path, point.id); });
+    row.append(Object.assign(document.createElement("span"), { className: glyphClass(point, status) }));
+    const at = point.at ?? [point.line, 1];
+    row.append(Object.assign(document.createElement("span"), { className: "where", textContent: `${path}:${at[0]}` }));
+    const what = [describe(point), point.condition && `when ${point.condition}`, point.ignore && `ignore ${point.ignore}`, point.log && "log"].filter(Boolean).join(" · ");
+    row.append(Object.assign(document.createElement("span"), { className: "what", textContent: what, title: what }));
+    if (status?.hits) row.append(Object.assign(document.createElement("span"), { className: "hits", textContent: `${status.hits}×` }));
+    if (status?.status === "unbound" || status?.status === "error") {
+      row.append(Object.assign(document.createElement("span"), { className: "why", textContent: "cannot stop", title: status.why }));
+    }
+    const remove = row.appendChild(Object.assign(document.createElement("button"), { className: "remove", textContent: "×", title: "Delete" }));
+    remove.addEventListener("click", (event) => { event.stopPropagation(); breakpoints.remove(path, point.id); });
+    row.addEventListener("click", () => {
+      files.open(path);
+      editor.reveal({ line: at[0], col: at[1] });
+    });
+    row.addEventListener("dblclick", () => { files.open(path); breakpoints.open(point.id); });
+  }
+}
+
+// Latency, click to rendered result, for the debugger's own commands:
+// window.debugLatency holds { line, server, total } in milliseconds.
+const clicked = new Map(); // line -> when it was sent
+window.debugLatency = [];
+function measured(entry) {
+  const sent = clicked.get(entry.line);
+  if (sent === undefined) return;
+  clicked.delete(entry.line);
+  requestAnimationFrame(() => window.debugLatency.push({
+    line: entry.line,
+    server: entry.ms,
+    total: Math.round(performance.now() - sent),
+  }));
+}
+function command(line) {
+  clicked.set(line, performance.now());
+  send({ t: "command", line });
+}
 
 // Consecutive connection attempts that never opened. A refused handshake
 // (a link from another launch's token) and a stopped server look the same
@@ -383,6 +506,7 @@ function renderStatus() {
   pill("evaluation", state.evaluating ? "running…" : "", state.evaluating ? "busy" : null);
 
   $("held").hidden = !held;
+  for (const button of document.querySelectorAll(".calls-step")) button.hidden = !state.callsHeld;
   $("held-title").textContent = `run held — ${state.heldTitle || "paused"}`;
   $("stop").disabled = lane !== "busy";
   $("evaluate").disabled = state.evaluating;
@@ -487,7 +611,7 @@ const hints = createHints({
   keysAt(line) {
     const form = formAt(forms(editor.get()), line);
     const rule = form?.keyword === "rule"
-      ? [editor.breakpoints().includes(form.line) ? "Debug stops here" : "click the margin to break here"]
+      ? ["click the margin to break on the rule, a dot to break on a clause"]
       : [];
     return [...rule, ...structure.keysAt(editor.get(), line), `${RUN_KEY} run`];
   },
@@ -505,7 +629,19 @@ const palette = createPalette(() => {
   const panel = (tab, title) => ({ title, note: isOpen(tab) ? "open" : "", run: () => showTab(tab) });
   return [
     { title: "Run", keys: RUN_KEY, run: evaluate },
-    { title: "Debug: run, stopping at the margin's breakpoints", run: debug },
+    { title: "Debug: run, stopping at the breakpoints", run: debug },
+    panel("breakpoints", "Breakpoints: every one, with its hits"),
+    { title: "Calls: the run's demand calls", run: () => calls.show() },
+    ...(state.session.held ? [
+      { title: "Continue the held run", run: () => command("continue") },
+      ...(state.callsHeld ? [
+        { title: "Step into the call", run: () => command("step into") },
+        { title: "Step over the call", run: () => command("step over") },
+        { title: "Step out of the call", run: () => command("step out") },
+      ] : []),
+      { title: "Step to the next port", run: () => command("step") },
+      { title: "Abort the held run", run: () => command("abort") },
+    ] : []),
     { title: "Stop the running command", note: state.lane.state === "busy" ? "" : "nothing running", run: () => send({ t: "interrupt" }) },
     { title: "Save", keys: structure.MAC ? "⌘S" : "Ctrl+S", run: save },
     ...[
@@ -566,8 +702,9 @@ $("debug").addEventListener("click", debug);
 $("stop").addEventListener("click", () => send({ t: "interrupt" }));
 $("restart").addEventListener("click", () => send({ t: "restart" }));
 for (const button of $("held").querySelectorAll("button")) {
-  button.addEventListener("click", () => send({ t: "command", line: button.dataset.command }));
+  button.addEventListener("click", () => command(button.dataset.command));
 }
+$("bp-badge").addEventListener("click", () => showTab("breakpoints"));
 
 $("divider").addEventListener("pointerdown", (event) => {
   const divider = event.currentTarget;

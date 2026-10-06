@@ -6,8 +6,8 @@
 //   get() / set(text)       the shown text; set keeps the cursor and does not fire onChange
 //   mark(span, message)     underline a 1-based position, or clear every mark with null
 //   reveal(span)            put the cursor at a position
-//   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
-//   breakpoints()           the lines with a dot
+//   onReplaced(listener)    call listener after set() replaced the text
+//   replacing()             whether set() is replacing the text now
 //   notes(notes)            hold each { line, text }, a hint for its line
 //   context()               { line, notes }: the cursor's line, and the notes
 //                           at the lines they have moved to (hints.js shows them)
@@ -17,8 +17,6 @@
 //   findings(findings)      mark each { line, severity, message } (analyzer)
 //   highlight(ranges)       shade these [{ from, to }] line ranges (trace.js:
 //                           the rules that fired), or none
-// `onBreakpoints(lines)` fires when a margin click or an edit changes them;
-// `snapBreakpoint(line)` says which line a click on `line` marks, or null;
 // `readOnly: true` makes an editor for looking only. `raw` is { monaco,
 // editor } for Monaco, else null.
 
@@ -72,7 +70,7 @@ const SLOG = {
   },
 };
 
-function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint, readOnly = false }) {
+function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, readOnly = false }) {
   monaco.languages.register({ id: "slog" });
   monaco.languages.setMonarchTokensProvider("slog", SLOG);
   monaco.languages.setLanguageConfiguration("slog", {
@@ -126,38 +124,12 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   editor.onDidChangeCursorPosition(moved);
   editor.onDidScrollChange(moved);
 
-  // Breakpoints are decorations, so they move with the text they mark.
-  const dots = editor.createDecorationsCollection([]);
   const fired = editor.createDecorationsCollection([]);
-  const dotLines = () => [...new Set(dots.getRanges().map((range) => range.startLineNumber))].sort((a, b) => a - b);
-  const showDots = (lines) => dots.set(lines.map((line) => ({
-    range: new monaco.Range(line, 1, line, 1),
-    options: {
-      glyphMarginClassName: "breakpoint",
-      glyphMarginHoverMessage: { value: "breakpoint: a debug run stops in the rule on this line" },
-      stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-    },
-  })));
-  let reported = "[]";
-  const reportDots = () => {
-    const lines = dotLines();
-    if (JSON.stringify(lines) === reported) return;
-    reported = JSON.stringify(lines);
-    onBreakpoints(lines);
-  };
-  editor.onMouseDown((event) => {
-    if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
-    const line = snapBreakpoint(event.target.position.lineNumber);
-    if (line === null) return;
-    const lines = dotLines();
-    showDots(lines.includes(line) ? lines.filter((l) => l !== line) : [...lines, line]);
-    reportDots();
-  });
+  const replaced = new Set();
 
   editor.onDidChangeModelContent(() => {
     if (quiet) return;
     onChange();
-    reportDots();
   });
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, onEvaluate);
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
@@ -187,19 +159,18 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
     set(text) {
       if (current().getValue() === text) return;
       const selection = editor.getSelection();
-      // Replacing the whole text would collapse every breakpoint onto its
-      // start, so they are kept by line number instead.
-      const lines = dotLines();
       quiet = true;
       // An edit operation, not setValue, so undo can step back over it.
       current().pushEditOperations([], [{ range: current().getFullModelRange(), text }], () => null);
-      showDots(lines.filter((line) => line <= current().getLineCount()));
       // Notes and findings cannot be mapped onto a replaced text.
       notes.clear();
       noteTexts = [];
       monaco.editor.setModelMarkers(current(), "analyzer", []);
       quiet = false;
       if (selection) editor.setSelection(selection);
+      // Replacing the whole text collapses every decoration onto its
+      // start: whoever keeps some puts them back.
+      for (const listener of replaced) listener();
     },
     mark(span, message) {
       if (!span) {
@@ -221,11 +192,8 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
       editor.setPosition({ lineNumber: span.line, column: span.col });
       editor.focus();
     },
-    breakpoints: dotLines,
-    setBreakpoints(lines) {
-      reported = JSON.stringify([...lines].sort((a, b) => a - b));
-      showDots(lines);
-    },
+    onReplaced: (listener) => replaced.add(listener),
+    replacing: () => quiet,
     notes(list) {
       const kept = list.filter(({ line }) => line <= current().getLineCount()).sort((a, b) => a.line - b.line);
       noteTexts = kept.map(({ text }) => text);
@@ -312,8 +280,8 @@ function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = fals
       area.focus();
       area.setSelectionRange(offset(span), offset(span) + 1);
     },
-    setBreakpoints() {},
-    breakpoints: () => [],
+    onReplaced() {},
+    replacing: () => false,
     notes() {},
     context: () => ({ line: area.value.slice(0, area.selectionStart).split("\n").length, notes: [] }),
     cursorTop: () => null,

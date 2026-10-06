@@ -16,7 +16,8 @@ use crate::results::{
 };
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
-use crate::session::{Outcome, Session, SessionView, run_argument};
+use crate::breakpoints::Breakpoint;
+use crate::session::{Outcome, Session, SessionView};
 use crate::summary::{self, Summarizer};
 use crate::store::Files;
 use crate::versions::{Origin as Made, Refs, Version};
@@ -42,8 +43,8 @@ pub struct Snapshot {
     pub files: Vec<FileView>,
     pub lane: LaneStatus,
     pub session: SessionView,
-    /// File -> 1-based lines carrying breakpoints.
-    pub breakpoints: BTreeMap<String, Vec<u32>>,
+    /// File -> its breakpoints.
+    pub breakpoints: BTreeMap<String, Vec<Breakpoint>>,
     pub review: ReviewView,
     /// Why the agent cannot run here, if it cannot.
     pub agent_unavailable: Option<String>,
@@ -92,10 +93,15 @@ pub enum Event {
     Saved {
         files: BTreeMap<String, u64>,
     },
-    /// The lines of `file` carrying breakpoints changed.
+    /// The breakpoints of `file` changed.
     Breakpoints {
         file: String,
-        lines: Vec<u32>,
+        points: Vec<Breakpoint>,
+    },
+    /// What the session says of each breakpoint: whether it can stop, its
+    /// hits.
+    BreakpointStatus {
+        statuses: Vec<crate::breakpoints::Status>,
     },
     /// A new version, and the branches as they now stand.
     Version {
@@ -183,7 +189,7 @@ struct Doc {
 struct Open {
     project: Project,
     docs: BTreeMap<String, Doc>,
-    breakpoints: BTreeMap<String, Vec<u32>>,
+    breakpoints: BTreeMap<String, Vec<Breakpoint>>,
     /// Above every version any file has had, across projects: a file that
     /// comes into being starts here, so a version never names two texts
     /// of one path.
@@ -260,20 +266,6 @@ impl Open {
             .collect()
     }
 
-    /// A `break FILE:LINE` for each breakpoint. A file `run` cannot name
-    /// gets none; evaluation reports such a main file.
-    fn breaks(&self) -> Vec<String> {
-        let directory = self.project.directory();
-        let mut breaks = Vec::new();
-        for (path, lines) in &self.breakpoints {
-            let file = directory.join(path);
-            if let Some(file) = run_argument(&file) {
-                breaks.extend(lines.iter().map(|line| format!("break {file}:{line}")));
-            }
-        }
-        breaks
-    }
-
     fn files_event(&self) -> Event {
         Event::Files {
             main: self.project.main().to_owned(),
@@ -314,6 +306,8 @@ pub struct Studio {
     /// The author asked plain Runs to record their trace too; Debug always
     /// does.
     tracing: std::sync::atomic::AtomicBool,
+    /// The breaks armed for the editor's breakpoints (breakpoints.rs).
+    pub(crate) armed: std::sync::Mutex<crate::breakpoints::Armed>,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
@@ -332,9 +326,17 @@ impl Studio {
                 Review::default()
             }
         };
+        let mut open = Open::new(project, files, 0);
+        match open.project.store().read(crate::breakpoints::RECORD) {
+            Ok(record) => open.breakpoints = record.unwrap_or_default(),
+            Err(error) => eprintln!("slog-studio: cannot read the breakpoints: {error}"),
+        }
+        let docs: Vec<String> = open.docs.keys().cloned().collect();
+        open.breakpoints.retain(|path, _| docs.contains(path));
         Self {
             projects,
-            open: std::sync::Mutex::new(Open::new(project, files, 0)),
+            open: std::sync::Mutex::new(open),
+            armed: Default::default(),
             session: Mutex::new(Session::new(&lane)),
             lane,
             events: broadcast::channel(1024).0,
@@ -462,18 +464,30 @@ impl Studio {
         }
     }
 
-    /// Replace the breakpoint lines of `file`; the editor tracks them as
-    /// text moves.
-    pub fn set_breakpoints(&self, file: String, mut lines: Vec<u32>) {
-        lines.sort_unstable();
-        lines.dedup();
+    /// The project's directory and its breakpoints, as they stand.
+    pub(crate) fn open_breakpoints(&self) -> (PathBuf, BTreeMap<String, Vec<Breakpoint>>) {
+        let open = self.open();
+        (open.project.directory().to_path_buf(), open.breakpoints.clone())
+    }
+
+    /// Make `points` the breakpoints of `file` and keep them with the
+    /// project; false when the project has no such file.
+    pub(crate) fn keep_breakpoints(&self, file: &str, points: &[Breakpoint]) -> bool {
         let mut open = self.open();
-        if !open.docs.contains_key(&file) {
-            return;
+        if !open.docs.contains_key(file) {
+            return false;
         }
-        open.breakpoints.insert(file.clone(), lines.clone());
-        drop(open);
-        self.publish(Event::Breakpoints { file, lines });
+        open.breakpoints.insert(file.to_owned(), points.to_vec());
+        open.breakpoints.retain(|_, list| !list.is_empty());
+        if let Err(error) = open.project.store().write(crate::breakpoints::RECORD, &open.breakpoints) {
+            drop(open);
+            self.trouble(&format!("cannot keep the breakpoints: {error}"));
+        }
+        true
+    }
+
+    pub(crate) async fn session_lock(&self) -> tokio::sync::MutexGuard<'_, Session> {
+        self.session.lock().await
     }
 
     /// Replace the text of `file` at version `base`. Returns the new version.
@@ -733,6 +747,10 @@ impl Studio {
         shown.ms = started.elapsed().as_millis() as u64;
         self.publish_sets(set);
         self.publish_outcome(Origin::Repl, &before, &shown, set);
+        // A step or continue moves the hit counts the margin shows.
+        if self.armed.lock().expect("armed lock").debugging {
+            self.publish_status(&mut session).await;
+        }
     }
 
     /// Open the set a query's answers make. They are kept as the relation
@@ -946,6 +964,14 @@ impl Studio {
 
     async fn evaluate_with(&self, debug: bool) {
         let started = Instant::now();
+        // Debug always has debug semantics: compiled strata have no ports,
+        // so a breakpoint there would be silently passed.  (Fast mode runs
+        // the interpreter, where breaks stop; only single-port stepping is
+        // exact on one thread.)
+        if debug && self.lane.status().borrow().mode == Mode::Compiled {
+            self.set_mode(Mode::Debug);
+            self.trouble("Debug switched to debug mode: compiled strata cannot stop at a breakpoint");
+        }
         let mut session = self.session.lock().await;
         self.publish(Event::Evaluation {
             phase: Phase::Start,
@@ -965,10 +991,19 @@ impl Studio {
                 false
             }
             Ok((version, text)) => {
-                let (main, mut prepare) = {
+                let main = {
                     let open = self.open();
-                    let main = open.project.directory().join(open.project.main());
-                    (main, if debug { open.breaks() } else { Vec::new() })
+                    open.project.directory().join(open.project.main())
+                };
+                // A debug run records its demand calls and arms a break per
+                // breakpoint (breakpoints.rs).
+                let breaks = if debug { self.break_lines() } else { Vec::new() };
+                let mut prepare: Vec<String> = if debug {
+                    std::iter::once("calls on".to_owned())
+                        .chain(breaks.iter().map(|(_, line)| line.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
                 };
                 // A traced run records its execution trace, and so does
                 // every change after it in this session (trace.rs).
@@ -976,8 +1011,12 @@ impl Studio {
                 prepare.extend(crate::trace::arm(self.lane.status().borrow().mode, wanted));
                 let mut shown = session.view().clone();
                 let mut tables = None;
+                let mut outcomes = Vec::new();
                 let ok = session
                     .evaluate(&self.lane, &main, &prepare, &mut |outcome| {
+                        if outcome.line.starts_with("break ") {
+                            outcomes.push(outcome.clone());
+                        }
                         self.publish_outcome(Origin::Evaluate, &shown, outcome, None);
                         shown = outcome.session.clone();
                         if let Some(result) = &outcome.result {
@@ -988,6 +1027,12 @@ impl Studio {
                         }
                     })
                     .await;
+                if debug {
+                    self.note_armed(&breaks, &outcomes);
+                    self.publish_status(&mut session).await;
+                } else {
+                    *self.armed.lock().expect("armed lock") = Default::default();
+                }
                 // A held run's relations are partial: not the program's.
                 let complete = tables.as_ref().filter(|_| !session.view().held);
                 self.summarize(version, text, complete);
@@ -1456,7 +1501,17 @@ pub(crate) mod tests {
              rule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\n",
         );
         let mut events = studio.subscribe();
-        studio.set_breakpoints("main.slog".to_owned(), vec![5, 2]);
+        let point = |id: &str, line| crate::breakpoints::Breakpoint {
+            id: id.to_owned(),
+            line,
+            at: None,
+            clause: None,
+            condition: String::new(),
+            ignore: 0,
+            log: false,
+            enabled: true,
+        };
+        studio.set_breakpoints("main.slog".to_owned(), vec![point("p1", 5), point("p2", 2)]);
         studio.debug().await;
         let outcomes = outcomes(&mut events);
         let run = outcomes
@@ -1464,8 +1519,8 @@ pub(crate) mod tests {
             .find(|o| o.line.starts_with("run "))
             .and_then(|o| o.result.clone())
             .expect("the run answered");
-        // b1 is line 2's waiting break; b2 is the rule on line 5
-        assert_eq!(run["title"], "Paused · break b2");
+        // b1 is the rule on line 5; b2 is line 2's waiting break
+        assert_eq!(run["title"], "Paused · break b1");
         assert!(run["lines"].to_string().contains("main.slog:5:1"));
         assert!(outcomes.last().is_some_and(|o| o.session.held));
         studio.lane.shutdown().await;

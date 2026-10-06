@@ -1,0 +1,168 @@
+/* Breakpoints in the editor (breakpoints.js), the Calls tab (calls.js) and
+   the Breakpoints panel, in studio.css's palette.  A glyph's shape is its
+   kind -- rule ●, match ◆, emit ■, demand ▶, answer ◀ -- and its fill its
+   state: solid armed, a white pip for a condition, an outline for a
+   logpoint, grey for disabled, hollow and dashed when it cannot stop. */
+
+/* ---- Glyphs ------------------------------------------------------------ */
+
+.bpg {
+  --bp: var(--red);
+  position: relative;
+  width: 10px !important;
+  height: 10px !important;
+  margin: 5px 0 0 6px;
+  background: var(--bp);
+  border: 1.5px solid var(--bp);
+  box-sizing: border-box;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.bpg.k-match { border-radius: 1px; transform: rotate(45deg) scale(0.85); }
+.bpg.k-emit { border-radius: 2px; }
+.bpg.k-demand, .bpg.k-answer {
+  border-radius: 0;
+  border: none;
+  width: 0 !important;
+  height: 0 !important;
+  background: none;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  margin-top: 4px;
+}
+.bpg.k-demand { border-left: 10px solid var(--bp); }
+.bpg.k-answer { border-right: 10px solid var(--bp); }
+.bpg.cond::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: white;
+}
+.bpg.k-demand.cond::after { left: -8px; }
+.bpg.k-answer.cond::after { left: 4px; }
+.bpg.log { background: transparent; }
+.bpg.k-demand.log, .bpg.k-answer.log { opacity: 0.55; }
+.bpg.off { --bp: var(--muted); opacity: 0.7; }
+.bpg.unbound { background: transparent; border-style: dashed; opacity: 0.6; }
+
+/* a clause breakpoint, inline before its bracket; it takes no width, so
+   the text does not move */
+.bp-inline.bpg, .bp-candidate {
+  all: unset;
+  position: relative;
+}
+.bp-inline.bpg::before, .bp-candidate::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--red);
+  cursor: pointer;
+}
+.bp-inline.bpg.k-match::before { border-radius: 1px; transform: rotate(45deg); }
+.bp-inline.bpg.k-emit::before { border-radius: 1px; }
+.bp-inline.bpg.k-demand::before, .bp-candidate.k-demand::before { clip-path: polygon(0 0, 100% 50%, 0 100%); border-radius: 0; width: 7px; }
+.bp-inline.bpg.k-answer::before, .bp-candidate.k-answer::before { clip-path: polygon(100% 0, 0 50%, 100% 100%); border-radius: 0; width: 7px; }
+.bp-inline.bpg.log::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--red); }
+.bp-inline.bpg.off::before { background: var(--muted); }
+.bp-inline.bpg.unbound::before { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+.bp-candidate::before { background: rgba(220, 50, 47, 0.28); }
+.bp-candidate:hover::before { background: rgba(220, 50, 47, 0.6); }
+.bp-hits { color: var(--muted); font-size: 11px; font-style: italic; }
+
+/* ---- A held stop ---------------------------------------------------------- */
+
+/* the stop: an orange arrow, unlike any breakpoint's glyph */
+.bp-stop {
+  width: 15px !important;
+  height: 12px !important;
+  margin: 4px 0 0 3px;
+  background: var(--orange);
+  clip-path: polygon(0 30%, 50% 30%, 50% 0, 100% 50%, 50% 100%, 50% 70%, 0 70%);
+}
+.stop-line { background: rgba(203, 75, 22, 0.07); }
+.stop-clause { background: rgba(203, 75, 22, 0.18); border-radius: 2px; }
+.stop-bindings { color: var(--orange); font-style: italic; opacity: 0.85; }
+
+/* ---- The popover ------------------------------------------------------------ */
+
+.bp-popover {
+  position: fixed;
+  z-index: 50;
+  width: 360px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(7, 54, 66, 0.18);
+  font: 12px var(--sans);
+  color: var(--text);
+}
+.bp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.bp-head .bpg { margin: 0; flex: none; }
+.bp-title { flex: 1; color: var(--strong); font-weight: 600; }
+.bp-where { color: var(--muted); font: 11px var(--mono); }
+.bp-field { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 2px 8px; margin-bottom: 6px; }
+.bp-label { color: var(--muted); }
+.bp-input {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: white;
+  color: var(--strong);
+  font: 12px var(--mono);
+}
+.bp-input.short { width: 70px; }
+.bp-input.bad { border-color: var(--red); background: var(--red-tint); }
+.bp-error { grid-column: 2; color: var(--red); font-size: 11px; }
+.bp-error:empty { display: none; }
+.bp-toggles { display: flex; align-items: center; gap: 14px; margin: 8px 0; }
+.bp-toggles .danger { margin-left: auto; }
+.bp-check { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.bp-status { padding-top: 6px; border-top: 1px solid var(--border); color: var(--muted); font: 11px var(--mono); }
+
+/* ---- The Breakpoints panel --------------------------------------------------- */
+
+.bp-list { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.bp-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.bp-row:hover { background: var(--chrome); }
+.bp-row .bpg { margin: 0; flex: none; }
+.bp-row .where { font: 11px var(--mono); color: var(--strong); }
+.bp-row .what { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-row .hits { color: var(--muted); font: 11px var(--mono); }
+.bp-row .why { color: var(--red); font-size: 11px; }
+.bp-row .remove { border: none; background: none; color: var(--muted); padding: 0 4px; height: auto; }
+.bp-row.off .what, .bp-row.off .where { opacity: 0.5; }
+#bp-count { margin-left: 4px; font: 11px var(--mono); }
+
+/* ---- The Calls tab ------------------------------------------------------------ */
+
+.calls-panel { flex: 1; overflow: auto; padding: 8px 12px; font: 12px/1.6 var(--mono); }
+.calls-panel h4 { margin: 8px 0 4px; font: 600 11px var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.calls-summary { color: var(--muted); font-family: var(--sans); margin-bottom: 4px; }
+.call { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; border-radius: 3px; }
+.call:hover { background: var(--chrome); }
+.call .twist { width: 1em; color: var(--muted); cursor: pointer; text-align: center; user-select: none; }
+.call .call-id, .call .frame-n { color: var(--muted); font-size: 11px; }
+.call .call-text { color: var(--strong); overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.call-badge { font-size: 11px; }
+.call-badge.answered { color: var(--green-dark); }
+.call-badge.failed { color: var(--red); font-weight: 600; }
+.call-badge.pending { color: var(--orange); }
+.call-where { color: var(--blue); font-size: 11px; cursor: pointer; }
+.call.frontier { background: var(--red-tint); }
+.call-stack { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 6px; }
+.call-stack .call:first-of-type { background: var(--orange-tint); }
+.frame-bindings { color: var(--orange); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.call-frontier { margin-bottom: 6px; }
+.calls-panel .more { margin: 2px 0; }

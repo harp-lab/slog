@@ -125,13 +125,17 @@ impl Session {
         if self.view.current.is_some() {
             steps.push("discard session".to_owned());
         }
+        // A prepare step that is refused (a breakpoint whose condition does
+        // not read) is reported, and the run goes on without it.
+        let first_prepare = steps.len();
         steps.extend_from_slice(prepare);
         steps.push(format!("run {path}"));
         steps.push("tables".to_owned());
-        for line in steps {
+        for (index, line) in steps.into_iter().enumerate() {
             let outcome = self.execute(lane, &line).await;
             each(&outcome);
-            if !outcome.ok() {
+            let preparing = (first_prepare..first_prepare + prepare.len()).contains(&index);
+            if !outcome.ok() && !preparing {
                 return false;
             }
         }

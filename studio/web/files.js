@@ -10,9 +10,11 @@
 const $ = (id) => document.getElementById(id);
 const EDIT_DELAY = 150;
 
-// `onOpen(path)` is called when a file is shown in the editor, and
-// `onSaved()` when what is saved or unsent may have changed.
-export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
+// `onOpen(path)` is called when a file is shown in the editor,
+// `onSaved()` when what is saved or unsent may have changed, and
+// `onBreakpoints(path, points)` with a file's breakpoints as the studio has
+// them (breakpoints.js keeps them).
+export function createFiles({ editor, transmit, note, onOpen, onSaved, onBreakpoints }) {
   const state = {
     project: "",
     projects: [],
@@ -21,7 +23,6 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
     // path -> { text, version, local, saved }: `text` is the studio's at
     // `version`; `local` is this tab's, which runs ahead while edits are unsent.
     files: new Map(),
-    breakpoints: new Map(), // path -> lines
     tabs: [], // open paths, in order
     active: null,
     editTimer: null,
@@ -84,7 +85,6 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
     if (!state.tabs.includes(path)) state.tabs.push(path);
     state.active = path;
     editor.show(path, file.local);
-    editor.setBreakpoints(state.breakpoints.get(path) ?? []);
     onOpen(path);
     render();
   }
@@ -221,7 +221,7 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
       state.project = snapshot.project;
       state.projects = snapshot.projects;
       state.directory = snapshot.directory;
-      state.breakpoints = new Map(Object.entries(snapshot.breakpoints));
+      for (const [path, points] of Object.entries(snapshot.breakpoints)) onBreakpoints(path, points);
       document.title = `${snapshot.project} — Slog Studio`;
       renderProjects();
       load(snapshot.main, snapshot.files);
@@ -262,9 +262,8 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
       }
       render();
     },
-    breakpoints({ file, lines }) {
-      state.breakpoints.set(file, lines);
-      if (file === state.active) editor.setBreakpoints(lines);
+    breakpoints({ file, points }) {
+      onBreakpoints(file, points);
     },
   };
 
@@ -291,10 +290,10 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
       };
     },
     project: () => state.project,
-    setBreakpoints(lines) {
-      state.breakpoints.set(state.active, lines);
-      send({ t: "breakpoints", file: state.active, lines });
-    },
+    // Every file's text, the shown one as it is in the editor.
+    paths: () => [...state.files.keys()],
+    texts: () => [...state.files].map(([path, file]) => (path === state.active ? editor.get() : file.local)),
+    open,
     // Show a position in a project file, or do nothing for one elsewhere.
     reveal(span) {
       const path = pathOf(span.file);

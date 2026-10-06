@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/static/hints.css">
 <link rel="stylesheet" href="/static/diff.css">
 <link rel="stylesheet" href="/static/assist.css">
+<link rel="stylesheet" href="/static/debugger.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 </head>
 <body>
@@ -23,8 +24,11 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
         Run
       </button>
-      <button id="debug" class="secondary" title="Run with a break armed at each margin breakpoint, stopping in the first marked rule the run reaches">
+      <button id="debug" class="secondary" title="Run with every breakpoint armed, stopping at the first one the run reaches">
         Debug
+      </button>
+      <button id="bp-badge" class="icon" title="Breakpoints: every one, with its hits" hidden>
+        <span class="bpg k-rule" aria-hidden="true"></span><span id="bp-count"></span>
       </button>
       <button id="stop" class="icon danger" title="Stop: pause the running command at its next slice boundary" aria-label="Stop" disabled>
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
@@ -88,6 +92,9 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx=".6"/><rect x="9.4" y="3" width="2.6" height="10" rx=".6"/></svg>
         <span id="held-title"></span>
         <button data-command="continue" class="primary small" title="Resume the run">Continue</button>
+        <button data-command="step into" class="secondary small calls-step" title="Into the call: stop at the first thing its rules do">Into</button>
+        <button data-command="step over" class="secondary small calls-step" title="Over the call: stop when it answers">Over</button>
+        <button data-command="step out" class="secondary small calls-step" title="Out: stop when the call the run is inside answers">Out</button>
         <button data-command="step" class="secondary small" title="Run to the next interpreter port">Step</button>
         <button data-command="frames" class="secondary small" title="Show the join stack and bindings here">Frames</button>
         <button data-command="abort" class="danger small" title="Discard the run; nothing is committed">Abort</button>
@@ -105,6 +112,10 @@
     <div class="tab" data-tab="scenarios">
       <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
       <div id="scenario-list"></div>
+    </div>
+    <div class="tab" data-tab="breakpoints">
+      <p class="hint">Click a rule's margin to break when it fires; hover a rule and click a dot to break on one clause. Double-click a breakpoint to edit it.</p>
+      <div id="bp-list" class="bp-list"></div>
     </div>
   </aside>
 </main>
