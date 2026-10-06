@@ -1,13 +1,13 @@
 #lang racket
 
-;; Send a sequence of action plugins to a fresh slogd and echo its output:
+;; Send a sequence of actions to a fresh slogd and echo its output:
 ;;
 ;;   racket tests/api/send-actions.rkt open:mydb load-rel:otherdb,edge sizes
 ;;
 ;; Specs: open:DB | import:DB | write-db:DB | write-csv:DIR
 ;;      | write-rel:DB,REL | write-rel-csv:DIR,REL | load-rel:DB,REL
 ;;      | refresh-rel:DB,REL | sizes | schema
-;;      | so:PATH (send an arbitrary plugin path verbatim)
+;;      | so:PATH (send a stratum plugin path verbatim)
 ;;
 ;; Run from the repository root (build/, data/, daemon/ are relative).
 
@@ -38,24 +38,24 @@
     [(list "so" path) `(so ,path)]
     [_ (error 'send-actions "unrecognized action spec: ~a" s)]))
 
-(define (spec->path spec)
+(define (spec->line spec)
   (match spec
     [`(so ,path) path]
-    [_ (action-so spec)]))
+    [_ (action-line spec)]))
 
 (module+ main
   (define args (vector->list (current-command-line-arguments)))
-  ;; --paths: only build the plugins and print their paths (for test
-  ;; scripts that drive a daemon session themselves, e.g. via a fifo)
-  (define paths-only? (and (pair? args) (equal? (car args) "--paths")))
-  (define specs (if paths-only? (cdr args) args))
-  (define paths (map (compose spec->path parse-spec) specs))
-  (when paths-only?
-    (for ([p (in-list paths)]) (displayln p))
+  ;; --lines: only print the protocol lines (for test scripts that drive a
+  ;; daemon session themselves, e.g. via a fifo)
+  (define lines-only? (and (pair? args) (equal? (car args) "--lines")))
+  (define specs (if lines-only? (cdr args) args))
+  (define lines (map (compose spec->line parse-spec) specs))
+  (when lines-only?
+    (for ([p (in-list lines)]) (displayln p))
     (exit 0))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
-  (for ([p (in-list paths)])
+  (for ([p (in-list lines)])
     (display (string-append p "\n") in))
   (close-output-port in)
   (for ([port (in-list (list out err))])

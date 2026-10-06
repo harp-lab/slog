@@ -7,6 +7,7 @@
          ensure-pch
          pooled-eager
          pool-boost!            ; T3b slice 4: current-SCC O0 jumps the queue
+         pool-drain!
          core-budget            ; T3b slice 4: the one compile-side budget
          core-count
          clang-report           ; T3b slice 4: §5.4's measured clang metric
@@ -1220,6 +1221,7 @@
 (define pool-pending (make-semaphore 0))  ; counts pending jobs
 (define pool-seq (box 0))
 (define pool-workers-started (box #f))
+(define pool-submitted (box '()))         ; every job's done semaphore
 
 ;; clang accounting (§5.4's "track this as a measured metric"): compiles,
 ;; links, and the detached -O2 claims this run caused.  Bumped in build-o /
@@ -1275,7 +1277,9 @@
                           (unbox pool-seq)))
                       label thunk (box #f) (box #f) (make-semaphore 0)))
   (call-with-semaphore pool-lock
-    (lambda () (set-box! pool-queue (cons j (unbox pool-queue)))))
+    (lambda ()
+      (set-box! pool-queue (cons j (unbox pool-queue)))
+      (set-box! pool-submitted (cons (pool-job-done j) (unbox pool-submitted)))))
   (semaphore-post pool-pending)
   (ensure-pool-workers!)
   (lambda ()
@@ -1283,6 +1287,14 @@
     (semaphore-post (pool-job-done j))   ; re-postable: force may be called again
     (when (unbox (pool-job-err j)) (raise (unbox (pool-job-err j))))
     (unbox (pool-job-result j))))
+
+;; Block until every job submitted so far has finished.  Pool builds run in
+;; this process, so a one-shot driver that exits first abandons them; one
+;; that must see its artifacts land (SLOG_AWAIT_BUILDS) waits here.
+(define (pool-drain!)
+  (for ([done (in-list (call-with-semaphore pool-lock
+                         (lambda () (unbox pool-submitted))))])
+    (sync (semaphore-peek-evt done))))
 
 ;; Raise every PENDING job with this label to priority 1 -- the driver is
 ;; about to block on (or is currently interpreting) that stratum, so its

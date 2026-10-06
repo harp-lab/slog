@@ -137,10 +137,10 @@ expect "idle-idempotent" "(idle)" out/pause-idle.log
 # PIPELINE order, first appearance (sort -u orders by hash text -- replaying
 # strata out of order gives trivial fixpoints that never suspend)
 mapfile -t SOS < <(grep -oE 'build/[a-f0-9]+(\.O0)?\.so' out/pause-unb.log | grep -v 'action-' | awk '!seen[$0]++')
-OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "pause_nodb")))' 2>/dev/null)
-LOOKUP_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote lookup) (quote path) 1 2)))' 2>/dev/null)
-if [ "${#SOS[@]}" -ge 1 ] && [ -n "$OPEN_SO" ] && [ -n "$LOOKUP_SO" ]; then
-  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${SOS[@]}" "$OPEN_SO" "$LOOKUP_SO" \
+OPEN_LINE=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-line (list (quote open) "pause_nodb")))' 2>/dev/null)
+LOOKUP_LINE=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-line (list (quote lookup) (quote path) 1 2)))' 2>/dev/null)
+if [ "${#SOS[@]}" -ge 1 ] && [ -n "$OPEN_LINE" ] && [ -n "$LOOKUP_LINE" ]; then
+  SLOG_MAX_MS=1 racket tests/api/drive.rkt "${SOS[@]}" "$OPEN_LINE" "$LOOKUP_LINE" \
     > out/pause-susp.log 2>&1
   expect_rx "suspend-observed"        '\(paused ' out/pause-susp.log
   expect_rx "mutating-refused"        '\(error suspended' out/pause-susp.log

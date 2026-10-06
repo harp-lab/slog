@@ -452,13 +452,14 @@ sidecar layout as a stable public data model.
 `compiler/actions.rkt` exports:
 
 ```racket
-(action-so spec) ; -> path to a cached compiled plugin
+(action-line spec) ; -> the command line for spec
 ```
 
-The daemon protocol is one shared-object path per input line. Loading the
-plugin calls its `slog_plugin(Daemon*)` entry point. Values in an action spec
-are baked into generated C++, so a new literal query can require a new small
-compile. Repeated identical actions reuse a content-addressed plugin.
+The daemon reads one line per request: a line starting with `(` is a command,
+any other line the path of a compiled stratum. An action is a command shaped
+exactly like its spec, with names and strings as strings and numbers as
+atoms -- `(add-batch "edge" -1 ((1 2)))` -- so its data costs no compile.
+`daemon/actions.cpp` defines every action verb, its arguments, and its reply.
 
 Within a session:
 
@@ -492,7 +493,7 @@ when they exist because they also maintain manifests, version chains, cone
 routing, logs, and recipes.
 
 Several more action forms are internal pieces of session replay, compression,
-pausing, and counting. They are matched in `compiler/actions.rkt`, but sending
+pausing, and counting. They are defined in `daemon/actions.cpp`, but sending
 one directly can leave the driver's model out of sync with the daemon.
 
 ## Raw daemon clients
@@ -502,8 +503,8 @@ pattern:
 
 1. call `ensure-slogd-exists`;
 2. start `daemon/slogd` using `slogd-argv`;
-3. compile action specs with `action-so`;
-4. write each plugin path and a newline to daemon stdin;
+3. turn action specs into lines with `action-line`;
+4. write each line and a newline to daemon stdin;
 5. read s-expression responses from stdout;
 6. drain stderr concurrently;
 7. close stdin and wait for the subprocess.

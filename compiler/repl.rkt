@@ -654,8 +654,8 @@
       (append fields (list (format "lattice:~a" (lattice-descriptor-kind spec))))
       fields))
 
-;; The daemon encodes whatever value a REPL edit carries (actions.rkt's
-;; encode-val takes any number, string or symbol), so an untyped `2.5` or
+;; The daemon encodes whatever value a REPL edit carries (daemon/actions.cpp
+;; takes any number or string), so an untyped `2.5` or
 ;; `x` would land in an int column and propagate (audit M-04).  add, del and
 ;; stage therefore check each tuple against the declaration `tables` shows,
 ;; before anything is queued.  Only the scalar primitives a typed word can

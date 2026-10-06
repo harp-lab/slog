@@ -127,9 +127,8 @@
 (require "dbtool.rkt")
 (require "parser.rkt")    ; current-source-capture / current-source-override
 
-;; §0.3: past a few thousand tuples the inline transport (values baked as
-;; literals into an action plugin) stops making sense -- the known ~10k
-;; inline-facts ceiling with clang time growing ahead of it.  Per
+;; §0.3: past a few thousand tuples a flush leaves the inline transport (the
+;; tuples written into one command line) for an import-delta payload.  Per
 ;; (anchor, relation) per flush.
 (define inline-batch-max
   (or (string->number (or (getenv "SLOG_INLINE_MAX") "")) 2048))
@@ -258,22 +257,18 @@
   (set-evaluation! s)
   s)
 
-;; Name this daemon's EvaluationId: a command verb, not an action plugin --
-;; the id is fresh per session, so a plugin would cost a clang build each time.
+;; Name this daemon's EvaluationId, fresh per session.
 (define (set-evaluation! s)
   (command-expecting! s `(set-evaluation ,(session-evaluation-id s))
                       "(evaluation-set)"))
 
-;; Import a frozen ground-fact database: a command verb too -- its directory
-;; is content-addressed, so a plugin would cost a clang build per fact set.
+;; Import a frozen ground-fact database (build/frozen/<hash>/).
 (define (import-path! s dir)
   (command-expecting! s `(import-path ,dir) "(imported)"))
 
 ;; Send one command whose only success reply is `expected`, unechoed.
 (define (command-expecting! s datum expected)
-  (write datum (session-in s))
-  (newline (session-in s))
-  (flush-output (session-in s))
+  (send-line! s (action-line datum))
   (define reply (read-line (session-out s)))
   (unless (equal? reply expected)
     (error 'session (format "~a failed: ~a" (car datum) reply))))
@@ -300,8 +295,9 @@
 (define (session-boundary-history s)
   (session-boundary-plans s))
 
-(define (send-plugin! s path)
-  (display (string-append path "\n") (session-in s))
+;; One protocol line: a command, or the path of a stratum artifact.
+(define (send-line! s line)
+  (display (string-append line "\n") (session-in s))
   (flush-output (session-in s)))
 
 ;; T5 slice (c): a bare command line sent WITHOUT reading a reply -- the
@@ -424,8 +420,8 @@
 ;; session driver had no swap at all: it forced the runnable and never looked
 ;; again, so a REPL run never picked up a background build.
 (define (drive-to-fixpoint! s [upgrade #f])
-  (define continue-so (action-so `(continue)))
-  (define continue-boundary-so (action-so `(continue-boundary)))
+  (define continue-line (action-line `(continue)))
+  (define continue-boundary-line (action-line `(continue-boundary)))
   (let poll ([loaded 0])
     (define line (read-line (session-out s)))
     (cond
@@ -462,11 +458,11 @@
           (send-command-line! s directive)
           (poll loaded)]
          [(regexp-match? #px"^\\(refused " line)
-          (send-plugin! s continue-so)
+          (send-line! s continue-line)
           (poll loaded)]
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]
-         [(not upgrade) (send-plugin! s continue-so) (poll loaded)]
+         [(not upgrade) (send-line! s continue-line) (poll loaded)]
          ;; Only a settled ITERATION boundary is swap-safe -- a mid-read pause
          ;; is not -- so match the phase field exactly, in either the uniform
          ;; command record or the legacy positional form, and drive to a
@@ -477,9 +473,9 @@
               (regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " line))
           (match-define (list artifact done _total) (upgrade loaded))
           (cond
-            [artifact (send-plugin! s artifact) (poll done)]
-            [else (send-plugin! s continue-so) (poll loaded)])]
-         [else (send-plugin! s continue-boundary-so) (poll loaded)])]
+            [artifact (send-line! s artifact) (poll done)]
+            [else (send-line! s continue-line) (poll loaded)])]
+         [else (send-line! s continue-boundary-line) (poll loaded)])]
       [(regexp-match? #px"^\\(error " line)
        (error 'session (format "daemon error: ~a" line))]
       [else (echo! s line) (poll loaded)])))
@@ -489,7 +485,7 @@
 ;; next-scc never drifts from the daemon's scc assignment.
 (define (send-stratum! s so [upgrade #f])
   (set-session-next-scc! s (add1 (session-next-scc s)))
-  (send-plugin! s so)
+  (send-line! s so)
   (drive-to-fixpoint! s upgrade))
 
 ;; Maintenance strata use the same bounded execution protocol without
@@ -500,7 +496,7 @@
   (define armed (read-line (session-out s)))
   (unless (equal? armed "(transient-armed)")
     (error 'session (format "could not arm transient stratum: ~a" armed)))
-  (send-plugin! s so)
+  (send-line! s so)
   (drive-to-fixpoint! s))
 
 ;; Delta/replay incarnations retain legacy numeric pipeline positions but are
@@ -1397,70 +1393,10 @@
 
 ;; Send one action and hand its response stream to `read!` (called with
 ;; the session's output port; may read as many lines as the action's
-;; protocol emits -- nothing for silent actions).  Actions that carry data
-;; (tuples, names, a counter) go as commands of the same shape: as plugins
-;; the data would be compiled into the source, a clang build per new value.
+;; protocol emits -- nothing for silent actions).
 (define (session-action! s spec [read! void])
-  (define command (data-action-command spec))
-  (cond
-    [command
-     (write-wire command (session-in s))
-     (newline (session-in s))
-     (flush-output (session-in s))]
-    [else (send-plugin! s (action-so spec))])
+  (send-line! s (action-line spec))
   (read! (session-out s)))
-
-;; The command for a data-carrying action spec, or #f for a plugin action.
-;; Names travel as strings and symbol values as the strings they encode as
-;; (the plugin's str_encode of the name), so no datum depends on how a
-;; symbol happens to spell.
-(define (data-action-command spec)
-  (define (name n) (if (symbol? n) (symbol->string n) n))
-  (define (value v) (if (symbol? v) (symbol->string v) v))
-  (define (tuple t) (map value t))
-  (match spec
-    [`(input-state ,rel ,pos (,ts ...))
-     `(input-state ,(name rel) ,pos ,(map tuple ts))]
-    [`(set-overlay ,rel ,pos (,rows ...))
-     `(set-overlay ,(name rel) ,pos
-                   ,(for/list ([row (in-list rows)])
-                      (list (first row) (tuple (second row)))))]
-    [`(,(and verb (or 'set-overlay-positive 'set-overlay-negative
-                      'set-overlay-negative-dred))
-       ,rel (,ts ...))
-     `(,verb ,(name rel) ,(map tuple ts))]
-    [`(begin-update ,(? exact-nonnegative-integer? n)) spec]
-    [`(,(and verb (or 'journal-signs 'dred-reseed)) ,rels ...)
-     `(,verb ,@(map name rels))]
-    [`(stage-update-transitions signed ,(and sign (or 1 -1)) ,rels ...)
-     `(stage-update-transitions signed ,sign ,@(map name rels))]
-    [`(dump-cells ,rel) `(dump-cells ,(name rel))]
-    [`(lookup ,rel ,vals ...) `(lookup ,(name rel) ,@(map value vals))]
-    [_ #f]))
-
-;; `write` for the daemon's reader: lists, atoms, integers, reals, and
-;; strings with only the escapes the reader accepts (Racket's own `write`
-;; may emit \e or \uXXXX, which it refuses).
-(define (write-wire v out)
-  (cond
-    [(pair? v)
-     (write-string "(" out)
-     (for ([x (in-list v)] [i (in-naturals)])
-       (unless (zero? i) (write-string " " out))
-       (write-wire x out))
-     (write-string ")" out)]
-    [(null? v) (write-string "()" out)]
-    [(string? v)
-     (write-string "\"" out)
-     (for ([c (in-string v)])
-       (write-string (case c
-                       [(#\\) "\\\\"] [(#\") "\\\""] [(#\newline) "\\n"]
-                       [(#\tab) "\\t"] [(#\return) "\\r"] [else (string c)])
-                     out))
-     (write-string "\"" out)]
-    [(and (real? v) (not (exact-integer? v)))
-     (write-string (number->string (exact->inexact v)) out)]
-    [else (write v out)]))
 
 (define (read-one-line! s)
   (define line (read-line (session-out s)))
@@ -1833,7 +1769,7 @@
 ;; The live schema as a compile manifest (0.D2): one (schema) round trip
 ;; parsed by runslog's db-manifest-from-schema-lines.
 (define (session-schema-manifest s)
-  (send-plugin! s (action-so `(schema)))
+  (send-line! s (action-line `(schema)))
   (define lines
     (let loop ([acc '()])
       (define line (read-line (session-out s)))
@@ -5372,7 +5308,7 @@
        (introspect! s)   ; sync only (pure-batch layer with nothing touched)
        (hash)]
       [else
-       (send-plugin! s (action-so `(signature ,@touched)))
+       (send-line! s (action-line `(signature ,@touched)))
        (let loop ([acc (hash)])
          (define line (read-line (session-out s)))
          (cond

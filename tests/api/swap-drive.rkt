@@ -16,9 +16,9 @@
 (require "../../compiler/tools.rkt")
 
 (define (run csv-dir tokens)
-  (define continue-so (action-so '(continue)))
-  (define boundary-so (action-so '(continue-boundary)))
-  (define csv-so (action-so `(write-csv ,csv-dir)))
+  (define continue-line (action-line '(continue)))
+  (define boundary-line (action-line '(continue-boundary)))
+  (define csv-line (action-line `(write-csv ,csv-dir)))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
   (define (send p) (display (string-append p "\n") in) (flush-output in))
@@ -35,7 +35,7 @@
       (cond
         [(eof-object? l) (error "unexpected eof")]
         [(regexp-match? #px"^\\(fixpoint " l) (displayln l)]
-        [(regexp-match? #px"^\\(paused " l) (displayln l) (send continue-so) (loop)]
+        [(regexp-match? #px"^\\(paused " l) (displayln l) (send continue-line) (loop)]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop)])))
 
@@ -50,10 +50,10 @@
         [(regexp-match? #px"^\\(paused " l)
          (displayln l)
          (cond
-           [swapped? (send continue-so) (loop #t)]
+           [swapped? (send continue-line) (loop #t)]
            [(regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " l)
             (send o2) (displayln "SWAPPED") (loop #t)]
-           [else (send boundary-so) (loop #f)])]
+           [else (send boundary-line) (loop #f)])]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop swapped?)])))
 
@@ -65,7 +65,7 @@
        (drive-swap o0 o2)]
       [_ (error 'swap-drive "bad token: ~a" tok)]))
 
-  (send csv-so)
+  (send csv-line)
   (close-output-port in)
   (let loop () (define s (rd)) (unless (eof-object? s) (displayln s) (loop)))
   (thread-wait et)

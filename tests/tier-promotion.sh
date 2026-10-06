@@ -32,6 +32,7 @@ fail() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
 export SLOG_OPT=tiered
 export SLOG_SMT_SOLVERS=mock
+export SLOG_AWAIT_BUILDS=1     # each run's queued builds land before it exits
 export SLOG_NO_FREEZE=1     # keep the ground facts inline: stable stratum shape
 export SLOG_MAX_MS=500      # boundary polls every ~0.5s (daemon RunBudget)
 unset SLOG_TIER_PROFILE SLOG_TIER_SKIP_MS SLOG_TIER_PROMOTE_MS 2>/dev/null || true
