@@ -344,6 +344,11 @@ impl Results {
         }
     }
 
+    /// Advanced whenever the database queries see may have changed.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn forget_catalog(&mut self) {
         self.catalog.clear();
     }
@@ -975,10 +980,21 @@ impl Set {
 
 // ---- The server's text ----------------------------------------------------
 
-enum Status {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Status {
+    /// Rows remain: the cursor is open.
     Open,
     Complete,
+    /// The work budget ended the query.
     Budget,
+}
+
+/// A rows page's rows, as cells, and how the query stands after it: for
+/// reads apart from any set (peek.rs).
+pub fn page_rows(result: &Value) -> Result<(Vec<Row>, Status), String> {
+    let page = parse_page(result)?;
+    let fact = projection_of(result["title"].as_str().unwrap_or("")).is_none();
+    Ok((page.tuples.iter().map(|tuple| row(tuple, fact)).collect(), page.status))
 }
 
 struct ParsedPage<'a> {

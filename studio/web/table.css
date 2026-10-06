@@ -140,8 +140,28 @@
 .v-symbol { color: var(--strong); }
 .v-more, .v-handle { color: var(--muted); }
 .v-handle { margin-left: 6px; font-size: 10.5px; }
+.tb-cell .v-handle { cursor: pointer; border-radius: 4px; padding: 0 2px; }
+.tb-cell .v-handle:hover { color: var(--blue); background: rgba(38, 139, 210, 0.1); }
+.tb-cell .v-handle.open { color: var(--blue); }
 .v-text { color: var(--strong); }
 .tb-cell.n > .v-number { color: var(--strong); }
+
+.v-map { background: rgba(181, 137, 0, 0.07); border-color: rgba(181, 137, 0, 0.22); }
+.v-fold { cursor: zoom-in; }
+.v-fold:hover { border-color: var(--blue); }
+.v-more { cursor: pointer; text-decoration: underline dotted; }
+.v-expand {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--chrome);
+  color: var(--muted);
+  font: 10.5px var(--sans);
+  cursor: pointer;
+}
+.v-same { outline: 1.5px solid var(--yellow); outline-offset: 0; background-color: rgba(181, 137, 0, 0.14); border-radius: 4px; }
+.tb-row.added { animation: tb-added 2.4s ease-out; box-shadow: inset 3px 0 0 var(--green); }
+@keyframes tb-added { from { background: rgba(133, 153, 0, 0.28); } }
 
 .v-tree { font: 12.5px/1.6 var(--mono); }
 .v-tree > summary { cursor: pointer; list-style: none; }

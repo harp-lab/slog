@@ -19,6 +19,7 @@ mod knowledge;
 mod lane;
 mod lint;
 mod mcp;
+mod peek;
 mod projects;
 mod registry;
 mod review;

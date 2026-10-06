@@ -1,0 +1,185 @@
+/* Peeks, pinned peek windows and the dock, and the Relations panel
+   (explorer.js). The tables inside are table.css's. */
+
+.pk { display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--surface); }
+.pk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  user-select: none;
+}
+.pk-title { font: 600 12px var(--mono); color: var(--strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pk-meta { display: flex; gap: 8px; align-items: baseline; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
+.pk-count { color: var(--strong); font-variant-numeric: tabular-nums; }
+.pk-types { color: var(--muted); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.pk-delta { font: 600 11px var(--sans); padding: 0 5px; border-radius: 8px; font-variant-numeric: tabular-nums; }
+.pk-delta.plus { color: var(--green-dark); background: rgba(133, 153, 0, 0.14); }
+.pk-delta.minus { color: var(--red); background: var(--red-tint); }
+.pk-delta.flash { animation: pk-flash 4s ease-out forwards; }
+@keyframes pk-flash { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+.pk-stale { color: var(--orange); font-size: 11px; }
+.pk-loading { color: var(--yellow); font-size: 11px; }
+.pk-buttons { display: flex; gap: 2px; flex-shrink: 0; }
+.pk-button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 12px var(--sans);
+}
+.pk-button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface); color: var(--strong); }
+.pk-grid { flex: 1; min-height: 0; display: flex; }
+.pk-foot { padding: 0 10px; font-size: 11px; color: var(--muted); }
+.pk-foot:not(:empty) { padding: 3px 10px; border-top: 1px solid var(--border); }
+.pk-foot.error { color: var(--orange); }
+
+/* A hover's peek: small, under the name, gone when the pointer leaves. */
+.pk-card {
+  position: fixed;
+  z-index: 60;
+  width: min(460px, 90vw);
+  height: calc(30px + 8 * 24px + 34px);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(7, 54, 66, 0.18);
+  cursor: pointer;
+}
+.pk-card .tb { cursor: default; }
+
+/* The cells column (cells.js): pinned views, stacked, beside the work. */
+.cells {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--chrome);
+}
+.cells { position: relative; padding-left: 22px; }
+.cells-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 16px;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+.cells-edge:hover:not(:disabled) { background: var(--surface); color: var(--strong); border-color: var(--border); }
+.cells.tucked { width: 16px; padding: 0; overflow: hidden; }
+.cells.tucked .cell { display: none; }
+.it:has(.stamped.past) .it-head, .cell:has(.pk-stamp.stale) .pk-head { background: rgba(203, 75, 22, 0.06); }
+.cell {
+  flex-shrink: 0;
+  height: 262px;
+  min-height: 90px;
+  resize: vertical;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.cell.folded { height: auto !important; min-height: 0; resize: none; }
+.cell.folded .pk-grid, .cell.folded .pk-foot { display: none; }
+.cell .pk-head { cursor: grab; }
+.cell.drop-before { box-shadow: 0 -3px 0 var(--blue); }
+.cell.drop-after { box-shadow: 0 3px 0 var(--blue); }
+.pk-stamp { font: 600 10.5px var(--mono); color: var(--muted); }
+.pk-stamp.stale { color: var(--orange); }
+.pk-button.wanted { color: var(--orange); border-color: var(--orange); }
+
+/* Answers of rows in the transcript (inline.js): a one-line head over a
+   table a fixed few rows high. */
+.it {
+  margin: 4px 0 2px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.it-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.it-title { font: 600 11.5px var(--mono); color: var(--blue); }
+.it-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-variant-numeric: tabular-nums; }
+.it-stamp { font: 10.5px var(--mono); color: var(--muted); }
+.it-button {
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 11px var(--sans);
+}
+.it-button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface); color: var(--strong); }
+.it-body { display: flex; }
+.it-body .tb { contain: strict; }
+
+/* The Relations panel, a drawer tab. */
+.rel-panel { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.rel-head { display: flex; align-items: center; gap: 8px; }
+.rel-filter {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+  font: 12px var(--mono);
+  outline: none;
+}
+.rel-filter:focus { border-color: var(--blue); }
+.rel-summary { color: var(--muted); font-size: 11.5px; }
+.rel-list {
+  max-height: 42%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.rel-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid rgba(226, 217, 191, 0.55);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.rel-item:hover:not(:disabled) { background: rgba(238, 232, 213, 0.5); border-color: rgba(226, 217, 191, 0.55); }
+.rel-item.picked { background: rgba(38, 139, 210, 0.09); }
+.rel-name { font: 600 12px var(--mono); color: var(--strong); }
+.rel-item.struct .rel-name { font-weight: 500; color: var(--text); }
+.rel-types { flex: 1; color: var(--muted); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rel-count { color: var(--strong); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.rel-view { flex: 1; min-height: 180px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; }
+.rel-view:empty { display: none; }
+.rel-view .pk { flex: 1; }

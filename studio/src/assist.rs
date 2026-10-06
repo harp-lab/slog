@@ -266,7 +266,7 @@ impl Studio {
 
 /// The total of an open query, by its `?count`, which also discards the
 /// cursor the page left open.
-async fn count(session: &mut Session, studio: &Studio, line: &str) -> Total {
+pub(crate) async fn count(session: &mut Session, studio: &Studio, line: &str) -> Total {
     let Some(count) = results::count_line(line) else {
         let _ = session.execute(&studio.lane, "cancel").await;
         return Total::Unknown;
