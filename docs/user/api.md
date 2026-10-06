@@ -483,7 +483,7 @@ Useful read-only actions include:
 | `(dump-rel REL POS)` | versioned dump with the same sentinel |
 | `(schema)` | `schema-rel` lines, then `schema-end` |
 | `(signature REL ...)` | `sig` lines, then `sig-end` |
-| `(sizes)` | one line per indexed relation, with no sentinel |
+| `(sizes)` | `relation_size` lines, one per indexed relation, then `sizes-end` |
 
 Useful state-changing actions include `open`, `import`, `write-db`,
 `write-csv`, `write-rel`, `write-rel-csv`, `load-rel`, `refresh-rel`,

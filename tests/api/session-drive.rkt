@@ -486,10 +486,8 @@
                                            (echo-until #px"^\\(cellsdone "))]
       [`(dump-ids ,rel) (session-action! s `(dump-ids ,rel)
                                          (echo-until #px"^\\(idsdone "))]
-      [`(sizes)
-       ;; no terminator line: rely on ordering -- the lines flush before
-       ;; the next op's response and drain at close
-       (session-action! s `(sizes))]
+      [`(sizes) (session-action! s `(sizes)
+                                 (echo-until #px"^\\(sizes-end "))]
       [`(schema) (session-action! s `(schema)
                                   (echo-until #px"^\\(schema-end\\)"))]
       [`(write-db ,db) (session-action! s `(write-db ,db))]
