@@ -38,7 +38,7 @@
       </button>
     </div>
     <div id="mode" class="mode-switch" role="radiogroup" aria-label="Evaluation mode">
-      <button data-mode="fast" role="radio" title="Fast: Slog's interpreter on every thread; no wait for the C++ toolchain">fast</button>
+      <button data-mode="fast" role="radio" title="Fast: Slog's tiering; starts interpreted, compiles long-running strata to native code mid-run">fast</button>
       <button data-mode="debug" role="radio" title="Debug: the interpreter on one thread, so breakpoints and steps stop at the same place every run">debug</button>
       <button data-mode="compiled" role="radio" title="Compiled: native code (-O2) from the start; each new program waits for clang, then runs fastest">compiled</button>
     </div>

@@ -791,7 +791,7 @@ const palette = createPalette(() => {
     { title: "Save", keys: structure.MAC ? "⌘S" : "Ctrl+S", run: save },
     ...check.commands(),
     ...[
-      ["fast", "the interpreter on every thread"],
+      ["fast", "tiering: interpreted, then native code for long strata"],
       ["debug", "one thread: breakpoints and steps stop at the same place"],
       ["compiled", "native code (-O2), for performance work"],
     ].map(([name, about]) => ({
