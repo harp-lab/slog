@@ -29,6 +29,24 @@
 .completions .label { color: var(--strong); }
 .completions .detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 
+/* The command's usage, above the prompt, the argument being typed in bold. */
+.signature {
+  position: fixed;
+  z-index: 19;
+  box-sizing: border-box;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font: 12px/1.6 var(--mono);
+}
+.signature b { color: var(--strong); font-weight: 600; }
+.signature .about { font-family: var(--sans); }
+
 .key-help {
   position: fixed;
   z-index: 20;

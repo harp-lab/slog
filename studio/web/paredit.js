@@ -6,9 +6,10 @@
 // The hooks, from editor.js and main.js:
 //   bindMonaco(monaco, editor)     the program editor
 //   bindTextarea(area)             a textarea's keys (the fallback editor)
-//   bindPrompt(area, { program })  the REPL prompt, with completion;
-//                                  `program()` is { file, text }, for break
-//   observe(result)                keep what a REPL result says about live
+//   bindPrompt(area, { files })    the REPL prompt, with completion;
+//                                  `files()` the project's, path -> text
+//   observe(entry)                 keep what a transcript entry, or the
+//                                  snapshot's `tables`, says about live
 //                                  state (the catalog after every Run)
 //   setDatabases(names)            the saved databases, from the studio
 //   mountControls()                structured mode and the key help, for
@@ -23,8 +24,7 @@
 import { paredit } from "./sexp.js";
 import { format, formatForm } from "./format.js";
 import { complete, expand } from "./complete.js";
-import { completeCommand, observe as observed, slogAt } from "./commands.js";
-import { forms } from "./forms.js";
+import { catalogOf, completeCommand, declared, locations, observe as observed, signature, slogAt } from "./commands.js";
 import { EMACS, EMACS_KEYS, noteKill, ring } from "./emacs.js";
 
 // The bindings: [operation, chords, what it does]. A chord names keys by
@@ -107,10 +107,40 @@ const structured = {
 
 // Live state ------------------------------------------------------------
 
-const live = { catalog: [], databases: [], locations: [], breaks: [], watches: [] };
+// What the prompt can offer: the relations of each source catalogOf
+// merges (`tables` the session's, `program` the project's declarations,
+// `scratch` definitions typed at the prompt, `kept` result sets), and the
+// rest completeCommand reads.
+const live = {
+  tables: [], program: [], scratch: [], kept: [], catalog: [],
+  databases: [], locations: [], breaks: [], watches: [],
+};
 
-export function observe(result) {
-  Object.assign(live, observed(result) ?? {});
+// The project's files, path -> text, from bindPrompt's caller.
+let projectFiles = () => ({});
+
+// The catalog, the program's declarations and rules read again when its
+// text changed.
+let read = null;
+function refresh() {
+  const files = projectFiles();
+  const key = Object.entries(files).flat().join("\0");
+  if (read !== key) {
+    read = key;
+    live.program = Object.entries(files).filter(([path]) => path.endsWith(".slog")).flatMap(([, text]) => declared(text));
+    live.locations = locations(files);
+  }
+  return (live.catalog = catalogOf(live));
+}
+
+// A transcript entry, { result, line }: the session's relations, a
+// scratch definition, the breaks and watches.
+export function observe(entry) {
+  const update = observed(entry, live);
+  // the session's own listing holds the results it kept
+  if (update?.tables) live.kept = [];
+  Object.assign(live, update ?? {});
+  live.catalog = catalogOf(live);
 }
 
 export function setDatabases(names) {
@@ -121,15 +151,8 @@ export function setDatabases(names) {
 // kept as r1, r2, … ({ name, arity, detail }). The next Run's catalog
 // replaces it, as it replaces the session.
 export function addRelation(relation) {
-  live.catalog = [...live.catalog.filter((known) => known.name !== relation.name), relation];
-}
-
-// The `break FILE:LINE` locations of the program's rules.
-function locations({ file, text }) {
-  const base = file.split("/").pop();
-  const lines = text.split("\n");
-  return forms(text).filter((f) => f.keyword === "rule")
-    .map((f) => ({ location: `${base}:${f.line}`, about: lines[f.line - 1].trim() }));
+  live.kept = [...live.kept.filter((known) => known.name !== relation.name), { ...relation, kind: "result" }];
+  live.catalog = catalogOf(live);
 }
 
 // Chords ---------------------------------------------------------------
@@ -251,7 +274,7 @@ export function bindMonaco(monaco, editor) {
     event.preventDefault();
     event.stopPropagation();
     // an opened list asks for a relation
-    if ("([".includes(event.browserEvent.key) && complete(model().getValue(), offset(editor.getPosition()), live.catalog).items.length) {
+    if ("([".includes(event.browserEvent.key) && complete(model().getValue(), offset(editor.getPosition()), refresh()).items.length) {
       editor.trigger("paredit", "editor.action.triggerSuggest", {});
     }
   });
@@ -272,7 +295,7 @@ function registerLanguage(monaco) {
   monaco.languages.registerCompletionItemProvider("slog", {
     triggerCharacters: ["(", "?", ">"],
     provideCompletionItems(model, at) {
-      const { from, to, items } = complete(model.getValue(), model.getOffsetAt(at), live.catalog);
+      const { from, to, items } = complete(model.getValue(), model.getOffsetAt(at), refresh());
       const range = monaco.Range.fromPositions(model.getPositionAt(from), model.getPositionAt(to));
       return {
         suggestions: items.map((item, i) => ({
@@ -360,15 +383,17 @@ function structureKeys(area) {
 
 // The REPL prompt ----------------------------------------------------------
 
-export function bindPrompt(area, { program }) {
+export function bindPrompt(area, { files }) {
+  projectFiles = files;
   const menu = document.body.appendChild(Object.assign(document.createElement("ul"), { className: "completions", hidden: true }));
+  const usage = document.body.appendChild(Object.assign(document.createElement("div"), { className: "signature", hidden: true }));
   let shown = null; // { from, to, items, index }
   let stops = null; // { at: [{ start, end }], index, length }: the snippet's tab stops
   let accepting = false;
 
   const close = () => { shown = null; menu.hidden = true; };
   const open = (explicit) => {
-    live.locations = locations(program());
+    refresh();
     const offer = completeCommand(area.value, area.selectionStart, live);
     const typed = area.value.slice(offer.from, area.selectionStart);
     // an exact, lone match has nothing more to say
@@ -393,7 +418,7 @@ export function bindPrompt(area, { program }) {
     measure.font = style.font;
     const line = area.value.slice(area.value.lastIndexOf("\n", shown.from - 1) + 1, shown.from);
     menu.style.left = `${Math.min(box.left + parseFloat(style.paddingLeft) + measure.measureText(line).width, innerWidth - 320)}px`;
-    menu.style.bottom = `${innerHeight - box.top + 4}px`;
+    menu.style.bottom = `${innerHeight - box.top + 4 + (usage.hidden ? 0 : usage.offsetHeight + 2)}px`;
     menu.children[shown.index]?.scrollIntoView({ block: "nearest" });
   };
   const accept = (i) => {
@@ -409,6 +434,26 @@ export function bindPrompt(area, { program }) {
     // a command's word chosen, its arguments come next
     if (!stops && snippet.text.endsWith(" ")) open(false);
   };
+  // The command's usage above the prompt, the argument at the cursor in bold.
+  const describe = () => {
+    const found = area.dataset.mode !== "ask" && document.activeElement === area
+      ? signature(area.value, area.selectionStart) : null;
+    usage.hidden = !found;
+    if (!found) return;
+    const bold = (text) => Object.assign(document.createElement("b"), { textContent: text });
+    usage.replaceChildren(
+      ...found.forms.flatMap(({ text, current }, i) => [
+        ...(i ? ["  |  "] : []),
+        ...(current ? [text.slice(0, current[0]), bold(text.slice(...current)), text.slice(current[1])] : [text]),
+      ]),
+      Object.assign(document.createElement("span"), { className: "about", textContent: `  —  ${found.about}` }),
+    );
+    const box = area.getBoundingClientRect();
+    usage.style.left = `${box.left}px`;
+    usage.style.maxWidth = `${box.width}px`;
+    usage.style.bottom = `${innerHeight - box.top + 4}px`;
+  };
+
   // Tab through a snippet's stops: typing in one moves those after it.
   const nextStop = () => {
     const shift = area.value.length - stops.length;
@@ -445,16 +490,20 @@ export function bindPrompt(area, { program }) {
   }, { capture: true });
 
   // Typing a word, an opener, `?`, `->`, or the space after a command's
-  // word opens the list; typing with it open narrows it.
+  // word opens the list; typing with it open narrows it. The usage follows
+  // the cursor.
   area.addEventListener("input", (event) => {
+    describe();
     if (area.dataset.mode === "ask") return close();
     if (accepting) return;
     const typed = event.data ?? "";
     const prompts = /[A-Za-z0-9_'.?>-]$/.test(typed) || typed.includes("(")
       || (typed === " " && !slogAt(area.value, area.selectionStart));
-    if (shown || (event.inputType === "insertText" && prompts)) open(false);
+    // typing in a snippet's blank is not asking for completion
+    if (shown || (event.inputType === "insertText" && prompts && !stops)) open(false);
   });
-  area.addEventListener("blur", close);
+  for (const type of ["focus", "click", "keyup"]) area.addEventListener(type, describe);
+  area.addEventListener("blur", () => { close(); usage.hidden = true; });
 }
 
 // Controls -------------------------------------------------------------

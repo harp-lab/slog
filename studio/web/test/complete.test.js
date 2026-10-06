@@ -1,8 +1,7 @@
-// Completion: Slog atoms and queries (complete.js), and REPL commands
-// (commands.js), from a catalog like the one `tables` reports.
+// Completion of Slog atoms and queries (complete.js), from a catalog like
+// the one `tables` reports. commands.test.js has the REPL's commands.
 
 import { complete, expand, placeholders } from "../complete.js";
-import { completeCommand, observe } from "../commands.js";
 import { equal, marked } from "./check.js";
 
 const CATALOG = [
@@ -12,14 +11,6 @@ const CATALOG = [
   { name: "label", arity: 2, detail: ["int", "str"] },
   { name: "$internal", arity: 1, detail: ["int"] },
 ];
-const LIVE = {
-  catalog: CATALOG,
-  databases: ["reach", "kcfa"],
-  locations: [{ location: "reach.slog:10", about: "rule (edge X Y) --> (path X Y)" }],
-  breaks: [{ id: "b1", about: "path · 0 hits" }],
-  watches: [{ id: "w2", about: "path @ v1" }],
-};
-
 // The items offered at the cursor, as [label, insert], and the range they
 // replace, as the text it holds.
 function offered(source, using = (t, p) => complete(t, p, CATALOG)) {
@@ -27,7 +18,6 @@ function offered(source, using = (t, p) => complete(t, p, CATALOG)) {
   const { from, to, items } = using(text, selection.start);
   return { replaces: text.slice(from, to), items: items.map((i) => [i.label, i.insert]) };
 }
-const command = (source) => offered(source, (t, p) => completeCommand(t, p, LIVE));
 
 // Placeholders --------------------------------------------------------------
 
@@ -63,43 +53,3 @@ equal("an arrow offers the projection of the query's variables", offered("? (pat
 });
 equal("no projection for a count", offered("?count (path X Y) ->|").items, []);
 equal("nothing inside a string", offered("?(label X \"pa|\")").items, []);
-
-// REPL commands ---------------------------------------------------------------
-
-equal("commands by prefix, a space after those taking arguments", command("wh|").items, [
-  ["why", "why"], ["whynot", "whynot"], ["whatif", "whatif "],
-]);
-equal("a relation after show", command("show p|").items, [["path", "path"]]);
-equal("a tuple's typed columns after add", command("add st|").items, [["store", "store ${1:int} ${2:list} ${3:val}"]]);
-equal("whatif takes add or del, then a tuple", [command("whatif |").items, command("whatif del e|").items], [
-  [["add", "add "], ["del", "del "]],
-  [["edge", "edge ${1:int} ${2:int}"]],
-]);
-equal("databases after open and library select", [command("open k|").items, command("library select |").items], [
-  [["kcfa", "kcfa"]],
-  [["reach", "reach"], ["kcfa", "kcfa"]],
-]);
-equal("break offers relations and rule locations", command("break |").items.map(([label]) => label), [
-  "edge", "path", "store", "label", "reach.slog:10",
-]);
-equal("unbreak and unwatch offer the listed ids", [command("unbreak |").items, command("unwatch |").items], [
-  [["b1", "b1"]], [["w2", "w2"]],
-]);
-equal("fixed words", [command("mode |").items, command("step f|").items, command("keep scratch |").items], [
-  [["readonly", "readonly "], ["mutable", "mutable "]],
-  [["fire", "fire "]],
-  [["as", "as "]],
-]);
-equal("watch: a relation, then its level", [command("watch c|").items, command("watch path |").items], [
-  [["cone", "cone "]], [["level", "level "]],
-]);
-equal("nothing after a tuple's values begin", command("add edge 1 |").items, []);
-equal("a query at the prompt is Slog", command("why (pa|)").items, [["path", "path ${1:X} ${2:Y}"]]);
-equal("a definition at the prompt is Slog", command("rule (path X Y) (ed|)").items, [["edge", "edge ${1:X} ${2:Y}"]]);
-
-equal("observe: an unfiltered tables result is the catalog",
-  observe({ kind: "tables", "relations-filter": "", relations: CATALOG }), { catalog: CATALOG });
-equal("observe: a filtered one is not", observe({ kind: "tables", "relations-filter": "pa", relations: [] }), null);
-equal("observe: the breaks listed", observe({ kind: "break", title: "Breaks", lines: ["b1  path · 2 hits", "b3  reach.slog:10 · 0 hits"] }), {
-  breaks: [{ id: "b1", about: "path · 2 hits" }, { id: "b3", about: "reach.slog:10 · 0 hits" }],
-});

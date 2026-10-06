@@ -562,4 +562,19 @@ mod tests {
         assert_eq!(field("password=%+1", "password"), None);
         assert_eq!(field("password=%C3%A9", "password").as_deref(), Some("é"));
     }
+
+    /// The prompt completes from commands.js's copy of the REPL's command
+    /// inventory, which must be the one `:help` answers.
+    #[tokio::test]
+    async fn the_prompt_knows_the_commands_the_repl_does() {
+        use crate::lane::{Lane, Mode};
+        let source = include_str!("../web/commands.js");
+        let start = source.find("export const INVENTORY = ").expect("an INVENTORY") + "export const INVENTORY = ".len();
+        let end = start + source[start..].find("\n];").expect("its end") + 2;
+        let copy: serde_json::Value = serde_json::from_str(&source[start..end]).expect("INVENTORY is JSON");
+        let lane = Lane::new(slog_repl::server::project_root().expect("repository root"), Mode::Fast);
+        let help = lane.command(":help").await.expect("a server");
+        assert_eq!(help.result.expect("an answer")["commands"], copy);
+        lane.shutdown().await;
+    }
 }

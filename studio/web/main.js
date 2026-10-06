@@ -159,6 +159,7 @@ const receive = {
     results.init(snapshot.results);
     trace.tracing(snapshot.tracing);
     timeline.states(snapshot.states);
+    structure.observe({ result: snapshot.tables }); // completion: the session's relations, after a reload
     snapshot.results.forEach(offerRelation);
     history.load();
     renderStatus();
@@ -190,7 +191,7 @@ const receive = {
   },
   entry(entry) {
     state.log = null;
-    structure.observe(entry.result); // completion's catalog, breaks, watches
+    structure.observe(entry); // completion's catalog, breaks, watches
     if (entry.result?.kind === "paused") {
       state.heldTitle = entry.result.title;
       state.callsHeld = Boolean(entry.result.calls?.stack?.length);
@@ -372,10 +373,23 @@ function connect() {
 // The REPL prompt --------------------------------------------------------
 
 const prompt = $("prompt");
-// Structured editing and completion, ahead of the prompt's own keys; the
-// rules `break` can name are those of the file shown.
-structure.bindPrompt(prompt, { program: () => ({ file: files.active() ?? "", text: editor.get() }) });
-prompt.addEventListener("focus", () => send({ t: "databases" }));
+// Structured editing and completion, ahead of the prompt's own keys, from
+// every project file: the relations it declares, the rules `break` names.
+structure.bindPrompt(prompt, {
+  files() {
+    const texts = files.texts();
+    return Object.fromEntries(files.paths().map((path, i) => [path, texts[i]]));
+  },
+});
+// Completion offers the saved databases, and the session's breaks and
+// watches as they stand when the prompt is first used.
+let listed = false;
+prompt.addEventListener("focus", () => {
+  send({ t: "databases" });
+  if (listed || !state.session.current) return;
+  listed = true;
+  for (const line of ["breaks", "watches"]) quiet(line).then(structure.observe);
+});
 const controls = structure.mountControls();
 const historyKey = () => `slog-studio.history:${files.project()}`;
 const history = {

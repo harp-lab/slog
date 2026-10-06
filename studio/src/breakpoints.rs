@@ -101,7 +101,7 @@ fn armed_id(outcome: &Outcome) -> Option<String> {
 }
 
 /// The verbs a `Quiet` request may send: they observe the session.
-const QUIET: [&str; 4] = ["calls", "breaks", "logs", "frames"];
+const QUIET: [&str; 5] = ["calls", "breaks", "logs", "frames", "watches"];
 
 impl Studio {
     /// One observing REPL line, answered without a transcript entry.

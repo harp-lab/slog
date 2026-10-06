@@ -55,6 +55,9 @@ pub struct Snapshot {
     /// Plain Runs record their trace.
     pub tracing: bool,
     pub states: States,
+    /// The session's last unfiltered `tables` answer, for the prompt's
+    /// completion to start from.
+    pub tables: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -324,6 +327,8 @@ pub struct Studio {
     /// The session's states, and the lane exploring a past one (states.rs).
     pub(crate) states: std::sync::Mutex<States>,
     pub(crate) explorer: Mutex<Option<crate::states::Explorer>>,
+    /// The session's last unfiltered `tables` answer.
+    tables: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 impl Studio {
@@ -364,6 +369,20 @@ impl Studio {
             summary: OnceLock::new(),
             states: Default::default(),
             explorer: Mutex::new(None),
+            tables: Default::default(),
+        }
+    }
+
+    /// Keep `result` if it is an unfiltered `tables` answer; `None` forgets
+    /// the last, its session gone.
+    fn keep_tables(&self, result: Option<&serde_json::Value>) {
+        let mut tables = self.tables.lock().expect("tables lock");
+        match result {
+            None => *tables = None,
+            Some(r) if r["kind"] == "tables" && r["relations-filter"].as_str().unwrap_or("").is_empty() => {
+                *tables = Some(r.clone())
+            }
+            Some(_) => {}
         }
     }
 
@@ -476,6 +495,7 @@ impl Studio {
             results: self.results().views(),
             tracing: self.tracing.load(std::sync::atomic::Ordering::Relaxed),
             states: self.states.lock().expect("states lock").clone(),
+            tables: self.tables.lock().expect("tables lock").clone(),
         }
     }
 
@@ -765,6 +785,7 @@ impl Studio {
             }
             if let Some(result) = &outcome.result {
                 results.learn(result);
+                self.keep_tables(Some(result));
             }
             touched
         };
@@ -973,6 +994,7 @@ impl Studio {
     /// Kill the main lane's server; its session and cursor go with it.
     pub fn restart(&self) {
         self.lane.kill();
+        self.keep_tables(None);
         let touched = self.results().changed();
         self.publish_sets(touched);
     }
@@ -980,6 +1002,7 @@ impl Studio {
     /// Run the server in `mode` from now on; it restarts.
     pub fn set_mode(&self, mode: Mode) {
         self.lane.set_mode(mode);
+        self.keep_tables(None);
         let touched = self.results().changed();
         self.publish_sets(touched);
     }
@@ -1014,6 +1037,7 @@ impl Studio {
         let touched = {
             let mut results = self.results();
             results.forget_catalog();
+            self.keep_tables(None);
             results.changed()
         };
         self.publish_sets(touched);
@@ -1069,6 +1093,7 @@ impl Studio {
                 }
                 // A held run's relations are partial: not the program's.
                 let complete = tables.as_ref().filter(|_| !session.view().held);
+                self.keep_tables(complete);
                 self.summarize(version, text, complete);
                 ok
             }
