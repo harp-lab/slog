@@ -9450,7 +9450,7 @@
       (define state (make-server-state))
       (define (run! line) (dispatch-command state line))
       (define (text result) (string-join (hash-ref result 'lines) "\n"))
-      (void (run! "break examples/tinycfa/0cfa.slog:46 match (ret v (ar ea k))"))
+      (void (run! "break examples/tinycfa/0cfa.slog:50 match (ret v (ar ea k))"))
       (define stop (run! "run examples/tinycfa/0cfa.slog"))
       (check-equal? (hash-ref stop 'title) "Paused · break b1")
       (define s (ensure-session! state))
