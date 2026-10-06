@@ -582,6 +582,39 @@
       (append fields (list (format "lattice:~a" (lattice-descriptor-kind spec))))
       fields))
 
+;; The daemon encodes whatever value a REPL edit carries (actions.rkt's
+;; encode-val takes any number, string or symbol), so an untyped `2.5` or
+;; `x` would land in an int column and propagate (audit M-04).  add, del and
+;; stage therefore check each tuple against the declaration `tables` shows,
+;; before anything is queued.  Only the scalar primitives a typed word can
+;; spell are checked; an exact integer of any size is an int (bignums are
+;; first-class, docs/primitives.md §14), and a bare word reads as a string.
+;; A session with no committed boundary (a pre-N4 input) has no declared
+;; types to consult, and its edits keep their old, unchecked route.
+(define (check-edit-tuple! who s rel values)
+  (define head (session-current-boundary s))
+  (when head
+    (define name (symbol->qname (string->symbol (relation-key rel))))
+    (unless (hash-has-key? (boundary-environment head) name)
+      (error who "unknown relation ~a" (relation-key rel)))
+    (define descriptor
+      (hash-ref (catalog-declarations (boundary-catalog head)) name))
+    (when (eq? (declaration-descriptor-kind descriptor) 'table)
+      (define fields (declaration-descriptor-fields descriptor))
+      (unless (= (length values) (length fields))
+        (error who "~a takes ~a values; got ~a"
+               (relation-key rel) (length fields) (length values)))
+      (for ([value (in-list values)]
+            [field (in-list fields)]
+            [column (in-naturals 1)])
+        (unless (match field
+                  [(type-ref 'primitive 'int) (exact-integer? value)]
+                  [(type-ref 'primitive 'float) (inexact-real? value)]
+                  [(type-ref 'primitive 'str) (or (string? value) (symbol? value))]
+                  [_ #t])
+          (error who "~a column ~a expects ~a; got ~s"
+                 (relation-key rel) column (type-detail field) value))))))
+
 (define (boundary-catalog-projection head sizes)
   (define cat (boundary-catalog head))
   (define declarations (catalog-declarations cat))
@@ -4297,6 +4330,11 @@
             (loop rest (cons (cons '+ fact) acc))]
            [_ (error 'stage
                      "malformed staged change; expected signed facts like +(edge 1 2)")])))
+     ;; every change is checked before any is queued, so a refused stage
+     ;; leaves the pending batch as it was
+     (for ([sf (in-list staged)])
+       (match-define (cons _sign (cons rel vals)) sf)
+       (check-edit-tuple! 'stage (repl-session-session rs) rel vals))
      (for ([sf (in-list staged)])
        (match-define (cons sign (cons rel vals)) sf)
        (session-batch! (repl-session-session rs) sign rel vals))
@@ -4395,6 +4433,7 @@
        (error (string->symbol verb) "expected a relation followed by values"))
      (match-define (list* rel values) datum)
      (define rs (ensure-mutable-session-record! state (string->symbol verb)))
+     (check-edit-tuple! (string->symbol verb) (repl-session-session rs) rel values)
      (define requested
        (list (hasheq 'relation (relation-key rel)
                      'added (if (string=? verb "add") 1 0)
@@ -5360,6 +5399,27 @@
     (parameterize ([current-directory repository-root])
       (when (directory-exists? "data/r3_scratch_replay")
         (delete-directory/files "data/r3_scratch_replay"))))
+
+  ;; M-04: edits are checked against the declared column types before they
+  ;; are queued.  A bignum is an int; a float is not, and a stage holding
+  ;; one bad change queues none of them.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/reach.slog"
+                  "add edge 1 2.5"
+                  "add edge 99999999999999999999 1"
+                  "stage +(edge 5 6) +(edge 1)"
+                  "stage +(nosuch 1)"
+                  ":status"
+                  ":quit")))])
+    (check-regexp-match #px"add: edge column 2 expects int; got 2\\.5" transcript)
+    (check-regexp-match #px"◆ Add · edge\n  \\(edge 99999999999999999999 1\\)"
+                        transcript)
+    (check-regexp-match #px"stage: edge takes 2 values; got 1" transcript)
+    (check-regexp-match #px"stage: unknown relation nosuch" transcript)
+    (check-false (regexp-match? #px"pending" transcript)))
 
   ;; clear scratch (R3 slice b): a fresh-only layer retracts wholesale --
   ;; strata forgotten, introduced names dropped dependents-first -- and the
