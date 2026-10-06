@@ -8,6 +8,8 @@ import "./emacs.test.js";
 import "./trace.test.js";
 import "./markdown.test.js";
 import "./hints.test.js";
+import "./hunks.test.js";
+import "./graph.test.js";
 import { finish } from "./check.js";
 
 finish();
