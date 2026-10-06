@@ -4,7 +4,8 @@
 //   mark(span, message)     underline a 1-based position, or clear with null
 //   reveal(span)            put the cursor at a position
 //   setBreakpoints(lines)   show breakpoint dots on these 1-based lines
-// `onBreakpoints(lines)` fires when a margin click or an edit changes them.
+// `onBreakpoints(lines)` fires when a margin click or an edit changes them;
+// `snapBreakpoint(line)` says which line a click on `line` marks, or null.
 
 const MONACO = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs";
 
@@ -54,7 +55,7 @@ const SLOG = {
   },
 };
 
-function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints }) {
+function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpoints, snapBreakpoint }) {
   monaco.languages.register({ id: "slog" });
   monaco.languages.setMonarchTokensProvider("slog", SLOG);
   monaco.languages.setLanguageConfiguration("slog", {
@@ -117,7 +118,8 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   };
   editor.onMouseDown((event) => {
     if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
-    const line = event.target.position.lineNumber;
+    const line = snapBreakpoint(event.target.position.lineNumber);
+    if (line === null) return;
     const lines = dotLines();
     showDots(lines.includes(line) ? lines.filter((l) => l !== line) : [...lines, line]);
     reportDots();

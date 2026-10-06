@@ -2,6 +2,7 @@
 // prompt, and the status strip, all fed by one WebSocket to the studio.
 
 import { createEditor } from "./editor.js";
+import { formAt, forms } from "./forms.js";
 import { renderEntry } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +34,12 @@ const editor = await createEditor($("editor"), {
   onEvaluate: evaluate,
   onSave: save,
   onBreakpoints: (lines) => send({ t: "breakpoints", lines }),
+  // A break names the line of a rule's `rule` keyword, which is where the
+  // compiler locates it; a click anywhere in the rule marks that line.
+  snapBreakpoint: (line) => {
+    const form = formAt(forms(editor.get()), line);
+    return form?.keyword === "rule" ? form.line : null;
+  },
 });
 
 // Edits ------------------------------------------------------------------
