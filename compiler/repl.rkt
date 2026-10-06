@@ -2032,7 +2032,10 @@
   (unless (string=? (string-trim argument) "")
     (error 'activate
            "bare `activate` commits after audits; a pre-commit hold rides an armed level-1 watch (`watch REL level 1`)"))
-  (define rs (ensure-session-record! state))
+  ;; Only activation commits.  `replace instance` and `preview` seal and
+  ;; show a proposal without touching the database, so readonly mode lets
+  ;; a proposal be prepared and refuses only here.
+  (define rs (ensure-mutable-session-record! state 'activate))
   (define proposal
     (or (hash-ref repl-proposals rs #f)
         (error 'activate "no pending proposal; `replace instance ...` first")))
