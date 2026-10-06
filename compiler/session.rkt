@@ -5250,6 +5250,18 @@
     (error 'session
            (format "refusing to overwrite database ~a: it is an input to ~a"
                    name (string-join deps ", "))))
+  ;; A save writes a new layer linked atop the databases this session read
+  ;; (docs/db-compression.md §7: data/ is an acyclic DAG), so it can never
+  ;; replace one of them: the layer's recipe would open itself, and neither
+  ;; it nor anything built on it could load again.  An input reached
+  ;; through another database's manifest is refused just above.
+  (when (for/or ([st (in-list (session-steps s))])
+          (match (third st)
+            [(or `(open ,db) `(link ,db ,_) `(attach ,db ,_)) (equal? db name)]
+            [_ #f]))
+    (error 'session
+           (format "refusing to save over ~a: this session reads it as an input; save under another name"
+                   name)))
   (define dir (string-append "data/" name))
   (make-directory* dir)
   ;; 1. the materialisation (all latest versions, canonical writer)
