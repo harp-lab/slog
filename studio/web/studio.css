@@ -48,17 +48,13 @@ header {
   background: var(--chrome);
   border-bottom: 1px solid var(--border);
 }
-.identity { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.brand { font-weight: 600; color: var(--strong); letter-spacing: 0.01em; }
+.identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .file {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
+  font: 600 13px var(--mono);
+  color: var(--strong);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  direction: rtl;               /* keep the file name, drop the path's head */
-  text-align: left;
 }
 .badge {
   font-size: 11px;
@@ -100,7 +96,6 @@ kbd {
 
 button.primary { background: var(--green); border-color: var(--green); color: white; }
 button.primary:hover:not(:disabled) { background: var(--green-dark); border-color: var(--green-dark); }
-button.secondary .dot { fill: var(--red); stroke: none; }
 button.danger { color: var(--red); border-color: rgba(220, 50, 47, 0.45); }
 button.danger:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: white; }
 button.icon { padding: 0 9px; color: var(--text); }

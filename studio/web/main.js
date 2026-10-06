@@ -82,7 +82,8 @@ const receive = {
     state.savedVersion = snapshot.saved ? snapshot.version : -1;
     state.lane = snapshot.lane;
     state.session = snapshot.session;
-    $("file").textContent = snapshot.file;
+    $("file").textContent = snapshot.file.split("/").pop();
+    $("file").title = snapshot.file;
     document.title = `${snapshot.file.split("/").pop()} — Slog Studio`;
     editor.set(snapshot.text);
     editor.setBreakpoints(snapshot.breakpoints);
