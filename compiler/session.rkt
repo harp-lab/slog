@@ -378,12 +378,15 @@
 ;; continuation it wants instead (T5 slice (c)):
 ;;   'replay -- rerun the parked read from its origin (only the pre-commit
 ;;              gate can honour it; any other park answers with a
-;;              structured refusal, which the driver commits past)
+;;              structured refusal)
 ;;   a STRING -- send that command line verbatim as the resume.  Slice (c3)
 ;;              spells steps this way ("(step emit)", "(step rule 3)"), so
 ;;              the debugger's grammar stays with the client and this
 ;;              driver stays a pump.
 ;;   anything else (including void) -- continue exactly as before.
+;; A declined resume is called back with its (refused ...) line in place of
+;; a pause line: the epoch has not moved, so the hook answers for the same
+;; park again, and a hook that continues commits past the refusal.
 (define session-pause-hook (make-parameter #f))
 
 ;; Drive the current stratum to fixpoint: echo every line; answer
@@ -411,16 +414,13 @@
             (echo! s line)
             (list (string->number (cadr m)) (string->number (caddr m)) loaded))]
       [(regexp-match? #px"^\\(fixpoint " line) (echo! s line) #f]
-      ;; A refusal reaches the driver only as the answer to a resume it sent
-      ;; itself -- today a `replay` the daemon would not honour (T5 slice
-      ;; (c): a non-monotone epoch, or a park that is not the pre-commit
-      ;; gate).  The epoch is still parked, so commit past it exactly as an
-      ;; unhooked driver would; the refusal is already echoed as data.
-      [(regexp-match? #px"^\\(refused " line)
-       (echo! s line)
-       (send-plugin! s continue-so)
-       (poll loaded)]
-      [(regexp-match? #px"^\\(paused " line)
+      ;; A refusal reaches the driver only as the answer to a resume the
+      ;; hook asked for -- a `replay` or step the daemon would not honour
+      ;; (T5 slice (c): a non-monotone epoch, or a park that is not the
+      ;; pre-commit gate).  The epoch is still parked where it was, so the
+      ;; refusal goes back to the hook to answer for that same park: a held
+      ;; park must stay held, and only a hook that declines it commits past.
+      [(regexp-match? #px"^\\((paused|refused) " line)
        (echo! s line)
        (define directive
          (and (session-pause-hook) ((session-pause-hook) s line)))
@@ -434,6 +434,9 @@
           ;; A client-spelled resume (slice (c3)'s steps): the reply is the
           ;; next pause -- a step stop, an ordinary park -- or a refusal.
           (send-command-line! s directive)
+          (poll loaded)]
+         [(regexp-match? #px"^\\(refused " line)
+          (send-plugin! s continue-so)
           (poll loaded)]
          [(regexp-match? #px"memory\\)\\s*$" line)
           (error 'session (format "out of memory: ~a" line))]
