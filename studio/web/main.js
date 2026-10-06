@@ -9,6 +9,7 @@ import { initAgent } from "./agent.js";
 import { createHistory } from "./history.js";
 import { createHints } from "./hints.js";
 import { createPalette } from "./palette.js";
+import { createChangePanel } from "./changes.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
@@ -65,7 +66,10 @@ const files = createFiles({
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
-const versions = createHistory({ send, files });
+// The change graph and the history strip show only when asked for or when
+// they matter.
+const changes = createChangePanel($("work"));
+const versions = createHistory({ send, files, changes });
 const results = createResults({
   tabs: $("result-tabs"),
   panel: $("results"),
@@ -428,7 +432,6 @@ function showTab(tab) {
   }
   renderReview();
   if (open && tab === "scenarios") send({ t: "scenarios" });
-  if (open && tab === "history") versions.render();
 }
 for (const button of document.querySelectorAll(".panel-toggle")) {
   button.addEventListener("click", () => showTab(button.dataset.tab));
@@ -497,7 +500,7 @@ const palette = createPalette(() => {
     panel("ask", "Ask the agent"),
     panel("review", "Review proposals"),
     panel("scenarios", "Scenarios"),
-    panel("history", "History: every version of the project"),
+    { title: "History: every version of the project, and its branches", run: versions.open },
     { title: "New file", run: () => $("new-file").click() },
     { title: "Focus the editor", keys: "Esc", run: () => editor.focus() },
     { title: "Focus the REPL prompt", keys: "Ctrl+`", run: () => prompt.focus() },

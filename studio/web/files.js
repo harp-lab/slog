@@ -274,7 +274,11 @@ export function createFiles({ editor, transmit, note, onOpen, onSaved }) {
     flush,
     receive,
     pathOf,
+    open,
     active: () => state.active,
+    main: () => state.main,
+    // Every file's text as this tab has it: path -> text.
+    texts: () => Object.fromEntries([...state.files].map(([path, file]) => [path, file.local])),
     // The main file's version, whether this tab has edits to it the studio
     // has not taken, and whether it is the file shown.
     mainState() {

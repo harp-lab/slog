@@ -674,7 +674,7 @@ body.login .error { margin: 0; min-height: 1.4em; color: var(--red); }
 .file-tab .close { color: var(--muted); padding: 0 2px; }
 .file-tab .close:hover { color: var(--red); }
 
-/* ---- Versions: the viewer, the time slider and History ----------------- */
+/* ---- Versions: the viewer and the time slider (more in diff.css) ------ */
 
 #viewer { height: var(--editor-height); min-height: 80px; background: var(--surface); }
 #timeline { border-top: 1px solid var(--border); background: var(--chrome); }
@@ -691,47 +691,3 @@ body.login .error { margin: 0; min-height: 1.4em; color: var(--red); }
   color: var(--blue);
 }
 #viewing-title { flex: 1; font: 500 12px var(--mono); }
-
-#history-list { display: flex; flex-direction: column; gap: 3px; }
-.history-row, .history-run {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  height: auto;
-  min-height: 26px;
-  padding: 4px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-  font: 12px var(--sans);
-  text-align: left;
-}
-.history-row.nested { margin-left: 16px; }
-.history-row.off, .history-run.off { opacity: 0.6; }
-.history-row.viewing { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
-.history-row .id { font: 600 11.5px var(--mono); color: var(--strong); }
-.history-row.checkpoint .what { color: var(--green-dark); font-weight: 600; }
-.history-row.revert .what, .history-row.branch .what { color: var(--orange); font-weight: 600; }
-.history-row.accept .what { color: var(--blue); font-weight: 600; }
-.history-row.disk .what { color: var(--yellow); font-weight: 600; }
-.history-row .when, .history-run .when { margin-left: auto; color: var(--muted); font-size: 11px; }
-.history-row .forms, .history-run .forms {
-  flex-basis: 100%;
-  font: 11px var(--mono);
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.history-row .from { font-size: 11px; color: var(--muted); }
-.history-row .ref {
-  font: 10.5px var(--mono);
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-}
-.history-row .ref.current { background: var(--strong); border-color: var(--strong); color: var(--page); }
-.history-run .chevron { color: var(--muted); width: 10px; }
-.history-run .what { font-weight: 600; color: var(--strong); }

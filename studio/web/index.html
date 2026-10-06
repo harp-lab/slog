@@ -51,19 +51,30 @@
   </nav>
   <div id="work">
     <section id="summary" hidden></section>
-    <div id="tabs"></div>
+    <div id="tabbar">
+      <div id="tabs"></div>
+      <button id="history-chip" hidden aria-pressed="false"></button>
+    </div>
     <div id="editor"></div>
     <div id="viewer" hidden></div>
-    <div id="timeline">
+    <div id="timeline" hidden>
       <div id="viewing" hidden>
         <span id="viewing-title"></span>
+        <button id="viewing-compare" class="secondary small" title="Mark the differences to another version instead">Compare with…</button>
+        <button id="viewing-graph" class="secondary small" title="What the difference does to the relations and rules">Change graph</button>
         <button id="viewing-restore" class="primary small" title="Make these files current again, as a new version">Restore</button>
         <button id="viewing-branch" class="secondary small" title="Start a new branch from this version and edit there">Branch from here</button>
         <button id="viewing-back" class="secondary small" title="Return to the files you are editing">Back to head</button>
       </div>
+      <div id="picking" hidden>
+        <span id="picking-title"></span>
+        <button id="picking-cancel" class="quiet small">Cancel</button>
+      </div>
+      <div id="version-graph"></div>
       <div class="timeline-row">
         <input id="timeline-slider" type="range" min="0" max="0" value="0" aria-label="Versions on this branch">
         <span id="timeline-label"></span>
+        <button id="timeline-close" class="quiet small" title="Hide the history">×</button>
       </div>
     </div>
     <div id="divider" title="Drag to resize"></div>
@@ -92,10 +103,6 @@
     <div class="tab" data-tab="scenarios">
       <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
       <div id="scenario-list"></div>
-    </div>
-    <div class="tab" data-tab="history">
-      <p class="hint">Every version of the project, newest first. Click one to look at it.</p>
-      <div id="history-list"></div>
     </div>
   </aside>
 </main>
