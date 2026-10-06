@@ -3365,6 +3365,11 @@ public:
     std::string id;
     std::string relation;        // head relation, or empty for any
     u32 rule_id = UINT32_MAX;    // exact rule, or the sentinel for any
+    // The rule at a source location, "file:line" or "file:line:col" as
+    // rule-location-string spells it, or empty for any.  Rule ids restart
+    // in every stratum, so a location is the one name that picks out a
+    // single rule across a program.
+    std::string source;
     u16 position = 0xffff;       // cursor slot, or the sentinel for any
     std::vector<u64> pattern;    // head pattern words, empty for any
     std::vector<bool> wild;      // parallel to pattern: `_` columns

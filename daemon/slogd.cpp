@@ -2992,7 +2992,8 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             {
                 refuse(d, "parse", "(verb break) (detail \"expected (break "
                        "(id \\\"b1\\\") [(relation \\\"R\\\")] [(rule N)] "
-                       "[(position K)] [(pattern TERM ...)])\")");
+                       "[(source \\\"FILE:LINE\\\")] [(position K)] "
+                       "[(pattern TERM ...)])\")");
                 return;
             }
             const std::string& tag = field.children[0].text;
@@ -3010,6 +3011,9 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                      && parse_u64_atom(field.children[1], value)
                      && value < UINT32_MAX)
                 spec.rule_id = static_cast<u32>(value);
+            else if (tag == "source" && field.children.size() == 2
+                     && field.children[1].kind == slog::sexp::SExp::K::string)
+                spec.source = field.children[1].text;
             else if (tag == "position" && field.children.size() == 2
                      && parse_u64_atom(field.children[1], value)
                      && value < 0xffff)
@@ -3041,19 +3045,23 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
             return;
         }
         if (spec.relation.empty() && spec.rule_id == UINT32_MAX
-            && spec.position == 0xffff && spec.pattern.empty())
+            && spec.source.empty() && spec.position == 0xffff
+            && spec.pattern.empty())
         {
             // "stop at every port of every rule" is `step`, not a break.
             refuse(d, "parse", "(verb break) (detail \"a break needs a "
-                   "relation, a rule, or a position to narrow it\")");
+                   "relation, a rule, a source, or a position to narrow "
+                   "it\")");
             return;
         }
-        if (spec.position != 0xffff && spec.rule_id == UINT32_MAX)
+        if (spec.position != 0xffff && spec.rule_id == UINT32_MAX
+            && spec.source.empty())
         {
             // A body position without a rule is a different position in
             // every rule -- an accident, not an intent.
             refuse(d, "parse", "(verb break) (detail \"a body position "
-                   "belongs to a rule; give (rule N) too\")");
+                   "belongs to a rule; give (rule N) or (source "
+                   "\\\"FILE:LINE\\\") too\")");
             return;
         }
         const std::string id = spec.id;
@@ -3119,6 +3127,7 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
                     + ") (rule "
                     + (b.rule_id == UINT32_MAX ? "#f"
                                                : std::to_string(b.rule_id))
+                    + ") (source " + slog::protocol::quoteString(b.source)
                     + ") (position "
                     + (b.position == 0xffff ? "#f"
                                             : std::to_string(b.position))

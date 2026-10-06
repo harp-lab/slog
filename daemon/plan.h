@@ -1585,6 +1585,15 @@ struct StepSink final : public DebugSink
   static_assert(static_cast<u8>(EventK::instantiation) == 6);
   static_assert(static_cast<u8>(EventK::emit) == 7);
 
+  // A rule location matches its own spelling and, without its column, every
+  // rule starting on that line: "reach.slog:11" names "reach.slog:11:1".
+  static bool at_source(const std::string& loc, const std::string& source)
+  {
+    return loc == source
+      || (loc.size() > source.size() && loc.compare(0, source.size(), source) == 0
+          && loc[source.size()] == ':');
+  }
+
   // T5 slice (d3): does a standing break want THIS transition?  Returns its
   // id, or empty for none.  A break narrows by any combination of head
   // relation, rule and body position, and each filter is tested against the
@@ -1599,6 +1608,8 @@ struct StepSink final : public DebugSink
     for (const Database::BreakSpec& b : db->breakSpecs())
     {
       if (b.rule_id != UINT32_MAX && e.rule_id != b.rule_id) continue;
+      if (!b.source.empty() && !(rule_loc && at_source(*rule_loc, b.source)))
+        continue;
       if (b.position != 0xffff)
       {
         if (e.kind != EventK::probe_match || slot != b.position) continue;
