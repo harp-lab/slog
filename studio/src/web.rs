@@ -247,11 +247,12 @@ fn handle(
             };
             let _ = direct.send(reply);
         }
-        Request::Save => {
-            if let Err(message) = studio.save() {
+        Request::Save => match studio.save() {
+            Ok((version, text)) => studio.summarize(version, text, None),
+            Err(message) => {
                 let _ = direct.send(json(&Reply::Notice { message: &message }));
             }
-        }
+        },
         Request::Evaluate => {
             tokio::spawn(async move { studio.evaluate().await });
         }

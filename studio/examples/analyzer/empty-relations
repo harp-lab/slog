@@ -1,0 +1,50 @@
+#!/usr/bin/env racket
+#lang racket/base
+;; An EXAMPLE of the STUDIO_ANALYZER contract, not a real analysis.
+;;
+;;   STUDIO_ANALYZER=studio/examples/analyzer/empty-relations ./slog studio FILE
+;;
+;; Studio runs `empty-relations analyze --program FILE --eval EVAL.json`,
+;; where FILE is a copy of the text being summarized and EVAL.json is
+;; {"relations": [{"name": ..., "rows": ...}, ...]} from the last evaluation
+;; of that text, or {"relations": null} if it has not been evaluated. It
+;; prints one JSON object on stdout:
+;;   {"summary": "...", "findings": [{"line": N, "severity": "error" |
+;;    "warning" | "info", "message": "..."}]}
+;;
+;; This one flags each relation a `table` line declares that the evaluation
+;; left empty: declared, but nothing wrote it. It finds declarations with a
+;; regular expression, so it misses any that do not start a line.
+
+(require json racket/match racket/port)
+
+(define declaration #px"^\\s*table\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_']*)")
+
+(define (analyze program eval-file)
+  (define relations (hash-ref (call-with-input-file eval-file read-json) 'relations))
+  (define findings
+    (if (list? relations)
+        (let ([rows (for/hash ([relation (in-list relations)])
+                      (values (hash-ref relation 'name) (hash-ref relation 'rows)))])
+          (for*/list ([(text line) (in-parallel (call-with-input-file program port->lines)
+                                                (in-naturals 1))]
+                      [found (in-value (regexp-match declaration text))]
+                      #:when (and found (zero? (hash-ref rows (cadr found) 0))))
+            (hasheq 'line line
+                    'severity "warning"
+                    'message (format "`~a` is declared, but the last evaluation wrote nothing to it"
+                                     (cadr found)))))
+        '()))
+  (hasheq 'summary
+          (if (list? relations)
+              (format "~a declared relation~a left empty by the last evaluation."
+                      (length findings) (if (= 1 (length findings)) " is" "s are"))
+              "Not evaluated yet: run the program to check for empty relations.")
+          'findings findings))
+
+(match (current-command-line-arguments)
+  [(vector "analyze" "--program" program "--eval" eval-file)
+   (write-json (analyze program eval-file))
+   (newline)]
+  [_ (eprintf "usage: empty-relations analyze --program FILE --eval EVAL.json\n")
+     (exit 2)])

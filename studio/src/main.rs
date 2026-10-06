@@ -17,6 +17,7 @@ mod review;
 mod scenario;
 mod session;
 mod studio;
+mod summary;
 mod web;
 
 use accounts::Accounts;
@@ -38,6 +39,10 @@ Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
 --port N     listen on 127.0.0.1:N (default: any free port)
 --no-open    print the address without opening a browser
 --compiled   evaluate with native code (-O2) from the start
+
+Each save and run is summarized in the background by `claude -p` when it is
+on PATH (STUDIO_SUMMARY_MODEL picks its model), and by STUDIO_ANALYZER, a
+command run as `CMD analyze --program FILE --eval EVAL.json`, when set.
 
 `scenario` runs scenario files headless and reports each check and step;
 it exits non-zero if any fails. --json prints the reports as JSON.

@@ -10,6 +10,7 @@ use crate::lane::{Lane, LaneStatus, Mode};
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::session::{Outcome, Session, SessionView, run_argument};
+use crate::summary::{self, Summarizer};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -29,6 +30,8 @@ pub struct Snapshot {
     pub review: ReviewView,
     /// Why the agent cannot run here, if it cannot.
     pub agent_unavailable: Option<String>,
+    /// `None` until a summarizer is attached.
+    pub summary: Option<summary::View>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -62,6 +65,8 @@ pub enum Event {
         report: Option<Report>,
         error: Option<String>,
     },
+    /// The program summary and analyzer findings changed.
+    Summary(summary::View),
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -107,6 +112,8 @@ pub struct Studio {
     pub(crate) preview_session: Mutex<(Session, Option<(u32, u64)>)>,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
+    /// Summarizes each saved text in the background, once attached.
+    summary: OnceLock<Arc<Summarizer>>,
 }
 
 impl Studio {
@@ -130,6 +137,21 @@ impl Studio {
             session: Mutex::new(Session::new(&lane)),
             lane,
             events: broadcast::channel(1024).0,
+            summary: OnceLock::new(),
+        }
+    }
+
+    /// Summarize the program from now on: on every save, and after every
+    /// evaluation with its relation counts.
+    pub fn attach_summarizer(&self, summarizer: Arc<Summarizer>) {
+        let _ = self.summary.set(summarizer);
+    }
+
+    /// Ask for a summary of `text`, saved as `version`; `tables` is the
+    /// complete `tables` result when that text was just evaluated.
+    pub fn summarize(&self, version: u64, text: String, tables: Option<&serde_json::Value>) {
+        if let Some(summarizer) = self.summary.get() {
+            summarizer.request(version, text, tables.and_then(summary::relations));
         }
     }
 
@@ -192,6 +214,7 @@ impl Studio {
             breakpoints: self.breakpoints.lock().expect("breakpoints lock").clone(),
             review: self.review.lock().expect("review lock").view(&doc.text),
             agent_unavailable: Agent::unavailable(),
+            summary: self.summary.get().map(|summarizer| summarizer.view()),
         }
     }
 
@@ -234,18 +257,19 @@ impl Studio {
     }
 
     /// Write the current text to the file if it changed since the last save.
-    pub fn save(&self) -> Result<(), String> {
+    /// Returns the version and text the file now holds.
+    pub fn save(&self) -> Result<(u64, String), String> {
         let mut doc = self.doc.lock().expect("doc lock");
         if doc.saved_version == doc.version && self.file.exists() {
-            return Ok(());
+            return Ok((doc.version, doc.text.clone()));
         }
         std::fs::write(&self.file, &doc.text)
             .map_err(|error| format!("cannot write {}: {error}", self.file.display()))?;
         doc.saved_version = doc.version;
-        let version = doc.version;
+        let (version, text) = (doc.version, doc.text.clone());
         drop(doc);
         self.publish(Event::Saved { version });
-        Ok(())
+        Ok((version, text))
     }
 
     /// Run one line typed at the REPL prompt.
@@ -292,14 +316,22 @@ impl Studio {
                 self.publish_outcome(Origin::Evaluate, session.view(), &failure);
                 false
             }
-            Ok(()) => {
+            Ok((version, text)) => {
                 let mut shown = session.view().clone();
-                session
+                let mut tables = None;
+                let ok = session
                     .evaluate(&self.lane, &self.file, &prepare, &mut |outcome| {
                         self.publish_outcome(Origin::Evaluate, &shown, outcome);
                         shown = outcome.session.clone();
+                        if outcome.line == "tables" {
+                            tables = outcome.result.clone();
+                        }
                     })
-                    .await
+                    .await;
+                // A held run's relations are partial: not the program's.
+                let complete = tables.as_ref().filter(|_| !session.view().held);
+                self.summarize(version, text, complete);
+                ok
             }
         };
         self.publish(Event::Evaluation {

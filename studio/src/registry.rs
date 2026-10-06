@@ -15,7 +15,8 @@
 
 use crate::auth::same_secret;
 use crate::lane::{Lane, LaneState, Mode};
-use crate::studio::Studio;
+use crate::studio::{Event, Studio};
+use crate::summary::{self, Summarizer};
 use slog_repl::server::private_token;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -123,6 +124,13 @@ impl Registry {
             studio.set_port(*port);
         }
         studio.relay_lane();
+        let tabs = Arc::downgrade(&studio);
+        let config = summary::Config::from_env(&self.data, &file);
+        studio.attach_summarizer(Summarizer::start(config, move |view| {
+            if let Some(studio) = tabs.upgrade() {
+                studio.publish(Event::Summary(view));
+            }
+        }));
         let entry = Entry {
             user: user.to_owned(),
             studio: studio.clone(),
