@@ -69,6 +69,8 @@
 #include <unistd.h>
 #include <poll.h>
 #include <cerrno>
+#include <atomic>
+#include <csignal>
 
 // Constants
 namespace {
@@ -4392,6 +4394,43 @@ static void dispatch_line(slog::Daemon* d,
         run_plugin(d, line, so_handles);
 }
 
+// An interrupt (SIGUSR1) asks the run in flight to pause at its next slice
+// check, exactly as its deadline passing would: the handler sets the run's
+// own stop flag, which every slice check (each 128 outer tuples), task claim
+// and iteration barrier already polls, so the run parks within milliseconds
+// and answers with an ordinary budget pause record.  Without it an
+// interrupt waited for the next budget pause, up to max_ms (8 s) away.
+// Storing to a lock-free atomic is async-signal-safe.  Each continueRun
+// clears the flag as it starts, so a signal that lands between runs is
+// dropped; the client asks again until the pause arrives.
+static std::atomic<std::atomic<bool>*> interrupt_target{nullptr};
+
+static void on_interrupt(int)
+{
+    if (std::atomic<bool>* stop = interrupt_target.load(std::memory_order_relaxed))
+        stop->store(true, std::memory_order_relaxed);
+}
+
+// Installed first thing, so an early signal is ignored rather than fatal;
+// the target is set once the daemon (and its Database) exists.
+static void listen_for_interrupts()
+{
+    struct sigaction action;
+    std::memset(&action, 0, sizeof(action));
+    action.sa_handler = on_interrupt;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;   // a blocked read or poll carries on
+    sigaction(SIGUSR1, &action, nullptr);
+}
+
+static void interrupts_stop(slog::Daemon* daemon)
+{
+    interrupt_target.store(
+        daemon ? &const_cast<std::atomic<bool>&>(daemon->db()->runStopFlag())
+               : nullptr,
+        std::memory_order_relaxed);
+}
+
 // stdin transport: one plugin path per line, responses to stdout.
 static int run_stdin(u32 num_threads)
 {
@@ -4399,6 +4438,7 @@ static int run_stdin(u32 num_threads)
     CommandBuilders builders;
     auto* daemon = new slog::Daemon(num_threads,
         [](const std::string& s) { std::cout << s << std::endl; });
+    interrupts_stop(daemon);
 
     std::string line;
     while (std::getline(std::cin, line))
@@ -4413,6 +4453,7 @@ static int run_stdin(u32 num_threads)
     // (BTreeIndex<A>) are instantiated in the .so's, so their vtables and
     // destructors live there.
     builders.active_query.reset();
+    interrupts_stop(nullptr);
     delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     return 0;
@@ -4439,6 +4480,7 @@ static int run_tcp(u32 num_threads, int port)
     CommandBuilders builders;
     auto* daemon = new slog::Daemon(num_threads,
         [sock](const std::string& s) { send_msg(sock, s); });
+    interrupts_stop(daemon);
 
     pollfd pfd;
     pfd.fd = sock;
@@ -4514,6 +4556,7 @@ static int run_tcp(u32 num_threads, int port)
     // Release a connection-scoped query lease before its Database, then
     // delete the daemon BEFORE dlclosing (vtables live in the .so's).
     builders.active_query.reset();
+    interrupts_stop(nullptr);
     delete daemon;
     for (void* h : so_handles) if (h) dlclose(h);
     close(sock);
@@ -4538,6 +4581,7 @@ int main(int argc, char* argv[])
     // sized to thread_count, so a runtime that silently hands back fewer
     // threads (OMP_DYNAMIC=true) would deadlock at the first barrier.
     omp_set_dynamic(0);
+    listen_for_interrupts();
 
     if (port >= 0)
         return run_tcp(num_threads, port);

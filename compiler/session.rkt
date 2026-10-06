@@ -110,6 +110,7 @@
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
+         session-interrupt!     ; pause the daemon's run at its next slice check
          memory-pause?          ; is this pause line a memory-budget pause (runslog.rkt)
          session-prepare-hook   ; T5: bind watches before the run (R4 break)
          (struct-out scratch-event)
@@ -117,6 +118,7 @@
          inline-batch-max)
 
 (require "tools.rkt")
+(require (prefix-in ffi: (only-in ffi/unsafe get-ffi-obj _fun _int ->)))
 (require "compile.rkt") ; RF2 image emission is additive to the session-facing API
 (require "tier-profile.rkt")  ; T3b slice 3: sessions record the race too
 (require "activation.rkt")    ; spine A1: the ProgramChangeSet consumer
@@ -222,7 +224,10 @@
                  ;; The execution trace's read cursor: the daemon sequence
                  ;; number the next trace read starts from, or #f while the
                  ;; trace is off (docs/pausing.md §15).
-                 [trace-from #:mutable])
+                 [trace-from #:mutable]
+                 ;; #t while drive-to-fixpoint! waits on the daemon's run:
+                 ;; the only time session-interrupt! signals it.
+                 [driving? #:mutable])
   #:transparent)
 
 ;; One committed scratch fragment (R3, repl-ux.md §5.3): its ordinal, the
@@ -255,7 +260,7 @@
              layer-id (fresh-runtime-id "eval") 0 '()
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
-             '() '() (hash) #f '() '() #f))
+             '() '() (hash) #f '() '() #f #f))
   (set-evaluation! s)
   s)
 
@@ -285,7 +290,7 @@
                      (make-hash) '() '() '() (make-hash) (make-hash) #f echo
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
-                     '() '() (hash) #f '() '() #f))
+                     '() '() (hash) #f '() '() #f #f))
   (set-evaluation! s)
   (define-values (_cur strata-pos _chains) (introspect! s))
   (set-session-next-scc! s (hash-count strata-pos))
@@ -413,6 +418,29 @@
 ;; park again, and a hook that continues commits past the refusal.
 (define session-pause-hook (make-parameter #f))
 
+;; Ask the daemon to pause the run it is executing at its next slice check
+;; (milliseconds away) rather than at its next budget pause (up to max_ms,
+;; 8 s by default, away): SIGUSR1, which slogd turns into the run's own stop
+;; flag.  The run answers with an ordinary budget pause, which the pause hook
+;; holds when the caller's interrupt is armed (repl.rkt).  Signals only while
+;; drive-to-fixpoint! waits on a run -- not to a daemon at rest or reading a
+;; command -- and is dropped by a daemon between runs, so a caller asks again
+;; until the pause arrives.  Returns whether a signal was sent.
+(define (session-interrupt! s)
+  (define sp (session-sp s))
+  (and sp signal-number (session-driving? s)
+       (eq? (subprocess-status sp) 'running)
+       (zero? (c-kill (subprocess-pid sp) signal-number))))
+
+(define signal-number
+  (case (system-type 'os*)
+    [(linux) 10]                 ; SIGUSR1
+    [(macosx freebsd openbsd netbsd) 30]
+    [else #f]))
+
+(define c-kill
+  (ffi:get-ffi-obj "kill" #f (ffi:_fun ffi:_int ffi:_int ffi:-> ffi:_int) (lambda () (lambda (_pid _sig) -1))))
+
 ;; Drive the current stratum to fixpoint: echo every line; answer
 ;; (paused ...) with (continue); error on (error ...) or EOF.
 ;; `upgrade` (T3a) is this stratum's artifact-arrival closure, or #f.  A
@@ -425,7 +453,11 @@
   (define continue-line (action-line `(continue)))
   (define continue-boundary-line (action-line `(continue-boundary)))
   (let poll ([loaded 0])
-    (define line (read-line (session-out s)))
+    (define line
+      (dynamic-wind
+        (lambda () (set-session-driving?! s #t))
+        (lambda () (read-line (session-out s)))
+        (lambda () (set-session-driving?! s #f))))
     (cond
       [(eof-object? line) (error 'session "daemon EOF mid-stratum")]
       ;; T3b slice 3: hand the fixpoint's metrics back to the caller --
