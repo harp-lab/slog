@@ -277,6 +277,14 @@ expect_rx "delta-not-parked" '\(refused delta-unavailable [0-9]+ \(verb delta\) 
 # a missing relation and a non-numeric limit are both parse refusals
 if [ "$(grep -cE '\(refused parse [0-9]+ \(verb delta\) \(detail "expected \(delta \(relation' out/proto-delta.log)" -eq 2 ]; then
   ok "delta-parse"; else bad "delta-parse"; fi
+# a part names the driving delta or the read's candidates, nothing else
+racket tests/api/drive.rkt \
+  '(delta (relation "edge") (part "delta"))' \
+  '(delta (relation "edge") (part "old"))' \
+  > out/proto-delta2.log 2>&1
+expect_rx "delta-part-not-parked" '\(refused delta-unavailable [0-9]+ \(verb delta\) \(detail not-parked\)' out/proto-delta2.log
+expect_rx "delta-part-parse" '\(refused parse [0-9]+ \(verb delta\) \(detail "expected \(delta \(relation .*\(part' out/proto-delta2.log
+
 
 # --- 3t. the execution trace -------------------------------------------------
 # Arming answers the state and the sequence the records will start at; a read

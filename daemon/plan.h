@@ -1664,8 +1664,9 @@ struct StepSink final : public DebugSink
   // reports a success (a match, a passed guard, a fire, an emit).  A miss
   // or failed guard leaves op_index's outputs unbound; the drive port has
   // run no body op at all.
-  Database::BreakBindings rule_bindings(const Event& e,
-                                        const DebugView& view) const
+  Database::BreakBindings rule_bindings(
+      const Event& e, const DebugView& view,
+      std::vector<std::string>* unbound = nullptr) const
   {
     Database::BreakBindings out;
     if (program == nullptr || program->reg_names.empty()) return out;
@@ -1696,6 +1697,18 @@ struct StepSink final : public DebugSink
                        && r < view.regs.size(); ++r)
       if (bound[r] && !program->reg_names[r].empty())
         out.emplace_back(program->reg_names[r], view.regs[r]);
+    if (unbound != nullptr)
+      for (size_t r = 0; r < program->reg_names.size(); ++r)
+      {
+        const std::string& name = program->reg_names[r];
+        const bool named = !name.empty()
+          && std::none_of(out.begin(), out.end(),
+                          [&](const auto& b) { return b.first == name; })
+          && std::find(unbound->begin(), unbound->end(), name)
+               == unbound->end();
+        if (named && (r >= bound.size() || !bound[r]))
+          unbound->push_back(name);
+      }
     return out;
   }
 
@@ -1766,7 +1779,16 @@ struct StepSink final : public DebugSink
   // stopping breaks the first past its ignore count wins, and its id is
   // returned (empty for none).  `may_stop` false (a step stops here anyway,
   // or the breaks are quiet after a stop) leaves only the logpoints.
-  std::string break_here(const Event& e, const DebugView& view, bool may_stop)
+  // The stopping break's bindings and matched clause row, for the stop.
+  struct Stopped
+  {
+    Database::BreakBindings bound;
+    std::string relation;
+    std::vector<u64> row;
+  };
+
+  std::string break_here(const Event& e, const DebugView& view, bool may_stop,
+                         Stopped& stopped)
   {
     const std::string* head = nullptr;
     std::vector<u64> row;
@@ -1832,7 +1854,20 @@ struct StepSink final : public DebugSink
         db->recordBreakLog(std::move(out));
       }
       else if (hits > b.ignore)
+      {
         stop = b.id;
+        stopped.bound = std::move(bound);
+        if (!b.premise.empty())
+        {
+          stopped.relation = b.premise;
+          stopped.row = std::move(matched);
+        }
+        else if (emitted && !b.pattern.empty())
+        {
+          stopped.relation = *head;
+          stopped.row = row;
+        }
+      }
     }
     return stop;
   }
@@ -1871,8 +1906,10 @@ struct StepSink final : public DebugSink
     // for this position explicitly, and the break is still armed after.
     // Logpoints record either way.
     std::string broke;
+    Stopped stopped;
     if (breaking && (db->breakEventMask() & event_bit(e.kind)) != 0)
-      broke = break_here(e, view, !stepping && !db->breakSuppressed());
+      broke = break_here(e, view, !stepping && !db->breakSuppressed(),
+                         stopped);
     if (!stepping && broke.empty()) return DebugAction::continue_;
     // One stop per arming, whichever worker reaches a matching port first.
     if (!db->claimStepStop()) return DebugAction::continue_;
@@ -1889,7 +1926,20 @@ struct StepSink final : public DebugSink
     stop.driver = proof.driver;
     stop.premises = proof.premises;
     stop.break_id = broke;
-    stop.bindings = rule_bindings(e, view);
+    // The rule's variables bound at this port, then those the break's
+    // pattern bound from the matched values (`A` and `K` of `(ar A K)`,
+    // which the rule binds only at a later port), then the rest, unbound.
+    stop.unbound.clear();
+    stop.bindings = rule_bindings(e, view, &stop.unbound);
+    for (const auto& [name, word] : stopped.bound)
+      if (std::none_of(stop.bindings.begin(), stop.bindings.end(),
+                       [&](const auto& b) { return b.first == name; }))
+      {
+        stop.bindings.emplace_back(name, word);
+        std::erase(stop.unbound, name);
+      }
+    stop.clause_relation = std::move(stopped.relation);
+    stop.clause_row = std::move(stopped.row);
     if (stepping)
       // Disarm here, not at resume: the machine returns breakpoint with the
       // transition already committed, and the parked continuation must run
