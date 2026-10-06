@@ -12,6 +12,7 @@ mod ask;
 mod auth;
 mod forms;
 mod hash;
+mod knowledge;
 mod lane;
 mod mcp;
 mod projects;
