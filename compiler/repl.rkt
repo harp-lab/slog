@@ -6034,6 +6034,31 @@
         (delete-file first-program)
         (delete-file second-program))))
 
+  ;; A memory-budget pause is read as the record it is, in either spelling;
+  ;; no other pause is one.
+  (check-true (memory-pause? "(paused (generation 9) (scc 3) (stratum \"alpha\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget memory)))"))
+  (check-true (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 memory)"))
+  (check-false (memory-pause? "(paused (generation 9) (scc 3) (stratum \"memory\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget time)))"))
+  (check-false (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 time)"))
+  (check-false (memory-pause? "(paused (cause (breakpoint \"memory\")))"))
+  (check-false (memory-pause? "(paused unbalanced memory"))
+
+  ;; A run that reaches the daemon's memory cap fails, out of memory, rather
+  ;; than being continued past the cap one slice at a time.  A 1-byte cap is
+  ;; below the daemon's own resident size, so the first check trips it.
+  (let ([memory-environment (environment-variables-copy (current-environment-variables))])
+    (environment-variables-set! memory-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! memory-environment #"SLOG_THREADS" #"1")
+    (environment-variables-set! memory-environment #"SLOG_MEM_BYTES" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables memory-environment])
+      (define state (make-server-state))
+      (define answer (serve-request state (hasheq 'id 1 'method "command"
+                                                  'params (hasheq 'line "run tests/accel_chain.slog"))))
+      (check-false (hash-ref answer 'ok))
+      (check-regexp-match #px"out of memory" (hash-ref (hash-ref answer 'error) 'message))
+      (void (dispatch-command state ":quit"))))
+
   ;; A syntax error is the command's failure, positioned at the offending
   ;; token -- the parser must not print to the bootstrap pipe and exit the
   ;; server -- and the session survives it.

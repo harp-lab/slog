@@ -108,6 +108,7 @@
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
+         memory-pause?          ; is this pause line a memory-budget pause (runslog.rkt)
          session-prepare-hook   ; T5: bind watches before the run (R4 break)
          (struct-out scratch-event)
          session-close!
@@ -455,7 +456,7 @@
          [(regexp-match? #px"^\\(refused " line)
           (send-line! s continue-line)
           (poll loaded)]
-         [(regexp-match? #px"memory\\)\\s*$" line)
+         [(memory-pause? line)
           (error 'session (format "out of memory: ~a" line))]
          [(not upgrade) (send-line! s continue-line) (poll loaded)]
          ;; Only a settled ITERATION boundary is swap-safe -- a mid-read pause

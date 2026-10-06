@@ -13,6 +13,7 @@
 ;; Compilation runs ahead in a future while the daemon executes.
 
 (provide slog-run-file
+         memory-pause?               ; is a pause line a memory-budget pause
          slog-verify-replay
          slog-db-freeze              ; `slog db freeze` backend (incremental E3)
          db-manifest-from-name
@@ -31,6 +32,23 @@
 (require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward
 (require "dbtool.rkt")
 (require "parser.rkt")   ; current-source-capture (P1.1)
+
+;; Whether a pause line is a memory-budget pause (docs/pausing.md §5), read
+;; as the record it is: the keyed record's (cause (budget memory)), or the
+;; legacy positional record's trailing reason `memory`.  A pattern over the
+;; text matched one spelling only -- `memory)` at the end -- and the session
+;; driver silently stopped matching when its keyed record (ending
+;; `memory)))`) arrived, so a memory pause was continued, one slice at a
+;; time, past the cap it reports.  Both drivers (this one and session.rkt's)
+;; ask here.
+(define (memory-pause? line)
+  (match (with-handlers ([exn:fail? (lambda (_) #f)])
+           (read (open-input-string line)))
+    [`(paused ,fields ...)
+     #:when (andmap pair? fields)
+     (equal? (assq 'cause fields) '(cause (budget memory)))]
+    [`(paused ,_scc ,_name ,_iter ,_phase ,_progress ,_ms ,_total memory) #t]
+    [_ #f]))
 
 ;; When set (during a replay layer), a memory pause checkpoints the partial db
 ;; to this name instead of a bare abort (docs/db-compression.md §P2.3).
@@ -427,7 +445,7 @@
              ;; default continue-to-fixpoint mode we can only climb toward the
              ;; hard cgroup cap by continuing, so abort GRACEFULLY instead of
              ;; OOM-crashing (docs/pausing.md §5).
-             [(regexp-match? #px"memory\\)\\s*$" line)
+             [(memory-pause? line)
               (cond
                 ;; During a replay, checkpoint the partial db before aborting so
                 ;; the (possibly huge) progress is not lost (§P2.3); wait for the
