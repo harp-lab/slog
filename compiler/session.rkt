@@ -92,6 +92,9 @@
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
          session-whatif         ; R5: read-only cone/route preview of an edit
+         session-stale-readers  ; who still reads an older version of REL
+         session-strata-ids     ; live strata, to diff a program event against
+         session-rebinds        ; the versions a program event made, + readers
          session-scratch-add!   ; R3: run one scratch fragment, interp-only
          session-scratch-events ; R3: the live scratch ledger, oldest first
          session-scratch-keep!  ; R3: export the layer and promote it
@@ -3134,6 +3137,67 @@
       [else (if negatable? 'maintain-negative 'clear-and-rerun)]))
   (list affected route (length cone) mono? negatable?))
 
+;; A program event that writes an existing relation makes a new version of
+;; it (§0.4); strata bound earlier keep reading the version they were bound
+;; to, so neither the new rows nor later tip edits reach them.  The stale
+;; readers of `rel` are the heads of the OLD strata that read it, less any
+;; head a NEW stratum re-derives from it (a program that restates its
+;; readers reads the new version).  Old/new are lists of (reads . heads);
+;; $-machinery heads never count.
+(define (stale-heads rel old new)
+  (define rederived
+    (for*/set ([e (in-list new)] #:when (assq rel (car e)) [h (in-list (cdr e))])
+      h))
+  (sort (remove-duplicates
+         (for*/list ([e (in-list old)] #:when (assq rel (car e))
+                     [h (in-list (cdr e))]
+                     #:unless (regexp-match? #rx"^[$]" (symbol->string h))
+                     #:unless (set-member? rederived h))
+           h))
+        symbol<?))
+
+;; Live: the version of `rel` current now, old = strata bound before it.
+;; (values ordinal readers).
+(define (stale-readers s rel strata-pos chains)
+  (define chain (hash-ref chains rel '()))
+  (define anchor (if (null? chain) 0 (second (last chain))))
+  (define-values (old new)
+    (partition (lambda (e) (< (car e) anchor))
+               (for/list ([p (in-list (session-strata-info s))])
+                 (list* (hash-ref strata-pos (car p) 0)
+                        (sinfo-reads (cdr p)) (sinfo-heads (cdr p))))))
+  (values (if (null? chain) 0 (first (last chain)))
+          (stale-heads rel (map cdr old) (map cdr new))))
+
+(define (session-stale-readers s rel)
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (stale-readers s rel* strata-pos chains))
+
+;; The scc ids of the live strata -- a snapshot to diff a program event
+;; against (session-rebinds).
+(define (session-strata-ids s) (map car (session-strata-info s)))
+
+;; The rebinds a program event made: for each relation written by a
+;; stratum not in `before-ids` that earlier strata still read at an older
+;; version, (list rel ordinal readers).
+(define (session-rebinds s before-ids)
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (define writes
+    (sort (remove-duplicates
+           (for*/list ([p (in-list (session-strata-info s))]
+                       #:unless (memv (car p) before-ids)
+                       [h (in-list (sinfo-heads (cdr p)))])
+             h))
+          symbol<?))
+  (for*/list ([r (in-list writes)]
+              [found (in-value
+                      (call-with-values
+                       (lambda () (stale-readers s r strata-pos chains))
+                       list))]
+              #:when (pair? (second found)))
+    (cons r found)))
+
 ;; Create a distinct input-only successor slot at the current JIT tip.  An
 ;; earlier pipeline point requires a recipe-branch rebuild; refusing it keeps
 ;; event-time semantics honest.
@@ -3504,12 +3568,21 @@
                 ;; the generic derived-only/absent report misleads.  The
                 ;; schema round trip runs only on this error path.
                 (define kind (hash-ref (session-schema-manifest s) rel #f))
+                ;; derived-only: a rule supports the row and no input does.
+                ;; A fact written in the program (`rule (edge 2 3)`) is
+                ;; such a rule, which is the common surprise -- say so,
+                ;; and say what retracts it.
                 (error 'session
-                       (if (and (pair? kind) (eq? (car kind) 'struct))
-                           (format "cannot retract ~a from ~a: ~a is a struct relation (import-delta is the vehicle for struct-embedding input)"
-                                   t rel rel)
-                           (format "cannot retract ~a from ~a: tuple is ~a"
-                                   t rel (if live? "derived-only" "absent"))))])]))
+                       (cond
+                         [(and (pair? kind) (eq? (car kind) 'struct))
+                          (format "cannot retract ~a from ~a: ~a is a struct relation (import-delta is the vehicle for struct-embedding input)"
+                                  t rel rel)]
+                         [live?
+                          (format "cannot retract ~a from ~a: tuple is derived-only -- a rule of the program derives it (a fact in the program source, like `rule (~a ~a)`, is a rule too), and a retraction removes only input rows (added with `add`, `stage`, or an import); to remove it, change the program and run it again"
+                                  t rel rel (string-join (map ~s t) " "))]
+                         [else
+                          (format "cannot retract ~a from ~a: tuple is absent"
+                                  t rel)]))])]))
     (unless (and (equal? d d0) (equal? m m0))
       (define before? (or d0 (and pred? (not m0))))
       (define after? (or d (and pred? (not m))))
