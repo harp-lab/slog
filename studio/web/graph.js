@@ -14,8 +14,8 @@ const DECLARES = new Set(["table", "struct", "union", "enum", "lattice", "demand
 
 // ---- What a program declares and derives -----------------------------------
 
-// Each declaration and rule of `text`: { keyword, name, normal } or { keyword:
-// "rule", heads, body, normal }, `normal` being its tokens without comments
+// Each declaration and rule of `text`: { keyword, name, normal, line } or { keyword:
+// "rule", heads, body, normal, line }, `normal` being its tokens without comments
 // or layout, to tell whether it changed.
 export function relations(text) {
   const out = [];
@@ -27,9 +27,9 @@ export function relations(text) {
     if (DECLARES.has(form.keyword)) {
       const at = words.findIndex((word) => word.text === "(");
       const name = words[at + 1];
-      if (at >= 0 && name?.kind === "word" && isName(name.text)) out.push({ keyword: form.keyword, name: name.text, normal });
+      if (at >= 0 && name?.kind === "word" && isName(name.text)) out.push({ keyword: form.keyword, name: name.text, normal, line: form.line });
     } else if (form.keyword === "rule") {
-      out.push({ keyword: "rule", ...atoms(words), normal });
+      out.push({ keyword: "rule", ...atoms(words), normal, line: form.line });
     }
   }
   return out;

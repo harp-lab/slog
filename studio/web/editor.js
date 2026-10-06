@@ -19,7 +19,8 @@
 //                           the rules that fired), or none
 // `onBreakpoints(lines)` fires when a margin click or an edit changes them;
 // `snapBreakpoint(line)` says which line a click on `line` marks, or null;
-// `readOnly: true` makes an editor for looking only.
+// `readOnly: true` makes an editor for looking only. `raw` is { monaco,
+// editor } for Monaco, else null.
 
 import { bindMonaco, bindTextarea } from "./paredit.js";
 
@@ -162,6 +163,8 @@ function monacoEditor(monaco, element, { onChange, onEvaluate, onSave, onBreakpo
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
   bindMonaco(monaco, editor); // structured editing and completion (paredit.js)
   return {
+    // Hook: the Monaco editor itself, for what draws over it (inline-diff.js).
+    raw: { monaco, editor },
     show(key, text) {
       if (key !== shown) {
         if (documents.has(shown)) documents.get(shown).view = editor.saveViewState();
@@ -285,6 +288,7 @@ function textareaEditor(element, { onChange, onEvaluate, onSave, readOnly = fals
     return lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0) + col - 1;
   };
   return {
+    raw: null, // nothing draws over a textarea
     show(key, text) {
       if (key !== shown) {
         area.value = text;

@@ -1,0 +1,209 @@
+/* Changes shown in place: proposals in the editor (inline-diff.js,
+   proposals.js), the change graph (changes.js), and the history strip with
+   its version graph (history.js). Green is what comes in, red what goes,
+   amber what changes; each thread has a tone of its own. */
+
+.tone-0 { --tone: var(--blue); }
+.tone-1 { --tone: #6c71c4; }
+.tone-2 { --tone: #2aa198; }
+.tone-3 { --tone: #d33682; }
+.tone-4 { --tone: var(--yellow); }
+.history { --tone: var(--muted); }
+
+.ip-dot { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
+
+/* ---- In the editor ------------------------------------------------------ */
+
+.ip-del { background: rgba(220, 50, 47, 0.09); }
+.ip-del-chars { background: rgba(220, 50, 47, 0.2); text-decoration: line-through rgba(220, 50, 47, 0.55); }
+.ip-form { border-left: 3px solid var(--tone); margin-left: 4px; }
+/* Zones never share space with text, so they can sit over the text layer,
+   which would otherwise take the clicks meant for their buttons. */
+.monaco-editor .view-zones { z-index: 1; }
+.ip-zone { box-sizing: border-box; }
+.ip-add { white-space: pre; overflow: hidden; color: #4c5a00; background: rgba(133, 153, 0, 0.11); }
+.ip-add-chars { background: rgba(133, 153, 0, 0.3); }
+.ip-zone-margin { box-sizing: border-box; height: 100%; margin-left: 4px; border-left: 3px solid var(--tone); }
+.ip-plus { color: var(--green); font-family: var(--mono); font-size: 12px; padding-left: 3px; }
+.ip-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border-top: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
+  background: color-mix(in srgb, var(--tone) 7%, var(--page));
+  color: var(--muted);
+  font: 11.5px var(--sans);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ip-who { flex: none; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: var(--strong); font-weight: 600; }
+.ip-note { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ip-flag { color: var(--orange); font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-head .ip-flag { flex: 0 1 auto; max-width: 35%; }
+.ip-head button { height: 18px; padding: 0 8px; font-size: 11px; border-radius: 4px; }
+.ip-head .ip-accept { margin-left: auto; background: var(--green); border-color: var(--green); color: white; }
+.ip-head .ip-accept:hover:not(:disabled) { background: var(--green-dark); border-color: var(--green-dark); }
+.ip-head .ip-reject { color: var(--text); }
+
+/* ---- The proposal bar --------------------------------------------------- */
+
+.proposal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 14px;
+  background: rgba(38, 139, 210, 0.07);
+  border-bottom: 1px solid rgba(38, 139, 210, 0.3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+body.viewing-version .proposal-bar { display: none; }
+.proposal-bar .ip-dot + .ip-what { margin-left: 2px; }
+.ip-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--strong); font-weight: 600; }
+.ip-of { color: var(--text); font-weight: 400; }
+.ip-nav { display: inline-flex; align-items: center; gap: 2px; }
+.ip-nav button { padding: 0 6px; font-size: 14px; }
+.ip-index { font: 11px var(--mono); color: var(--muted); min-width: 28px; text-align: center; }
+.proposal-bar button.on { background: var(--strong); border-color: var(--strong); color: var(--page); }
+
+/* ---- The Review tab and the Ask thread's chip --------------------------- */
+
+.review-set { margin-bottom: 12px; }
+.review-head { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+.review-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--strong); }
+.review-decided { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: auto;
+  min-height: 26px;
+  margin-bottom: 3px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--tone);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+.review-row.gone { --tone: var(--muted); color: var(--muted); }
+.review-ids { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.review-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.proposal-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--tone);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--strong);
+  font-size: 12px;
+}
+.proposal-chip .chip-view { margin-left: auto; color: var(--blue); }
+.proposal-chip.done { color: var(--muted); }
+.ip-thread { height: 22px; padding: 0 8px; font-size: 11.5px; border-left: 3px solid var(--tone); }
+.ip-thread.on { background: var(--strong); color: var(--page); }
+
+/* ---- The change graph --------------------------------------------------- */
+
+#work { position: relative; }
+.changes {
+  position: absolute;
+  top: 66px;
+  right: 18px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 320px;
+  max-width: min(640px, 75%);
+  max-height: 55vh;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(7, 54, 66, 0.16);
+}
+.changes-head { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--border); }
+.changes-title { font-weight: 600; color: var(--strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.changes-controls { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.changes-body { overflow: auto; padding: 8px; }
+.changes-legend { display: flex; gap: 12px; padding: 4px 12px 6px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
+.changes-legend .key::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 4px; border-radius: 2px; border: 1px solid; vertical-align: -1px; }
+.key.added::before { background: #eef8e9; border-color: var(--green); }
+.key.removed::before { background: var(--red-tint); border-color: var(--red); }
+.key.changed::before { background: #fbf1d3; border-color: var(--yellow); }
+.key.same::before { background: white; border-color: var(--border-strong); }
+
+.change-graph .node { cursor: pointer; }
+.change-graph .node rect { fill: white; stroke: var(--border-strong); stroke-width: 1.2; }
+.change-graph .node text { font: 11px var(--mono); text-anchor: middle; fill: var(--strong); }
+.change-graph .node.added rect { fill: #eef8e9; stroke: var(--green); }
+.change-graph .node.removed rect { fill: var(--red-tint); stroke: var(--red); stroke-dasharray: 3 2; }
+.change-graph .node.removed text { text-decoration: line-through; fill: #a82422; }
+.change-graph .node.changed rect { fill: #fbf1d3; stroke: var(--yellow); }
+.change-graph .node.same { opacity: 0.5; }
+.change-graph .node:hover rect { stroke-width: 2; }
+.change-graph .edge { fill: none; stroke: var(--border-strong); stroke-width: 1.3; }
+.change-graph .edge.added { stroke: var(--green); }
+.change-graph .edge.removed { stroke: var(--red); stroke-dasharray: 4 3; }
+.change-graph .edge.same { opacity: 0.6; }
+.change-graph .arrow { fill: var(--border-strong); }
+.change-graph .arrow.added { fill: var(--green); }
+.change-graph .arrow.removed { fill: var(--red); }
+
+/* ---- History: the chip, the strip and the version graph ----------------- */
+
+#tabbar { display: flex; align-items: center; background: var(--chrome); border-bottom: 1px solid var(--border); }
+#tabbar #tabs { flex: 1; min-width: 0; border-bottom: 0; }
+#history-chip {
+  flex: none;
+  height: 22px;
+  margin: 0 8px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+#history-chip:hover { border-color: var(--border-strong); color: var(--text); }
+#history-chip[aria-pressed="true"] { color: var(--blue); border-color: rgba(38, 139, 210, 0.4); }
+
+#picking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  background: var(--orange-tint);
+  border-bottom: 1px solid rgba(203, 75, 22, 0.35);
+  color: var(--orange);
+  font-weight: 600;
+}
+#picking-title { flex: 1; }
+#timeline-close { padding: 0 7px; }
+#version-graph { overflow-x: auto; padding: 4px 6px 0; }
+#version-graph svg { display: block; }
+.vedge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
+.vnode { cursor: pointer; }
+.vnode circle, .vnode rect { fill: var(--muted); stroke: var(--chrome); stroke-width: 2; }
+.vnode rect { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.vnode text { font: 8.5px var(--mono); text-anchor: middle; fill: var(--text); }
+.vnode.checkpoint circle { fill: var(--green); }
+.vnode.accept circle { fill: var(--blue); }
+.vnode.disk circle { fill: var(--yellow); }
+.vnode.revert circle, .vnode.branch circle { fill: var(--orange); }
+.vnode.off { opacity: 0.55; }
+.vnode.viewing circle { stroke: var(--strong); stroke-width: 2; r: 6px; }
+.vnode.against circle { stroke: var(--orange); stroke-width: 2; r: 6px; }
+.vnode.marked circle { stroke: var(--blue); stroke-width: 2; stroke-dasharray: 2 1.5; r: 6.5px; }
+.vnode:hover circle { stroke: var(--text); }
+.vnode .lane-name { text-anchor: start; font-size: 10.5px; fill: var(--muted); }
+.vnode .lane-name.current { fill: var(--strong); font-weight: 600; }
