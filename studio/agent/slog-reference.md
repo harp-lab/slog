@@ -5,7 +5,8 @@ declares relations and types, then gives rules; the compiler type-checks the
 whole program, splits it into strata, generates native code, and runs each
 stratum to a fixpoint. This reference is the working subset you need. Every
 `slog` block below is a complete program that compiles and runs as written;
-every `slog-error` block fails with the error its first line names. When you
+every `slog-error` block fails with the error its first line names; every
+`query` block answers as shown against the program before it. When you
 need something not covered here, use `search_docs` / `read_doc` /
 `list_examples` rather than guessing.
 
@@ -934,7 +935,9 @@ table (dist cost int)
 rule (dist 1 2)
 ```
 
-Others: `Table or struct done must have at least one column` (zero-arity
+Others: `map relation component needs at least one key column` (a lattice
+table with no key: give it a key column, or make the column a plain `cset`),
+`Table or struct done must have at least one column` (zero-arity
 table: add a column), `Type declarations for a conflict: (table int) vs
 (table str)` (declared twice), `Demand relation f must declare at least one
 answer column`.
@@ -965,6 +968,8 @@ in the evaluation and query it with `?(error E)`.
   head of that rule is lost. Never name constructors `neg`, `abs`, `min`,
   `max`, `pow`, `log`, `exp`, `floor`, `ceil`, `round`, `size`, `top`, `one`,
   `inf`, or any other name in section 4.
+- **A constructor named `const`** breaks the compiler with an internal
+  contract error from `simplify-all`; `const` is an internal form. Use `lit`.
 - **Ordering guards on strings** (`(< S "b")`) are numeric only: each match
   produces a `type_mismatch` error instead of a comparison.
 - **An `any` value written into a narrower column** keeps the rows that fit
@@ -1207,16 +1212,333 @@ rule (prog N T) --> (has_type N (typeof T (cmap)))
 `"bad"` has no type: no rule answers it. An ill-typed term is the absence of
 an answer, so report it with negation in a later stratum if needed.
 
+### 13.7 Points-to analysis (Andersen, flow-insensitive)
+
+Statements are a union; each rule is one inclusion constraint.
+
+```slog
+;; Andersen-style points-to for a tiny pointer language.
+union (stmt (addr str str)      ;; p = &x
+            (copy str str)      ;; p = q
+            (load str str)      ;; p = *q
+            (store str str))    ;; *p = q
+table (code stmt)
+table (pts str str)             ;; (pts P X): P may point to X
+table (alias str str)
+rule (code (addr "p" "x")) (code (addr "q" "y")) (code (copy "r" "p"))
+     (code (store "r" "q")) (code (load "s" "x"))
+rule (code (addr P X)) --> (pts P X)
+rule (code (copy P Q)) (pts Q X) --> (pts P X)
+rule (code (load P Q)) (pts Q R) (pts R X) --> (pts P X)
+rule (code (store P Q)) (pts P R) (pts Q X) --> (pts R X)
+rule (pts P X) (pts Q X) (/= P Q) --> (alias P Q)
+```
+
+### 13.8 Call graph, recursion, and strongly connected components
+
+Walk an AST with a relation that collects every subterm of each body, then
+close the call relation:
+
+```slog
+union (expr (call str) (seq expr expr) (skip))
+table (fundef str expr)
+table (calls str str)
+table (reach_fn str str)
+table (recursive str)
+table (body_of str expr)
+rule (fundef "main" (seq (call "f") (call "g")))
+     (fundef "f" (call "g")) (fundef "g" (seq (skip) (call "f"))) (fundef "h" (skip))
+rule (fundef F B) --> (body_of F B)
+rule (body_of F (seq A B)) --> (body_of F A) (body_of F B)
+rule (body_of F (call G)) --> (calls F G)
+rule (calls F G) --> (reach_fn F G)
+rule (reach_fn F G) (calls G H) --> (reach_fn F H)
+rule (reach_fn F F) --> (recursive F)
+```
+
+Strongly connected components as canonical sets: every vertex of a component
+gets the same interned set, which then names the component.
+
+```slog
+table (edge int int)
+table (vertex int)
+table (reachable int int)
+lattice (iset (set int))
+table (scc int iset)
+table (component cset)
+rule (edge 1 2) (edge 2 1) (edge 2 3) (edge 3 4) (edge 4 3)
+rule (edge X Y) --> (vertex X) (vertex Y)
+rule (vertex X) --> (reachable X X)
+rule (reachable X Y) (edge Y Z) --> (reachable X Z)
+rule (reachable X Y) (reachable Y X) (= S (cins (cmap) Y)) --> (scc X S)
+rule (scc X S) --> (component S)
+```
+
+`component` is a plain `cset` column: a lattice-typed table needs at least one
+key column besides the lattice value.
+
+### 13.9 Abstract interpretation with a powerset domain
+
+A finite powerset domain needs no lattice at all: "X may have sign S" is a
+plain relation, and the fixpoint is the least solution. Use a `flat` or
+`min`/`max` lattice only when you need one joined value per key, and then
+case on that value in a later stratum (section 7, flat example).
+
+```slog
+;; Sign analysis: a powerset abstract domain is just a relation.
+union (sign (pos) (zero) (negative))
+union (aexp (lit int) (var str) (plus aexp aexp))
+table (assign int str aexp)      ;; (assign L X E): at label L, X := E
+table (flow int int)
+table (sign_at int str sign)     ;; before label L, X may have sign S
+table (aval int aexp sign)       ;; at L, E may evaluate to a value of sign S
+table (subexp int aexp)
+table (add_sign sign sign sign)
+table (maybe_zero int str)
+rule (assign 1 "x" (lit 5)) (assign 2 "y" (lit 0))
+     (assign 3 "x" (plus (var "x") (var "y"))) (assign 4 "y" (plus (var "x") (lit -7)))
+rule (flow 1 2) (flow 2 3) (flow 3 4) (flow 4 3) (flow 4 5)
+rule (add_sign (pos) (pos) (pos)) (add_sign (negative) (negative) (negative))
+     (add_sign (zero) (pos) (pos)) (add_sign (pos) (zero) (pos))
+     (add_sign (zero) (negative) (negative)) (add_sign (negative) (zero) (negative))
+     (add_sign (zero) (zero) (zero))
+     (add_sign (pos) (negative) (pos)) (add_sign (pos) (negative) (zero)) (add_sign (pos) (negative) (negative))
+     (add_sign (negative) (pos) (pos)) (add_sign (negative) (pos) (zero)) (add_sign (negative) (pos) (negative))
+;; the expressions to evaluate at each label
+rule (assign L _ E) --> (subexp L E)
+rule (subexp L (plus A B)) --> (subexp L A) (subexp L B)
+rule (subexp L (lit N)) (> N 0) --> (aval L (lit N) (pos))
+rule (subexp L (lit 0)) --> (aval L (lit 0) (zero))
+rule (subexp L (lit N)) (< N 0) --> (aval L (lit N) (negative))
+rule (subexp L (var X)) (sign_at L X S) --> (aval L (var X) S)
+rule (subexp L (plus A B)) (aval L A SA) (aval L B SB) (add_sign SA SB S)
+  --> (aval L (plus A B) S)
+;; transfer along flow edges: the assigned variable gets the new signs,
+;; the others keep theirs
+rule (flow L L2) (assign L X E) (aval L E S) --> (sign_at L2 X S)
+rule (flow L L2) (sign_at L Y S) (assign L X _) (/= X Y) --> (sign_at L2 Y S)
+rule (sign_at L X (zero)) --> (maybe_zero L X)
+```
+
+### 13.10 Context sensitivity with list contexts (k-CFA style)
+
+Contexts are lists of the most recent `k` call sites; `lst_take` from
+`list.slog` truncates them. A demand computes the next context.
+
+```slog
+;; Context-sensitive (k = 1) call-site sensitivity sketch with list contexts.
+include "list.slog"
+table (klimit int)
+table (call str str str)        ;; (call Site Caller Callee)
+table (entry str)
+table (reach str (list str))    ;; (reach Fn Context)
+demand (tick str (list str)) (list str)
+rule (klimit 1) (entry "main")
+rule (call "c1" "main" "f") (call "c2" "main" "f") (call "c3" "f" "g")
+rule (tick Site Ctx (lst_take [Site Ctx ...] K)) <-- (klimit K)
+rule (entry F) --> (reach F [])
+rule (reach F Ctx) (call Site F G) --> (reach G (tick Site Ctx))
+```
+
+The full analyses are `examples/schemecfa/` (m-CFA with abstract counting)
+and `examples/kcfa/` (k-CFA with environment maps). Read `interp.slog` and
+`context.slog` there before writing one.
+
+### 13.11 Sums over a closed set
+
+```slog
+;; sum a closed set of numbers
+lattice (ints (set int))
+table (sale str int)
+table (sales_of str ints)
+table (total str int)
+demand (sum_list (list int)) int
+rule (sale "ada" 3) (sale "ada" 4) (sale "bob" 10)
+rule (sale P N) (= S (cins (cmap) N)) --> (sales_of P S)
+rule (sum_list [] 0)
+rule (sum_list [X XS ...] (+ X (sum_list XS)))
+rule (sales_of P S) --> (total P (sum_list (set2lst S)))
+```
+
+### 13.12 Strings: splitting and parsing
+
+```slog
+table (line str)
+table (field str int str)
+table (num_field str int int)
+rule (line "3,alpha,42") (line "7,beta,x")
+rule (line L) (= Parts (ssplit L ",")) (= F (lref Parts 0)) --> (field L 0 F)
+rule (line L) (= Parts (ssplit L ",")) (= F (lref Parts 2)) --> (field L 2 F)
+rule (field L I S) (= N (s2i S)) --> (num_field L I N)
+```
+
+`s2i` is partial: `"x"` produces no `num_field` row and no error.
+
+### 13.13 Alternatives inside one clause list
+
+```slog
+table (a int)
+table (b int)
+table (c int)
+rule (a 1) (b 2)
+rule ((a X) | (b X)) --> (c X)
+```
+
+### 13.14 The SMT library
+
+`include "smt.slog"` (found in `lib/`) gives formula constructors (`ic`, `iv`,
+`ladd`, `llt`, `land`, `lor`, `lnot`, ...) and demands `smt_check`,
+`smt_model`, `smt_core`. Without an external solver configured, ground
+formulas are decided and symbolic ones answer `(unknown)`. Search the docs
+for "smt" before using it.
+
+```slog
+include "smt.slog"
+table (probe str verdict)
+rule (= V (smt_check (land (llt (ic 1) (ic 3)) (lgt (ic 7) (ic 5))))) --> (probe "true_ground" V)
+rule (= V (smt_check (llt (ic 4) (ic 3)))) --> (probe "false_ground" V)
+```
+
+
+### 13.15 Cookbook: common questions and their Slog shape
+
+**Which row achieves the minimum (argmin / argmax)?** Keep the extreme in a
+`min`/`max` lattice, then join it back against the rows in a later stratum.
+
+```slog
+lattice (low (min int))
+table (bid str str int)          ;; (bid Item Bidder Price)
+table (best_price str low)
+table (winner str str int)
+rule (bid "lamp" "ada" 30) (bid "lamp" "bob" 25) (bid "desk" "ada" 90)
+rule (bid I _ P) --> (best_price I P)
+;; later stratum: join the closed minimum back to the rows achieving it
+rule (best_price I P) (bid I B P) --> (winner I B P)
+```
+
+```slog
+lattice (high (max int))
+table (score str str int)        ;; (score Team Player Points)
+table (top_score str high)
+table (mvp str str)
+rule (score "red" "ada" 12) (score "red" "bob" 7) (score "blue" "cy" 9)
+rule (score T _ P) --> (top_score T P)
+rule (top_score T P) (score T Who P) --> (mvp T Who)
+```
+
+**"For all" conditions.** Derive the counterexample relation, then negate it.
+
+```slog
+;; "every prerequisite of C is done": negate "some prerequisite is not done"
+table (course str)
+table (prereq str str)           ;; (prereq C P): P must come before C
+table (done str)
+table (blocked str)
+table (ready str)
+rule (course "intro") (course "algo") (course "pl") (course "compilers")
+rule (prereq "algo" "intro") (prereq "pl" "intro") (prereq "compilers" "algo")
+     (prereq "compilers" "pl")
+rule (done "intro") (done "algo")
+rule (prereq C P) ~(done P) --> (blocked C)
+rule (course C) ~(done C) ~(blocked C) --> (ready C)
+```
+
+**A default when no value exists.**
+
+```slog
+;; a default for keys with no explicit value
+table (user str)
+table (setting str int)
+table (effective str int)
+rule (user "ada") (user "bob") (setting "ada" 3)
+rule (setting U V) --> (effective U V)
+rule (user U) ~(setting U _) --> (effective U 10)
+```
+
+**Set difference, intersection, union.**
+
+```slog
+table (a int)
+table (b int)
+table (only_a int)
+table (both int)
+table (either int)
+rule (a 1) (a 2) (a 3) (b 2) (b 4)
+rule (a X) ~(b X) --> (only_a X)
+rule (a X) (b X) --> (both X)
+rule (a X) --> (either X)
+rule (b X) --> (either X)
+```
+
+**Symmetric, transitive relations (undirected connectivity).**
+
+```slog
+table (link str str)
+table (connected str str)
+rule (link "a" "b") (link "b" "c") (link "d" "e")
+rule (link X Y) --> (connected X Y) (connected Y X)
+rule (connected X Y) (connected Y Z) (/= X Z) --> (connected X Z)
+```
+
+**Shortest hop counts on a cyclic graph.** Plain recursion on a depth column
+(`(depth Y (+ D 1))` in an ordinary table) never terminates on a cycle; a
+`min` lattice keeps one value per node and converges.
+
+```slog
+;; shortest hop count from a root, without a lattice: BFS layers are a
+;; min lattice; plain recursion on depth would not terminate on cycles
+lattice (hops (min int #:floor 0))
+table (edge str str)
+table (depth str hops)
+rule (edge "r" "a") (edge "a" "b") (edge "b" "r") (edge "r" "b")
+rule (depth "r" 0)
+rule (depth X D) (edge X Y) --> (depth Y (+ D 1))
+```
+
+**Identifiers.** Do not allocate integer ids. A struct or constructor value is
+its own identity (interned), and can be a key, a set element, or a join
+column.
+
+```slog
+;; structured keys need no id allocation: the term itself is the id
+struct (site str int)            ;; file, line
+table (call_at site str)
+table (callee_count str int)
+lattice (sites (set site))
+table (sites_of str sites)
+rule (call_at (site "a.c" 10) "f") (call_at (site "a.c" 22) "f") (call_at (site "b.c" 3) "g")
+rule (call_at S F) (= One (cins (cmap) S)) --> (sites_of F One)
+rule (sites_of F S) --> (callee_count F (csize S))
+```
+
+**Ordering and ranking.** Relations are unordered and there is no `ORDER BY`
+or `LIMIT`. Get the extreme with a `min`/`max` lattice; get "the next one"
+with a successor relation (`(next X Y)` derived from the data); `lsort`,
+`set2lst`, and `ckeys` order by an internal word order that is not numeric or
+alphabetical.
+
 ## 14. Working habits in the Studio
 
 - Read the program once (`get_program`), then propose form-sized changes.
 - After proposing, `evaluate_proposal`: it reports each relation's row count
   or the first error with its line. Fix and re-evaluate before replying.
-- Use `query` for samples. Remember section 11's limits: copy lattice values
-  and structured matches into plain helper tables when you must inspect them.
-- When a relation is unexpectedly empty: check spelling of relation names
-  (an undeclared name is an error, but a misspelled *variable* silently
-  breaks a join), constructor names and arities, string vs. int constants,
-  and whether a demand is ever asked.
-- When unsure of syntax or a primitive, `search_docs` (e.g. `"cget partial"`,
-  `"lattice soundness"`) and `read_doc` an example before proposing.
+  Constructors appear among the relations too (`num`, `add`, ...): their
+  counts are the distinct values built.
+- Check the counts against what the request implies (a 4-node chain has 6
+  paths) and query a few rows. Remember section 11's limits: copy lattice
+  values and structured matches into plain helper tables when you must
+  inspect them.
+- An `error` relation with rows means runtime errors: query `?(error E)`.
+- When a relation is unexpectedly empty, find the first relation in the
+  chain that is empty and look at the rule feeding it:
+  - a misspelled *variable* silently breaks a join (`(edge X Y) (path Y2 Z)`);
+  - a constant of the wrong kind never matches (`"1"` vs `1`, `(red)` vs
+    `"red"`);
+  - a constructor pattern with the wrong shape or arm never matches;
+  - a partial operation (`cget`, `lref`, `s2i`, ...) failed silently;
+  - a demand was never asked, or no rule answers that input;
+  - a negated relation is larger than you think.
+- Keep facts that describe inputs separate from rules, one fact per line or
+  a few per `rule`, so the author can edit the data.
+- When unsure of syntax or a primitive, `search_docs` (e.g. `cget partial`,
+  `lattice soundness`) and `read_doc` an example before proposing.
