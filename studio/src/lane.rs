@@ -286,6 +286,8 @@ impl Lane {
 mod tests {
     use super::{Lane, LaneState, Mode};
     use slog_repl::server::project_root;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// A killed server is replaced by the next command, transparently.
     #[tokio::test]
@@ -298,5 +300,59 @@ mod tests {
         let status = lane.status().borrow().clone();
         assert_eq!((status.state, status.starts), (LaneState::Ready, 2));
         lane.shutdown().await;
+    }
+
+    /// Stop lands at once, not at the run's next budget pause (8 s apart
+    /// by default): the run in flight answers "Paused · interrupt" soon
+    /// after the interrupt is asked for.
+    #[tokio::test]
+    async fn an_interrupt_pauses_a_long_run_at_once() {
+        // a 3000-node chain's closure: thousands of iterations, seconds long
+        let dir = std::env::temp_dir().join(format!("studio-interrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        let file = dir.join("chain.slog");
+        let edges: String = (1..3000).map(|n| format!("(edge {n} {})\n", n + 1)).collect();
+        std::fs::write(
+            &file,
+            format!(
+                "table (edge int int)\ntable (path int int)\n\
+                 rule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\n\
+                 rule\n{edges}"
+            ),
+        )
+        .expect("program");
+        let lane = Arc::new(Lane::new(project_root().expect("repository root"), Mode::Fast));
+        assert!(lane.command(":ping").await.expect("server").ok);
+        let running = {
+            let lane = lane.clone();
+            let line = format!("run {}", file.display());
+            tokio::spawn(async move { lane.command(&line).await })
+        };
+        // until the run is past its start and into the closure
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let progress = lane.progress(0).await.expect("progress");
+            let result = progress.result.unwrap_or_default();
+            // a stratum under way
+            if result["running"] == true && result["current"].is_object() {
+                break;
+            }
+            if running.is_finished() {
+                let answer = running.await.expect("task");
+                panic!("the run ended before it could be interrupted: {answer:?}; last progress {result}");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let asked = Instant::now();
+        assert!(lane.interrupt().await.expect("interrupt").ok);
+        let answer = running.await.expect("the run's task").expect("the run's answer");
+        let latency = asked.elapsed();
+        eprintln!("interrupt latency: {latency:?}");
+        let result = answer.result.expect("a pause");
+        assert_eq!(result["title"], "Paused · interrupt", "{result}");
+        assert!(latency < Duration::from_millis(500), "the interrupt took {latency:?}");
+        assert!(lane.command("abort").await.expect("abort").ok);
+        lane.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

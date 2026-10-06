@@ -5674,9 +5674,30 @@
                   #:kind "interrupt")]
     [else
      (set-server-state-interrupt! state #t)
+     (signal-until-parked! state)
      (text-result "Interrupt"
                   (list "pausing at the next slice boundary; the running command answers with the pause")
                   #:kind "interrupt")]))
+
+;; Have the daemon park the run now rather than at its next budget pause:
+;; signal every session's daemon that is running a stratum, every 20 ms,
+;; until the armed interrupt is consumed by the park it causes or by the end
+;; of its command.  A daemon between runs drops the signal, and one at rest
+;; is not signalled (session-interrupt!), so asking again is what makes the
+;; pause land wherever the run is -- a stratum under way, or the next one to
+;; start after a compile.  Bounded, so a flag no command consumes stops it.
+(define (signal-until-parked! state)
+  (thread
+   (lambda ()
+     (let loop ([tries 1500])            ; 30 s
+       (when (and (positive? tries) (server-state-interrupt state))
+         ;; (read beside the command thread, which may add a session)
+         (for ([rs (in-list (with-handlers ([exn:fail? (lambda (_) '())])
+                              (hash-values (server-state-sessions state))))])
+           (define s (repl-session-session rs))
+           (when s (session-interrupt! s)))
+         (sleep 0.02)
+         (loop (sub1 tries)))))))
 
 (define (dispatch-command* state source)
   (define trimmed (string-trim source))
@@ -6533,6 +6554,31 @@
         (close-server-session! state)
         (delete-file first-program)
         (delete-file second-program))))
+
+  ;; A memory-budget pause is read as the record it is, in either spelling;
+  ;; no other pause is one.
+  (check-true (memory-pause? "(paused (generation 9) (scc 3) (stratum \"alpha\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget memory)))"))
+  (check-true (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 memory)"))
+  (check-false (memory-pause? "(paused (generation 9) (scc 3) (stratum \"memory\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget time)))"))
+  (check-false (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 time)"))
+  (check-false (memory-pause? "(paused (cause (breakpoint \"memory\")))"))
+  (check-false (memory-pause? "(paused unbalanced memory"))
+
+  ;; A run that reaches the daemon's memory cap fails, out of memory, rather
+  ;; than being continued past the cap one slice at a time.  A 1-byte cap is
+  ;; below the daemon's own resident size, so the first check trips it.
+  (let ([memory-environment (environment-variables-copy (current-environment-variables))])
+    (environment-variables-set! memory-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! memory-environment #"SLOG_THREADS" #"1")
+    (environment-variables-set! memory-environment #"SLOG_MEM_BYTES" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables memory-environment])
+      (define state (make-server-state))
+      (define answer (serve-request state (hasheq 'id 1 'method "command"
+                                                  'params (hasheq 'line "run tests/accel_chain.slog"))))
+      (check-false (hash-ref answer 'ok))
+      (check-regexp-match #px"out of memory" (hash-ref (hash-ref answer 'error) 'message))
+      (void (dispatch-command state ":quit"))))
 
   ;; A syntax error is the command's failure, positioned at the offending
   ;; token -- the parser must not print to the bootstrap pipe and exit the
@@ -8027,6 +8073,47 @@
         (check-false (server-state-interrupt state))
         (check-false (server-state-held state))
         (void (run! ":quit")))))
+
+  ;; An interrupt lands at once, not at the run's next budget pause (8 s
+  ;; apart by default, which is what this run keeps): the daemon is
+  ;; signalled and parks at its next slice check.  A 3000-node chain's
+  ;; closure runs for seconds; the interrupt is asked once a stratum is
+  ;; under way, and the pause must answer well inside the budget.
+  (let ([environment (environment-variables-copy test-environment)]
+        [chain (make-temporary-file "repl-chain-~a.slog")])
+    (environment-variables-set! environment #"SLOG_OPT" #"interp")
+    (with-output-to-file chain #:exists 'truncate
+      (lambda ()
+        (display "table (edge int int)\ntable (path int int)\n")
+        (display "rule (edge X Y) --> (path X Y)\nrule (path X Y) (edge Y Z) --> (path X Z)\nrule\n")
+        (for ([n (in-range 1 3000)]) (printf "(edge ~a ~a)\n" n (add1 n)))))
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables environment])
+      (define state (make-server-state))
+      (define answer (make-channel))
+      ;; (as the primary connection does, so the live progress follows)
+      (thread (lambda ()
+                (channel-put answer
+                             (hash-ref (serve-request state (hasheq 'id 1 'method "command"
+                                                                    'params (hasheq 'line (format "run ~a" chain))))
+                                       'result))))
+      (let wait ([tries 6000])
+        (define progress (run-progress state 0))
+        (unless (and (hash-ref progress 'running)
+                     (not (eq? (hash-ref progress 'current) 'null)))
+          (when (zero? tries) (error 'interrupt-test "the run never got under way"))
+          (sleep 0.01)
+          (wait (sub1 tries))))
+      (sleep 0.3)
+      (define asked (current-inexact-milliseconds))
+      (void (request-interrupt! state))
+      (define paused (channel-get answer))
+      (define latency (- (current-inexact-milliseconds) asked))
+      (check-equal? (hash-ref paused 'title) "Paused · interrupt")
+      (check-true (< latency 2000) (format "the interrupt took ~a ms" latency))
+      (check-not-equal? (hash-ref (dispatch-command state "abort") 'kind) "paused")
+      (void (dispatch-command state ":quit")))
+    (delete-file chain))
 
   ;; T5 slice (d1): provenance capture and `why` (contract §4(d1), repl-ux
   ;; §9.4).  Capture is opt-in per watch, so the first thing pinned is that

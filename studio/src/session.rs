@@ -41,6 +41,27 @@ impl Outcome {
     }
 }
 
+/// How an evaluation ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Evaluated {
+    /// The program ran to its fixpoint, and its relations were listed.
+    Done,
+    /// The run is held mid-way (a break, a step, a gate, an interrupt),
+    /// waiting for continue, commit or abort; its relations are not listed,
+    /// since the session reads nothing while a run is parked.
+    Held,
+    /// A step failed.
+    Failed,
+}
+
+impl Evaluated {
+    /// The program ran to its fixpoint.
+    pub fn done(self) -> bool {
+        self == Evaluated::Done
+    }
+}
+
 pub struct Session {
     /// The lane generation `view` describes; a new server has no session.
     generation: u64,
@@ -95,16 +116,16 @@ impl Session {
 
     /// Evaluate `file` from nothing: resolve any held run, discard the
     /// current session, send `prepare` (e.g. breaks to arm) to the fresh
-    /// one, run the program, and list its relations. `each` sees every
-    /// command's outcome in order; the result is whether all of them
-    /// succeeded.
+    /// one, run the program, and list its relations -- unless the run is
+    /// held, when the session would refuse the read. `each` sees every
+    /// command's outcome in order.
     pub async fn evaluate(
         &mut self,
         lane: &Lane,
         file: &Path,
         prepare: &[String],
         each: &mut (dyn FnMut(&Outcome) + Send),
-    ) -> bool {
+    ) -> Evaluated {
         let Some(path) = run_argument(file) else {
             each(&self.failure(
                 "run",
@@ -114,7 +135,7 @@ impl Session {
                     file.display()
                 ),
             ));
-            return false;
+            return Evaluated::Failed;
         };
         self.refresh(lane);
         // `discard` refuses while a run is held, and quitting would commit it.
@@ -130,16 +151,21 @@ impl Session {
         let first_prepare = steps.len();
         steps.extend_from_slice(prepare);
         steps.push(format!("run {path}"));
-        steps.push("tables".to_owned());
+        let run = steps.len() - 1;
         for (index, line) in steps.into_iter().enumerate() {
             let outcome = self.execute(lane, &line).await;
             each(&outcome);
             let preparing = (first_prepare..first_prepare + prepare.len()).contains(&index);
             if !outcome.ok() && !preparing {
-                return false;
+                return Evaluated::Failed;
+            }
+            if index == run && self.view.held {
+                return Evaluated::Held;
             }
         }
-        true
+        let outcome = self.execute(lane, "tables").await;
+        each(&outcome);
+        if outcome.ok() { Evaluated::Done } else { Evaluated::Failed }
     }
 
     /// An outcome for a step that failed before reaching the server.

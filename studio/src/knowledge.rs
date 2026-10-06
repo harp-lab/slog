@@ -214,7 +214,8 @@ mod tests {
                         .evaluate(&lane, &file, &[], &mut |outcome| {
                             errors.extend(outcome.error.clone().map(|e| e.message))
                         })
-                        .await;
+                        .await
+                        .done();
                     let error = errors.join("\n");
                     if language == "slog" && !evaluated {
                         failures.push(format!("line {line}: does not evaluate: {error}"));

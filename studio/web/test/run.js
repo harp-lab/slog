@@ -23,6 +23,7 @@ import "./inspect.test.js";
 import "./stamp.test.js";
 import "./lint.test.js";
 import "./lint-why.test.js";
+import "./files.test.js";
 import { finish } from "./check.js";
 
 finish();

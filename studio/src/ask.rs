@@ -404,9 +404,12 @@ impl Studio {
             return (vec![session.failure("run", "write", &message)], false, hash);
         }
         let mut outcomes = Vec::new();
+        // A held run has not failed: a debug run stops at its breakpoints
+        // on purpose, and its caller reads the hold from the session.
         let ok = session
             .evaluate(lane, &path, prepare, &mut |outcome| outcomes.push(outcome.clone()))
-            .await;
+            .await
+            != crate::session::Evaluated::Failed;
         let _ = std::fs::remove_file(&path);
         (outcomes, ok, hash)
     }

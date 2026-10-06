@@ -242,7 +242,7 @@ impl Project {
     /// Only files that differ from the last write are written, and only
     /// files the studio wrote or read are removed.
     pub fn save(&mut self, files: &Files, label: &str) -> io::Result<Option<Version>> {
-        let directory = self.directory();
+        let directory = self.checked_directory(files)?;
         let synced = self.saved()?;
         fs::create_dir_all(&directory)?;
         for (path, text) in files {
@@ -259,6 +259,44 @@ impl Project {
         }
         self.store.write(SYNCED, &self.store.put_files(files)?)?;
         self.history.checkpoint(files, label)
+    }
+
+    /// The directory to write `files` to, once it is certain they belong
+    /// there: the project's `project.toml` on disk still names this
+    /// project's directory, and every file is named directly in it.
+    /// A write that would land in another project's directory, or outside
+    /// this one, is refused rather than made.
+    fn checked_directory(&self, files: &Files) -> io::Result<PathBuf> {
+        let refuse = |why: String| Err(io::Error::new(ErrorKind::PermissionDenied, why));
+        let on_disk = read_config(&self.dir)?;
+        if on_disk.link != self.config.link {
+            return refuse(format!(
+                "project {} is now linked to {}, not {}; reopen it",
+                self.name,
+                describe(on_disk.link.as_deref()),
+                describe(self.config.link.as_deref()),
+            ));
+        }
+        let directory = self.directory();
+        let own = match &self.config.link {
+            Some(link) => link.is_absolute() && fs::canonicalize(link).map_or(true, |real| &real == link),
+            None => directory == self.dir.join("files") && self.dir.file_name() == Some(self.name.as_ref()),
+        };
+        if !own {
+            return refuse(format!(
+                "{} is not project {}'s directory",
+                directory.display(),
+                self.name
+            ));
+        }
+        let plain = |path: &str| {
+            let mut parts = Path::new(path).components();
+            matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None))
+        };
+        if let Some(path) = files.keys().find(|path| !plain(path)) {
+            return refuse(format!("{path:?} is not a file of project {}", self.name));
+        }
+        Ok(directory)
     }
 
     /// The files as the studio last wrote them to, or read them from, the
@@ -301,6 +339,10 @@ impl Project {
 /// `.slog`.
 pub fn valid_file(path: &str) -> bool {
     valid_name(path) && path.len() > ".slog".len() && path.ends_with(".slog")
+}
+
+fn describe(link: Option<&Path>) -> String {
+    link.map_or_else(|| "its own files".to_owned(), |link| link.display().to_string())
 }
 
 fn read_config(dir: &Path) -> io::Result<Config> {
@@ -404,6 +446,35 @@ mod tests {
         project.save(&files, "save").unwrap();
         assert!(!directory.join("lib.slog").exists());
         assert!(directory.join("stray.slog").exists());
+    }
+
+    /// A project writes only to its own directory: not to one its
+    /// project.toml no longer names, and not outside it.
+    #[test]
+    fn saving_refuses_a_directory_that_is_not_the_projects() {
+        let scratch = Scratch::new("guard");
+        let other = scratch.path().join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("main.slog"), "rule (theirs)\n").unwrap();
+        let projects = Projects::new(&scratch.path().join("home"));
+        projects.create("mine").unwrap();
+        let (mut project, _) = projects.open("mine").unwrap();
+        let files = Files::from([("main.slog".to_owned(), "rule (mine)\n".to_owned())]);
+        project.save(&files, "save").unwrap();
+
+        // the project on disk is relinked behind this one's back
+        let config = scratch.path().join("home/projects/mine/project.toml");
+        let other = fs::canonicalize(&other).unwrap();
+        fs::write(&config, format!("main = \"main.slog\"\nlink = {:?}\n", other)).unwrap();
+        let error = project.save(&files, "save").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+        assert_eq!(fs::read_to_string(other.join("main.slog")).unwrap(), "rule (theirs)\n");
+        fs::write(&config, "main = \"main.slog\"\n").unwrap();
+
+        // a file named outside the directory
+        let escape = Files::from([("../../escape.slog".to_owned(), String::new())]);
+        assert!(project.save(&escape, "save").is_err());
+        assert!(project.save(&files, "save").is_ok());
     }
 
     /// A file changed behind the studio's back becomes a Disk version on
