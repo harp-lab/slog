@@ -103,6 +103,8 @@ enum Request {
     Restart,
     /// Run later servers in this mode, starting now.
     Mode { mode: Mode },
+    /// Whether plain Runs record their trace.
+    Trace { on: bool },
     /// List the scenarios beside the program.
     Scenarios,
     /// Run one of them by name.
@@ -334,6 +336,7 @@ fn handle(
             studio.set_mode(mode);
             warm(studio);
         }
+        Request::Trace { on } => studio.set_tracing(on),
         Request::Scenarios => {
             let _ = direct.send(json(&Reply::Scenarios {
                 names: studio.scenarios(),

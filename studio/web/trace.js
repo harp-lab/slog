@@ -167,6 +167,14 @@ const node = (tag, className, text) => {
 // REPL entry, which says whether the Execution tab, shown, is what the
 // entry was about: a traced change, a pause, a peek.
 export function initTrace({ editor, send, file, tabs, transcript, results }) {
+  // Whether plain Runs record a trace; Debug always does. Tracing costs a
+  // Run noticeably, so it is the author's choice.
+  const recording = node("label", "trace-toggle");
+  const box = recording.appendChild(node("input"));
+  box.type = "checkbox";
+  recording.append(" Trace every Run");
+  recording.title = "Debug always records a trace; tracing every Run makes Run slower";
+  box.addEventListener("change", () => send({ t: "trace", on: box.checked }));
   const state = {
     records: [],   // [{ model, steps }], newest first
     shown: 0,      // the record on screen
@@ -239,11 +247,11 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
   function render() {
     if (panel.hidden) return;
     fresh.hidden = true;
-    panel.replaceChildren();
+    panel.replaceChildren(recording);
     if (state.parked) panel.append(renderParked());
     const record = state.records[state.shown];
     if (!record) {
-      panel.append(node("p", "hint", "Run or Debug the program, or add and del facts at the prompt: each change's strata and iterations appear here."));
+      panel.append(node("p", "hint", "Debug the program, or Run it with tracing on: each change's strata and iterations appear here."));
       highlight(null);
       return;
     }
@@ -400,6 +408,9 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
   }
 
   return {
+    tracing(on) {
+      box.checked = on;
+    },
     entry(entry) {
       const result = entry.result;
       if (!result) return false;

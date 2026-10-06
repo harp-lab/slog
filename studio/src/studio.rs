@@ -50,6 +50,8 @@ pub struct Snapshot {
     /// `None` until a summarizer is attached.
     pub summary: Option<summary::View>,
     pub results: Vec<results::View>,
+    /// Plain Runs record their trace.
+    pub tracing: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -103,6 +105,10 @@ pub enum Event {
     },
     Lane(LaneStatus),
     Session(SessionView),
+    /// Whether plain Runs record their trace.
+    Tracing {
+        on: bool,
+    },
     /// A line of the session server's stderr, or a problem keeping files.
     Log {
         line: String,
@@ -305,6 +311,9 @@ pub struct Studio {
     pub(crate) preview_session: Mutex<(Session, Option<(u32, u64)>)>,
     /// The agent's debug lane, breakpoints and traces (trace.rs).
     pub(crate) debugger: crate::trace::Debugger,
+    /// The author asked plain Runs to record their trace too; Debug always
+    /// does.
+    tracing: std::sync::atomic::AtomicBool,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
@@ -334,11 +343,18 @@ impl Studio {
             review: std::sync::Mutex::new(review),
             preview_session: Mutex::new((Session::new(&preview), None)),
             debugger: crate::trace::Debugger::new(preview.root()),
+            tracing: std::sync::atomic::AtomicBool::new(false),
             preview,
             port: OnceLock::new(),
             results: std::sync::Mutex::new(Results::default()),
             summary: OnceLock::new(),
         }
+    }
+
+    /// Whether plain Runs record their trace, from the next Run on.
+    pub fn set_tracing(&self, on: bool) {
+        self.tracing.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.publish(Event::Tracing { on });
     }
 
     /// Record the port once the listener is bound.
@@ -442,6 +458,7 @@ impl Studio {
             session,
             breakpoints: open.breakpoints.clone(),
             results: self.results().views(),
+            tracing: self.tracing.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -911,9 +928,10 @@ impl Studio {
                     let main = open.project.directory().join(open.project.main());
                     (main, if debug { open.breaks() } else { Vec::new() })
                 };
-                // The run records its execution trace, and so does every
-                // change after it in this session (trace.rs).
-                prepare.extend(crate::trace::arm(self.lane.status().borrow().mode));
+                // A traced run records its execution trace, and so does
+                // every change after it in this session (trace.rs).
+                let wanted = debug || self.tracing.load(std::sync::atomic::Ordering::Relaxed);
+                prepare.extend(crate::trace::arm(self.lane.status().borrow().mode, wanted));
                 let mut shown = session.view().clone();
                 let mut tables = None;
                 let ok = session

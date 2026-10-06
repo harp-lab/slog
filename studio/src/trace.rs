@@ -23,10 +23,11 @@ use tokio::sync::Mutex;
 /// relation, iteration and sign, and fires per rule.
 const ARM: &str = "trace on rules";
 
-/// The command that makes a run in `mode` record its trace, if it records
-/// one. Compiled runs are for performance work and record none.
-pub fn arm(mode: Mode) -> Option<String> {
-    (mode != Mode::Compiled).then(|| ARM.to_owned())
+/// The command that makes a run in `mode` record its trace, if `wanted`:
+/// tracing costs a Run noticeably, so only Debug and an author who asked
+/// for it record one. Compiled runs are for performance work and never do.
+pub fn arm(mode: Mode, wanted: bool) -> Option<String> {
+    (wanted && mode != Mode::Compiled).then(|| ARM.to_owned())
 }
 
 /// The agent's debugging state, shared by its threads.

@@ -114,9 +114,13 @@ const receive = {
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
     results.init(snapshot.results);
+    trace.tracing(snapshot.tracing);
     snapshot.results.forEach(offerRelation);
     history.load();
     renderStatus();
+  },
+  tracing({ on }) {
+    trace.tracing(on);
   },
   lane(status) {
     state.lane = status;

@@ -96,3 +96,5 @@
 /* The editor's rules that fired in the selected iteration. */
 .fired-rule { background: rgba(38, 139, 210, 0.1); }
 .fired-rule-margin { background: var(--blue); width: 3px !important; margin-left: 3px; }
+
+.trace-toggle { display: flex; align-items: center; gap: 4px; justify-content: flex-end; color: var(--muted); font-size: 11.5px; margin-bottom: 6px; }
