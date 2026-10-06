@@ -225,7 +225,10 @@ emits exactly one of:
 - `<phase>` is `iter` (clean boundary) or `read` (mid-phase suspend).
 - `<reason>` is `time` or `memory`.
 - `<new-tuples>` is post-dedup growth since the stratum started: exact
-  (tuple-count diff) at boundaries, emitted-words estimate mid-read.
+  (tuple-count diff, negative when deletion maintenance shrinks the
+  stratum's relations) at boundaries, emitted-words estimate mid-read.
+  The command stack's uniform record names the two apart:
+  `(progress (tuples N) (exact #t))` versus `(progress (words N) (exact #f))`.
 - Memory baseline: one read of `/proc/self/statm` per call (the honest
   number; composes with the existing `SLOG_MEM_MAX=4G` systemd cap — defaults
   keep baseline + budget comfortably under it). Growth during the call is
