@@ -4,6 +4,7 @@
 
 use crate::agent::{self, Agent};
 use crate::review::{Change, Status};
+use crate::lane::Lane;
 use crate::session::{Outcome, Session, run_argument};
 use crate::studio::{Event, Studio};
 use crate::versions::Origin as Made;
@@ -83,7 +84,7 @@ impl Studio {
         self.main_file().1
     }
 
-    fn main_name(&self) -> String {
+    pub(crate) fn main_name(&self) -> String {
         let (path, _) = self.main_file();
         path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
     }
@@ -119,7 +120,7 @@ impl Studio {
     pub(crate) async fn evaluate_fork(&self, thread: u32) -> Value {
         let mut preview = self.preview_session.lock().await;
         let (session, loaded) = &mut *preview;
-        let (outcomes, ok, hash) = self.evaluate_fork_in(session, thread).await;
+        let (outcomes, ok, hash) = self.evaluate_fork_in(&self.preview, session, thread, &[]).await;
         *loaded = ok.then_some((thread, hash));
         fork_report(&outcomes, ok)
     }
@@ -130,17 +131,23 @@ impl Studio {
         if !query.trim_start().starts_with('?') {
             return Err("a query starts with `?`, e.g. `?(path 1 Y)`".to_owned());
         }
+        self.preview_line(thread, query).await
+    }
+
+    /// Send one REPL line to the evaluation of `thread`'s proposed program,
+    /// evaluating it first unless the preview session already holds exactly
+    /// that text.
+    pub(crate) async fn preview_line(&self, thread: u32, line: &str) -> Result<Value, String> {
         let mut preview = self.preview_session.lock().await;
         let (session, loaded) = &mut *preview;
-        let text = self.review.lock().expect("review lock").fork(&self.text(), thread);
-        if *loaded != Some((thread, hash(&text))) {
-            let (outcomes, ok, hash) = self.evaluate_fork_in(session, thread).await;
+        if *loaded != Some((thread, self.fork_hash(thread))) {
+            let (outcomes, ok, hash) = self.evaluate_fork_in(&self.preview, session, thread, &[]).await;
             if !ok {
                 return Err(format!("the proposed program does not evaluate: {}", fork_report(&outcomes, false)));
             }
             *loaded = Some((thread, hash));
         }
-        let outcome = session.execute(&self.preview, query).await;
+        let outcome = session.execute(&self.preview, line).await;
         match (outcome.result, outcome.error) {
             (Some(result), _) => Ok(json!({ "title": result["title"], "lines": result["lines"] })),
             (None, Some(error)) => Err(error.message),
@@ -148,17 +155,34 @@ impl Studio {
         }
     }
 
-    /// The fork, written beside the program (so its includes resolve) under
-    /// a hidden name, evaluated, and removed.
-    async fn evaluate_fork_in(&self, session: &mut Session, thread: u32) -> (Vec<Outcome>, bool, u64) {
-        let (main, text) = self.main_file();
-        let text = self.review.lock().expect("review lock").fork(&text, thread);
-        let hash = hash(&text);
+    /// Identifies `thread`'s proposed program as it stands.
+    pub(crate) fn fork_hash(&self, thread: u32) -> u64 {
+        hash(&self.review.lock().expect("review lock").fork(&self.text(), thread))
+    }
+
+    /// Where a proposed program is evaluated from: beside the main file (so
+    /// its includes resolve), under a hidden name.
+    pub(crate) fn preview_path(&self) -> std::path::PathBuf {
+        let (main, _) = self.main_file();
         let name = format!(
             ".{}.studio-preview.slog",
             main.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
         );
-        let path = main.with_file_name(name);
+        main.with_file_name(name)
+    }
+
+    /// The fork, written to `preview_path`, evaluated on `lane` after the
+    /// `prepare` commands, and removed.
+    pub(crate) async fn evaluate_fork_in(
+        &self,
+        lane: &Lane,
+        session: &mut Session,
+        thread: u32,
+        prepare: &[String],
+    ) -> (Vec<Outcome>, bool, u64) {
+        let text = self.review.lock().expect("review lock").fork(&self.text(), thread);
+        let hash = hash(&text);
+        let path = self.preview_path();
         if run_argument(&path).is_none() {
             return (vec![session.failure("run", "path", "the program's directory cannot be named by `run`")], false, hash);
         }
@@ -168,7 +192,7 @@ impl Studio {
         }
         let mut outcomes = Vec::new();
         let ok = session
-            .evaluate(&self.preview, &path, &[], &mut |outcome| outcomes.push(outcome.clone()))
+            .evaluate(lane, &path, prepare, &mut |outcome| outcomes.push(outcome.clone()))
             .await;
         let _ = std::fs::remove_file(&path);
         (outcomes, ok, hash)
@@ -213,7 +237,7 @@ impl Studio {
 }
 
 /// What an agent learns from evaluating its proposed program.
-fn fork_report(outcomes: &[Outcome], ok: bool) -> Value {
+pub(crate) fn fork_report(outcomes: &[Outcome], ok: bool) -> Value {
     if ok {
         let relations = outcomes
             .iter()

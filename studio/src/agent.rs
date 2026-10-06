@@ -40,6 +40,9 @@ one-sentence `note` saying what it does and why.
 a fresh session, and reports its relations and row counts or its errors; query runs a `?` query \
 against that evaluation, e.g. `?(eval E V)` or `? (path X Y) (edge Y Z) -> (X Z)`. Fix what you \
 broke before you reply, and cite the evidence (row counts, a sample row) in your reply.
+- When something derives wrongly, trace it before guessing: trace_run shows each stratum's \
+iterations and signed deltas, get_trace the rows behind them, and debug_run stops at your \
+breakpoints; cite the iteration or rule that explains the bug.
 - Your proposals are not applied until the author accepts them. Each of your turns is one \
 changeset; proposing the same text again in a later turn builds on your earlier proposals.
 - The author dictates: read requests charitably, honour self-corrections (\"or sorry, a data \

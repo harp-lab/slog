@@ -99,7 +99,11 @@ async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: 
         "evaluate_proposal" => Ok(studio.evaluate_fork(thread).await),
         "query" => studio.query_fork(thread, &text("q")?).await,
         "get_proposals" => Ok(studio.proposals_of(thread)),
-        _ => Err(format!("unknown tool {name}")),
+        // the execution tools (trace.rs)
+        _ => match studio.trace_tool(thread, name, arguments).await {
+            Some(result) => result,
+            None => Err(format!("unknown tool {name}")),
+        },
     }
 }
 
@@ -111,7 +115,7 @@ fn tools() -> Value {
         "type": "string",
         "description": "One sentence for the author: what this changes and why. Shown beside the diff."
     });
-    json!([
+    let mut tools = json!([
         {
             "name": "get_program",
             "description": "The program as your proposals so far would leave it (the author's current text with your pending proposals applied), with its file name. Read it before proposing.",
@@ -151,5 +155,7 @@ fn tools() -> Value {
             "description": "Your proposals in this thread: status (pending, accepted, rejected), whether each still applies (stale), and conflicts with other threads.",
             "inputSchema": object(json!({}), &[]),
         },
-    ])
+    ]);
+    tools.as_array_mut().expect("a list").extend(crate::trace::tools());
+    tools
 }

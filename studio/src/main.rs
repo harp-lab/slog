@@ -23,6 +23,7 @@ mod session;
 mod store;
 mod studio;
 mod summary;
+mod trace;
 mod versions;
 mod web;
 

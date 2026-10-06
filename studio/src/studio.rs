@@ -300,6 +300,8 @@ pub struct Studio {
     /// The preview lane's session, and the (thread, text hash) of the
     /// proposed program it holds, so a query runs against what it names.
     pub(crate) preview_session: Mutex<(Session, Option<(u32, u64)>)>,
+    /// The agent's debug lane, breakpoints and traces (trace.rs).
+    pub(crate) debugger: crate::trace::Debugger,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
@@ -321,6 +323,7 @@ impl Studio {
             agent: Agent::new(mcp_token),
             review: std::sync::Mutex::new(Review::default()),
             preview_session: Mutex::new((Session::new(&preview), None)),
+            debugger: crate::trace::Debugger::new(preview.root()),
             preview,
             port: OnceLock::new(),
             results: std::sync::Mutex::new(Results::default()),
@@ -893,11 +896,14 @@ impl Studio {
                 false
             }
             Ok((version, text)) => {
-                let (main, prepare) = {
+                let (main, mut prepare) = {
                     let open = self.open();
                     let main = open.project.directory().join(open.project.main());
                     (main, if debug { open.breaks() } else { Vec::new() })
                 };
+                // The run records its execution trace, and so does every
+                // change after it in this session (trace.rs).
+                prepare.extend(crate::trace::arm(self.lane.status().borrow().mode));
                 let mut shown = session.view().clone();
                 let mut tables = None;
                 let ok = session
