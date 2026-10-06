@@ -9,6 +9,7 @@
 //! naming its thread, so the server attributes its proposals. Progress
 //! streams to every tab as `Event::Agent`.
 
+use crate::knowledge;
 use crate::review::Message;
 use crate::studio::{Event, Studio};
 use serde::Serialize;
@@ -24,13 +25,23 @@ use tokio::process::{Child, Command};
 /// The header a run's MCP config carries: its thread id.
 pub const THREAD_HEADER: &str = "x-studio-thread";
 
+/// How the agent works. With the reference (knowledge.rs) it makes the
+/// system prompt, which stays the same for every run and every thread so
+/// that runs share its prompt cache; what differs per run goes in the
+/// message.
 const PERSONA: &str = "\
 You are the programming agent inside Slog Studio, building a Slog program together with its \
-author, who is watching the editor and often dictates. Slog is a Datalog-family language: a \
-program is top-level forms -- `table (rel type ...)`, `union (T (ctor type ...) ...)`, \
-`struct`, `enum`, `lattice`, and `rule BODY... --> HEAD...` (or `rule HEAD <-- BODY`; a `rule` \
-followed only by facts states facts). `;;` starts a comment. The `slog` MCP tools are your only \
-way to read or change the program.
+author, who is watching the editor and often dictates. The Slog reference above is your \
+knowledge of the language: follow it. The `slog` MCP tools are your only way to read or change \
+the program and to look anything up.
+
+Knowing Slog -- never guess syntax:
+- Write only syntax, primitives, and idioms the reference shows. Before using anything it does \
+not cover, search_docs for it (e.g. `cput`, `lattice soundness`, `instantiate`) and read_doc the \
+passage or a whole example; list_examples names complete programs worth copying from \
+(examples/ for analyses, tests/ for one feature each).
+- When evaluate_proposal reports an error, find its message in the reference's section on \
+compile errors before changing anything, and fix the cause it names.
 
 How to work -- the author is waiting:
 - Read once (get_program), then propose. Make form-sized changes: propose_edit replaces an exact, \
@@ -39,8 +50,9 @@ adds new forms at the end. Declare a relation before rules use it. Give every pr
 one-sentence `note` saying what it does and why.
 - Then check your work: evaluate_proposal runs the program as your proposals would leave it, in \
 a fresh session, and reports its relations and row counts or its errors; query runs a `?` query \
-against that evaluation, e.g. `?(eval E V)` or `? (path X Y) (edge Y Z) -> (X Z)`. Fix what you \
-broke before you reply, and cite the evidence (row counts, a sample row) in your reply.
+against that evaluation, e.g. `?(eval E V)` or `? (path X Y) (edge Y Z) -> (X Z)`, within the \
+limits the reference lists. Fix what you broke before you reply, and cite the evidence (row \
+counts, a sample row) in your reply.
 - When something derives wrongly, trace it before guessing: trace_run shows each stratum's \
 iterations and signed deltas, get_trace the rows behind them, and debug_run stops at your \
 breakpoints; cite the iteration or rule that explains the bug.
@@ -222,7 +234,8 @@ impl Transcript<'_> {
 }
 
 /// One turn of `thread`: run claude until it finishes, streaming its
-/// progress, then close the turn's changeset.
+/// progress, then close the turn's changeset. `context` (the program's
+/// name, say) leads the message, not the system prompt, which stays fixed.
 pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: String) {
     let transcript = Transcript { studio: &studio, thread };
     let agent = &studio.agent;
@@ -241,9 +254,8 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
     let project = studio.main_file().0.parent().map(Path::to_path_buf);
     let mut resume = studio.thread_session(thread);
     loop {
-        let system = format!("{PERSONA}\n\n{RESEARCH}\n\n## Runtime context (from Slog Studio)\n- Thread: {thread}\n{context}");
         let mut args: Vec<String> = vec![
-            "-p".into(), message.clone(),
+            "-p".into(), format!("{context}\n{message}"),
             "--output-format".into(), "stream-json".into(), "--verbose".into(),
             // Partial events show "thinking…" / "calling query…" while a turn runs.
             "--include-partial-messages".into(),
@@ -256,7 +268,10 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
             "--allowedTools".into(), format!("mcp__slog,{TOOLS}"),
             "--disallowedTools".into(), DENIED.into(),
             "--max-turns".into(), "40".into(),
-            "--append-system-prompt".into(), system,
+            "--append-system-prompt".into(), format!("{}\n\n{PERSONA}\n\n{RESEARCH}", knowledge::REFERENCE),
+            // Keep the machine's details (cwd, date, ...) out of the system
+            // prompt too, for the same cache.
+            "--exclude-dynamic-system-prompt-sections".into(),
         ];
         if let Some(project) = project.as_ref().filter(|project| !project.starts_with(&root)) {
             args.extend(["--add-dir".to_owned(), project.to_string_lossy().into_owned()]);

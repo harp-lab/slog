@@ -5,6 +5,7 @@
 //! attributed to the thread its `x-studio-thread` header names.
 
 use crate::agent::THREAD_HEADER;
+use crate::knowledge;
 use crate::registry::Registry;
 use crate::review::Change;
 use crate::studio::Studio;
@@ -105,6 +106,12 @@ async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: 
         "propose_append" => studio.propose(thread, Change::Append { source: text("source")? }, note),
         "evaluate_proposal" => Ok(studio.evaluate_fork(thread).await),
         "query" => studio.query_fork(thread, &text("q")?).await,
+        "search_docs" => Ok(knowledge::search(studio.lane.root(), &text("query")?, 8)),
+        "read_doc" => {
+            let number = |key: &str, default: u64| arguments[key].as_u64().unwrap_or(default) as usize;
+            knowledge::read(studio.lane.root(), &text("path")?, number("start", 1), number("lines", 200))
+        }
+        "list_examples" => Ok(knowledge::examples(studio.lane.root())),
         "get_proposals" => Ok(studio.proposals_of(thread)),
         "record_note" => studio.record_note(thread, text("title")?, text("text")?),
         "get_notes" => Ok(studio.notes_of(thread)),
@@ -158,6 +165,27 @@ fn tools() -> Value {
             "inputSchema": object(json!({
                 "q": { "type": "string", "description": "A query starting with `?`." },
             }), &["q"]),
+        },
+        {
+            "name": "search_docs",
+            "description": "Search Slog's documentation, standard library, example programs, and test programs for words, e.g. `cget partial`, `lattice soundness`, `instantiate`. Returns the best-matching paragraphs with their file and line; read_doc opens one. Use it for anything the reference in your instructions does not cover.",
+            "inputSchema": object(json!({
+                "query": { "type": "string", "description": "Words or a phrase to find." },
+            }), &["query"]),
+        },
+        {
+            "name": "read_doc",
+            "description": "Read lines of one documentation file or example/test program, as search_docs or list_examples name it (e.g. `docs/user/collections.md`, `examples/domtree/domtree.slog`).",
+            "inputSchema": object(json!({
+                "path": { "type": "string", "description": "Repository-relative path." },
+                "start": { "type": "integer", "description": "First line, 1-based (default 1)." },
+                "lines": { "type": "integer", "description": "How many lines (default 200, at most 400)." },
+            }), &["path"]),
+        },
+        {
+            "name": "list_examples",
+            "description": "Every example program (complete analyses: CFA, dominators, regex, SCC, verification) and test program (one language feature each), with a line on what each shows.",
+            "inputSchema": object(json!({}), &[]),
         },
         {
             "name": "get_proposals",

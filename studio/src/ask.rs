@@ -45,7 +45,7 @@ impl Studio {
         let directory = main.parent().map(|dir| dir.display().to_string()).unwrap_or_default();
         let root = self.lane.root().display();
         let context = format!(
-            "- Program file: {file}\n- Project directory: {directory}\n- Slog repository (your working directory): {root}\n"
+            "(Slog Studio: the program file is {file}, in {directory}; your working directory is the Slog repository, {root}.)\n"
         );
         tokio::spawn(agent::run(self.clone(), thread, message, context));
         Ok(thread)
