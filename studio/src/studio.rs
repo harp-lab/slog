@@ -191,6 +191,9 @@ const SCENARIO_SUFFIX: &str = ".scenario.toml";
 /// The project store's record of the agent threads (`review::Record`).
 const THREADS: &str = "threads";
 
+/// The project store's record of the result sets (`results::Record`).
+const RESULTS: &str = "results";
+
 struct Doc {
     text: String,
     version: u64,
@@ -326,7 +329,9 @@ pub struct Studio {
     summary: OnceLock<Arc<Summarizer>>,
     /// The session's states, and the lane exploring a past one (states.rs).
     pub(crate) states: std::sync::Mutex<States>,
-    pub(crate) explorer: Mutex<Option<crate::states::Explorer>>,
+    pub(crate) pasts: Mutex<crate::states::Pasts>,
+    /// The result sets' record as last kept, so it is written on change.
+    kept_sets: std::sync::Mutex<String>,
     /// The session's last unfiltered `tables` answer.
     tables: std::sync::Mutex<Option<serde_json::Value>>,
     /// The static check, apart from every lane (check.rs).
@@ -360,6 +365,22 @@ impl Studio {
             Ok(record) => open.breakpoints = record.unwrap_or_default(),
             Err(error) => eprintln!("slog-studio: cannot read the breakpoints: {error}"),
         }
+        // The states and their result sets outlive the studio; the session
+        // does not (states.rs).
+        let states = match open.project.store().read::<States>(crate::states::RECORD) {
+            Ok(record) => record.map(States::reopened).unwrap_or_default(),
+            Err(error) => {
+                eprintln!("slog-studio: cannot read the session's states: {error}");
+                States::default()
+            }
+        };
+        let results = match open.project.store().read(RESULTS) {
+            Ok(record) => record.map(Results::restore).unwrap_or_default(),
+            Err(error) => {
+                eprintln!("slog-studio: cannot read the result sets: {error}");
+                Results::default()
+            }
+        };
         let docs: Vec<String> = open.docs.keys().cloned().collect();
         open.breakpoints.retain(|path, _| docs.contains(path));
         Self {
@@ -377,10 +398,11 @@ impl Studio {
             tracing: std::sync::atomic::AtomicBool::new(false),
             preview,
             port: OnceLock::new(),
-            results: std::sync::Mutex::new(Results::default()),
+            results: std::sync::Mutex::new(results),
             summary: OnceLock::new(),
-            states: Default::default(),
-            explorer: Mutex::new(None),
+            states: std::sync::Mutex::new(states),
+            pasts: Default::default(),
+            kept_sets: Default::default(),
             tables: Default::default(),
             checker,
             acceptances: Default::default(),
@@ -791,10 +813,22 @@ impl Studio {
     /// Run a REPL line. A `?` or `?exists` query's answers open a result
     /// set, refining `lineage`'s set when given.
     pub async fn run(&self, line: &str, lineage: Option<Lineage>) {
-        // A past state being explored answers the prompt (states.rs).
+        // A refinement of a set reads where the set was read: at its state
+        // (states.rs).
+        let current = self.states().current;
+        let past = lineage.as_ref().and_then(|lineage| self.results().past(lineage.parent, current));
+        if let Some(at) = past {
+            return self.run_past(line, lineage, at).await;
+        }
+        // A past state being explored answers the prompt.
         if self.explore_command(line).await {
             return;
         }
+        self.run_main(line, lineage).await;
+    }
+
+    /// Run a REPL line on the main lane, at the current state.
+    pub(crate) async fn run_main(&self, line: &str, lineage: Option<Lineage>) {
         let mut session = self.session.lock().await;
         let before = session.view().clone();
         let started = Instant::now();
@@ -817,7 +851,8 @@ impl Studio {
         let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
         let (mut shown, set) = match (query, results::rows_line(line)) {
             (Some("rows" | "exists"), Some(read)) => {
-                self.open_set(&mut session, line, &read, &outcome, lineage).await
+                let state = self.stamp();
+                self.open_set(&mut session, &self.lane, line, &read, &outcome, lineage, state, true).await
             }
             _ => (outcome, None),
         };
@@ -835,13 +870,19 @@ impl Studio {
     /// the set reads the query itself, and says why. `read` is the query's
     /// rows form and `answered` its answer as typed. Returns the entry to
     /// show for the query, and the set.
-    async fn open_set(
+    /// `session` is on `lane`, at `state`; `main` when that is the main
+    /// lane, the only one whose answers are kept as a relation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn open_set(
         &self,
         session: &mut Session,
+        lane: &Lane,
         line: &str,
         read: &str,
         answered: &Outcome,
         lineage: Option<Lineage>,
+        state: Stamp,
+        main: bool,
     ) -> (Outcome, Option<SetId>) {
         let rows = answered.result.as_ref().is_some_and(|result| result["query-mode"] == "rows");
         // A rows page's title names the projection. An existence answer has
@@ -850,14 +891,18 @@ impl Studio {
         let page = if rows {
             answered.result.clone()
         } else {
-            match session.execute(&self.lane, read).await.result {
+            match session.execute(lane, read).await.result {
                 Some(result) => Some(result).filter(|result| result["query-mode"] == "rows"),
                 None => return (answered.clone(), None),
             }
         };
-        let keep = self.results().keep(read, page.as_ref());
+        let keep = if main {
+            self.results().keep(read, page.as_ref())
+        } else {
+            Err(String::new())
+        };
         let (read, kept) = match keep {
-            Ok(keep) => match session.execute(&self.lane, &keep.definition).await.error {
+            Ok(keep) => match session.execute(lane, &keep.definition).await.error {
                 None => (keep.read, Ok(keep.kept)),
                 Some(error) => (read.to_owned(), Err(error.message)),
             },
@@ -867,7 +912,7 @@ impl Studio {
         // would discard it (audit Q-10).
         let total = match results::count_line(&read) {
             Some(count) => {
-                let counted = session.execute(&self.lane, &count).await;
+                let counted = session.execute(lane, &count).await;
                 match (&counted.result, counted.error) {
                     (Some(result), _) => {
                         Total::of_count(result).ok_or_else(|| "the count's answer was unreadable".to_owned())
@@ -877,7 +922,7 @@ impl Studio {
             }
             None => Ok(Total::Unknown),
         };
-        let outcome = session.execute(&self.lane, &read).await;
+        let outcome = session.execute(lane, &read).await;
         let opened = match &outcome.result {
             Some(result) => {
                 let opening = Opening {
@@ -885,10 +930,10 @@ impl Studio {
                     read,
                     kept,
                     parent: lineage,
-                    state: Some(self.stamp()),
+                    state: Some(state),
                 };
                 let mut results = self.results();
-                let opened = results.open(opening, result);
+                let opened = if main { results.open(opening, result) } else { results.open_past(opening, result) };
                 if let Ok(Some(id)) = opened {
                     results.counted(id, total);
                 }
@@ -928,6 +973,12 @@ impl Studio {
         // Cached rows are served even while a long command holds the lane.
         if let Plan::Serve(rows) = self.results().plan(id, start, end) {
             return Ok(rows);
+        }
+        // A set of another state than the session's reads at that state.
+        let current = self.states().current;
+        let past = self.results().past(id, current);
+        if let Some(at) = past {
+            return self.rows_past(id, start, end, at).await;
         }
         let mut session = self.session.lock().await;
         let mut cursor_lost = false;
@@ -1240,6 +1291,11 @@ impl Studio {
         }
     }
 
+    /// Write `record` to the project's store as `name`.
+    pub(crate) fn store_write<T: Serialize>(&self, name: &str, record: &T) -> std::io::Result<()> {
+        self.open().project.store().write(name, record)
+    }
+
     pub(crate) fn trouble(&self, message: &str) {
         self.publish(Event::Log {
             line: format!("studio: {message}"),
@@ -1261,10 +1317,21 @@ impl Studio {
     }
 
     pub(crate) fn publish_sets(&self, ids: impl IntoIterator<Item = SetId>) {
-        let views: Vec<results::View> = {
+        let (views, record): (Vec<results::View>, _) = {
             let results = self.results();
-            ids.into_iter().filter_map(|id| results.view(id)).collect()
+            (ids.into_iter().filter_map(|id| results.view(id)).collect(), results.record())
         };
+        // kept for the next studio, when what is kept changed
+        let text = serde_json::to_string(&record).unwrap_or_default();
+        let changed = {
+            let mut kept = self.kept_sets.lock().expect("kept sets lock");
+            let changed = *kept != text;
+            *kept = text;
+            changed
+        };
+        if changed && let Err(error) = self.store_write(RESULTS, &record) {
+            self.trouble(&format!("cannot keep the result sets: {error}"));
+        }
         for view in views {
             self.publish(Event::ResultSet(view));
         }

@@ -115,3 +115,51 @@
 .state-tree .snode:hover rect { stroke: var(--strong); }
 .state-tree .snode .prompts circle { fill: var(--surface); stroke: var(--blue); }
 .state-tree .snode .prompts text { font: 9px var(--sans); font-weight: 400; fill: var(--blue); }
+
+/* ---- A relation's time (stamp.js) ---------------------------------------- */
+
+/* r2ᵗ¹: the state a view's rows were read at. */
+.stamped sup.at {
+  margin-left: 1px;
+  font: 600 0.68em/0 var(--mono);
+  color: var(--green-dark);
+  vertical-align: super;
+  letter-spacing: -0.02em;
+  cursor: default;
+}
+/* A view of an older state than the session's: tinted, not loud. */
+.stamped.past sup.at { color: var(--blue); }
+.rs-tab.past { background: #eaf3fb; }
+.rs-tab.past .rs-name { color: var(--blue); }
+.rs-state.past { color: var(--blue); }
+.entry .title.stamped.past, .zset-relation .stamped.past { color: var(--blue); }
+
+/* A state's card, on hovering any stamp. */
+.state-card {
+  position: fixed;
+  z-index: 50;
+  max-width: 420px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: white;
+  box-shadow: 0 6px 18px rgba(7, 54, 66, 0.12);
+  font: 12px/1.5 var(--sans);
+  color: var(--text);
+  pointer-events: none;
+}
+.state-card .head { color: var(--strong); font-weight: 600; font-family: var(--mono); }
+.state-card .asked { font: 11.5px/1.5 var(--mono); color: var(--muted); padding-left: 8px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.state-card .how { margin-top: 3px; color: var(--muted); font-size: 11px; }
+
+/* Naming a state, over its stamp. */
+.state-rename {
+  position: fixed;
+  z-index: 51;
+  width: 16ch;
+  padding: 1px 5px;
+  border: 1px solid var(--blue);
+  border-radius: 4px;
+  font: 12px var(--mono);
+  outline: none;
+}

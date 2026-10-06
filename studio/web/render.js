@@ -2,6 +2,8 @@
 // (`change`, `relations`, query pager metadata) render as tables; anything
 // else falls back to the server's own text lines.
 
+import { stamped, stampNames } from "./stamp.js";
+
 const element = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -15,24 +17,27 @@ const element = (tag, className, text) => {
 // set a query opened is.
 export function renderEntry(entry, { inProject, onSpan, onSet }) {
   const node = element("div", `entry ${entry.origin}`);
-  const line = node.appendChild(element("div", "line", entry.line));
+  // a result set the line names is stamped with its state
+  const line = node.appendChild(element("div", "line"));
+  line.append(stampNames(entry.line));
   if (entry.ms >= 100) line.append(element("span", "ms", `${(entry.ms / 1000).toFixed(1)} s`));
   if (entry.error) {
     node.append(renderError(entry.error, inProject, onSpan));
   } else if (entry.set) {
     // An existence question keeps its answer; rows live in the set.
-    if (entry.result["query-mode"] !== "rows") node.append(...renderResult(entry.result));
-    node.append(renderSetLink(entry.set, entry.result, onSet));
+    if (entry.result["query-mode"] !== "rows") node.append(...renderResult(entry.result, entry.state));
+    node.append(renderSetLink(entry.set, entry.result, onSet, entry.state));
   } else if (entry.result) {
-    node.append(...renderResult(entry.result));
+    node.append(...renderResult(entry.result, entry.state));
   }
   return node;
 }
 
 // A query's rows live in its result set; the transcript links to it.
-function renderSetLink(set, result, onSet) {
+function renderSetLink(set, result, onSet, at) {
   const node = element("div", "note");
-  const link = node.appendChild(element("a", "set", set));
+  const link = node.appendChild(element("a", "set"));
+  link.append(stamped(set, at));
   link.addEventListener("click", () => onSet(set));
   if (result["query-mode"] === "rows") {
     const shown = result["query-shown"];
@@ -55,9 +60,12 @@ function renderError({ kind, message, span }, inProject, onSpan) {
   return node;
 }
 
-function renderResult(result) {
+// Rows, and relations' sizes, were read at the entry's state `at`: their
+// title says which.
+function renderResult(result, at) {
   const parts = [];
-  if (result.title) parts.push(element("div", "title", result.title));
+  const rows = (result.kind === "query" && result["query-mode"] === "rows") || Array.isArray(result.relations);
+  if (result.title) parts.push(rows ? stamped(result.title, at, { tag: "div", className: "title" }) : element("div", "title", result.title));
   const lines = result["brief-lines"] ?? result.lines ?? [];
   if (result.kind === "query" && result["query-mode"] === "rows") {
     parts.push(...renderRows(result.title ?? "", lines));

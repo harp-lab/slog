@@ -10,6 +10,7 @@
 // runs them over captured payloads.
 
 import { formAt, forms } from "./forms.js";
+import { stamped } from "./stamp.js";
 
 // ---- The model ------------------------------------------------------------
 
@@ -262,7 +263,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     panel.append(renderGrid(model, s, i));
     if (s !== undefined) {
       const stratum = model.strata[s];
-      panel.append(renderZset(stratum, stratum.iterations[i]));
+      panel.append(renderZset(stratum, stratum.iterations[i], record.at));
       highlight(stratum.iterations[i]);
     }
   }
@@ -335,7 +336,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
   }
 
   // The selected iteration's signed rows, per relation, and its fired rules.
-  function renderZset(stratum, iteration) {
+  function renderZset(stratum, iteration, at) {
     const box = node("div", "zset");
     box.append(node("div", "zset-title",
       `${stratum.name ?? `stratum ${stratum.index + 1}`} · ${stratum.flavor} · iteration ${iteration.iteration}`));
@@ -343,7 +344,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
     const parkedHere = state.parked && state.parked.name === stratum.name && state.parked.iteration === iteration.iteration;
     for (const r of iteration.relations) {
       const head = box.appendChild(node("div", "zset-relation"));
-      head.append(node("span", "relation", r.relation), node("span", "counts", signed(r) || "±0"));
+      head.append(stamped(r.relation, at, { className: "relation" }), node("span", "counts", signed(r) || "±0"));
       head.append(node("span", "note", `size ${r.sizeAfter}`));
       if (parkedHere) {
         const all = head.appendChild(node("button", "secondary small", "show all"));
@@ -434,7 +435,7 @@ export function initTrace({ editor, send, file, tabs, transcript, results }) {
       if (result.kind === "peek") state.peek = { title: result.title, lines: result.lines };
       const model = traceModel(entry, file());
       if (model) {
-        state.records = [{ model, steps: steps(model) }, ...state.records].slice(0, RECORDS);
+        state.records = [{ model, steps: steps(model), at: entry.state }, ...state.records].slice(0, RECORDS);
         state.shown = 0;
         state.step = 0;
         fresh.hidden = !panel.hidden;

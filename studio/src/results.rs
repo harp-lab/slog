@@ -77,7 +77,7 @@ pub struct Cell {
 
 pub type Row = Vec<Cell>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "n", rename_all = "kebab-case")]
 pub enum Total {
     Exact(u64),
@@ -125,7 +125,7 @@ pub enum Cursor {
     Exhausted,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     /// The query variable the column shows; a constant column has none.
@@ -136,7 +136,7 @@ pub struct Column {
 }
 
 /// How a set was made from another.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lineage {
     pub parent: SetId,
     pub refinement: String,
@@ -212,6 +212,9 @@ pub struct View {
 pub struct Kept {
     pub relation: String,
     pub columns: Vec<Column>,
+    /// The scratch definition that keeps them, to define it again where
+    /// the set is read at a past state (states.rs).
+    pub definition: String,
 }
 
 /// How to keep a query's answers: the scratch definition to send, the
@@ -279,6 +282,8 @@ struct Set {
     loading: Option<String>,
     parent: Option<Lineage>,
     kept: Result<String, String>,
+    /// The scratch definition of the kept relation.
+    definition: Option<String>,
     /// The rows were sorted by Studio: they cannot be read again, only
     /// sorted again.
     sorted: Option<Order>,
@@ -358,12 +363,12 @@ impl Results {
         }
         let parsed = Query::parse(&read);
         let (columns, duplicates, kept) = match kept {
-            Ok(Kept { relation, columns }) => {
+            Ok(Kept { relation, columns, definition: kept_by }) => {
                 debug_assert_eq!(relation, self.next_id().to_string());
                 // later queries over it are typed, and kept, like any other
                 let types = columns.iter().map(|column| column.kind.clone().unwrap_or_default()).collect();
                 self.catalog.insert(relation.clone(), types);
-                (columns, false, Ok(relation))
+                (columns, false, Ok((relation, kept_by)))
             }
             Err(why) => {
                 let projected = projection_of(result["title"].as_str().unwrap_or(""));
@@ -377,6 +382,10 @@ impl Results {
                 };
                 (columns, duplicates, Err(why))
             }
+        };
+        let (kept, definition) = match kept {
+            Ok((relation, definition)) => (Ok(relation), Some(definition)),
+            Err(why) => (Err(why), None),
         };
         let id = SetId(self.next);
         self.next += 1;
@@ -399,6 +408,7 @@ impl Results {
                 loading: None,
                 parent,
                 kept,
+                definition,
                 sorted: None,
                 state,
             },
@@ -508,7 +518,7 @@ impl Results {
             let parent = set.parent.as_ref().map_or(id, |lineage| lineage.parent);
             return Plan::Fail(format!("{id}'s sorted rows left the cache; sort {parent} again"));
         }
-        if set.epoch != epoch {
+        if set.epoch != epoch && set.state.is_none() {
             return Plan::Fail(format!(
                 "the database changed since {id} ran, so only its cached rows remain; run its query again"
             ));
@@ -518,6 +528,56 @@ impl Results {
         } else {
             Plan::Rerun(set.read.clone())
         }
+    }
+
+    /// Where `id`'s rows are read: `None` on the main lane, which still
+    /// holds the database it ran at; else the state it ran at, re-derived
+    /// (states.rs). `current` is the session's state.
+    pub fn past(&self, id: SetId, current: u64) -> Option<u64> {
+        let set = self.sets.get(&id)?;
+        let state = set.state?.id;
+        (set.epoch != self.epoch || state != current).then_some(state)
+    }
+
+    /// Take in a page of `id`'s rows read on a lane of a past state, whose
+    /// cursor is not the main lane's.
+    pub fn absorb_past(&mut self, id: SetId, result: &Value) -> Result<(), String> {
+        let live = self.live;
+        let absorbed = self.absorb(id, result);
+        self.live = live.filter(|live| *live != id);
+        absorbed
+    }
+
+    /// The `?` line `id` reads its rows with, and the query as typed.
+    pub fn read_line(&self, id: SetId) -> Option<String> {
+        self.sets.get(&id).map(|set| set.read.clone())
+    }
+
+    pub fn query_line(&self, id: SetId) -> Option<String> {
+        self.sets.get(&id).map(|set| set.query.clone())
+    }
+
+    /// Open a set, as `open` does, on a lane of a past state, whose cursor
+    /// is not the main lane's.
+    pub fn open_past(&mut self, opening: Opening, result: &Value) -> Result<Option<SetId>, String> {
+        let live = self.live;
+        let opened = self.open(opening, result);
+        if let Ok(Some(id)) = opened {
+            // read where it ran, never on the main lane
+            if let Some(set) = self.sets.get_mut(&id) {
+                set.epoch = u64::MAX;
+            }
+        }
+        self.live = live;
+        opened
+    }
+
+    /// The definition of the kept relation `relation`, if a set keeps it.
+    pub fn definition(&self, relation: &str) -> Option<&str> {
+        self.sets
+            .values()
+            .find(|set| set.kept.as_deref() == Ok(relation))
+            .and_then(|set| set.definition.as_deref())
     }
 
     pub fn counted(&mut self, id: SetId, total: Result<Total, String>) {
@@ -645,6 +705,7 @@ impl Results {
             loading: None,
             parent: Some(lineage),
             kept: parent.kept.clone(),
+            definition: parent.definition.clone(),
             sorted: Some(Order { column, descending }),
             state: parent.state,
         };
@@ -717,16 +778,18 @@ impl Results {
             }
         }
         let relation = self.next_id().to_string();
+        let definition = format!(
+            "table ({relation} {}) rule ({relation} {}) <-- {}",
+            types.join(" "),
+            head.join(" "),
+            body.join(" ")
+        );
         Ok(Keep {
-            definition: format!(
-                "table ({relation} {}) rule ({relation} {}) <-- {}",
-                types.join(" "),
-                head.join(" "),
-                body.join(" ")
-            ),
+            definition: definition.clone(),
             read: format!("?({relation} {})", vars.join(" ")),
             kept: Kept {
                 relation,
+                definition,
                 columns: columns
                     .into_iter()
                     .zip(vars)
@@ -769,6 +832,90 @@ impl Results {
     pub fn views(&self) -> Vec<View> {
         self.sets.keys().filter_map(|id| self.view(*id)).collect()
     }
+
+    /// What is kept of the sets across a restart: each bound to a state,
+    /// and not sorted here, without its rows, which are read again at its
+    /// state.
+    pub fn record(&self) -> Record {
+        let sets = self
+            .sets
+            .iter()
+            .filter(|(_, set)| set.state.is_some() && set.sorted.is_none())
+            .map(|(id, set)| SetRecord {
+                id: *id,
+                query: set.query.clone(),
+                read: set.read.clone(),
+                columns: set.columns.clone(),
+                duplicates: set.duplicates,
+                total: set.total,
+                complete: set.cursor == Cursor::Exhausted,
+                budget: set.budget,
+                seen: set.seen,
+                parent: set.parent.clone(),
+                kept: set.kept.clone(),
+                definition: set.definition.clone(),
+                state: set.state,
+            })
+            .collect();
+        Record { next: self.next, sets }
+    }
+
+    /// The sets of `record`, each of a past state: none is the main lane's.
+    pub fn restore(record: Record) -> Self {
+        let mut results = Results {
+            next: record.next,
+            ..Results::default()
+        };
+        for kept in record.sets {
+            let set = Set {
+                parsed: Query::parse(&kept.read),
+                query: kept.query,
+                read: kept.read,
+                columns: kept.columns,
+                duplicates: kept.duplicates,
+                total: kept.total,
+                total_note: None,
+                cursor: if kept.complete { Cursor::Exhausted } else { Cursor::Parked },
+                budget: kept.budget,
+                at: 0,
+                seen: kept.seen,
+                pages: BTreeMap::new(),
+                epoch: u64::MAX,
+                loading: None,
+                parent: kept.parent,
+                kept: kept.kept,
+                definition: kept.definition,
+                sorted: None,
+                state: kept.state,
+            };
+            results.sets.insert(kept.id, set);
+        }
+        results
+    }
+}
+
+/// The sets kept across a restart (`Results::record`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Record {
+    next: u32,
+    sets: Vec<SetRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetRecord {
+    id: SetId,
+    query: String,
+    read: String,
+    columns: Vec<Column>,
+    duplicates: bool,
+    total: Total,
+    complete: bool,
+    budget: bool,
+    seen: u64,
+    parent: Option<Lineage>,
+    kept: Result<String, String>,
+    definition: Option<String>,
+    state: Option<Stamp>,
 }
 
 /// Sort rows by one column's values, stably: numbers by value, before

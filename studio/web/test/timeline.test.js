@@ -18,9 +18,14 @@ const states = [
 const view = { states, current: 5, exploring: null };
 
 equal("the prompt shows the current state and the one it came from", promptStamp(view),
-  { now: "t5", pred: "t4", exploring: false, home: "t5" });
+  { now: "t5", pred: "t4", exploring: false, home: "t5", ids: { now: 5, pred: 4, home: 5 } });
 equal("exploring shows the explored state, and where to return", promptStamp({ ...view, exploring: 3 }),
-  { now: "t3", pred: "t2", exploring: true, home: "t5" });
+  { now: "t3", pred: "t2", exploring: true, home: "t5", ids: { now: 3, pred: 2, home: 5 } });
+{
+  const renamed = { ...view, states: states.map((s) => (s.id === 4 ? { ...s, name: "baseline" } : s)) };
+  equal("a named state shows its name", promptStamp(renamed).pred, "baseline");
+  equal("and the tree says both", label(renamed.states[4]), "t4 baseline");
+}
 equal("the first state has no predecessor", promptStamp({ states, current: 0, exploring: null }).pred, null);
 equal("no states, no stamp", promptStamp({ states: [], current: null }), null);
 

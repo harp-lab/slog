@@ -88,7 +88,7 @@ const relation = (r, insert) => ({
   label: r.name,
   kind: "relation",
   insert,
-  detail: `${r.name}/${r.arity}${r.detail?.length ? ` · ${r.detail.join(" ")}` : ""}`,
+  detail: `${r.name}/${r.arity}${r.detail?.length ? ` · ${r.detail.join(" ")}` : ""}${r.at ? ` · at ${r.at}` : ""}`,
 });
 
 const atom = (r) => `(${`${r.name} ${placeholders(r).join(" ")}`.trimEnd()})`;
