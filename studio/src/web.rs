@@ -468,6 +468,13 @@ fn handle(
                 }));
             });
         }
+        Request::Refine {
+            set,
+            refinement: Refinement::Sort { column, descending },
+        } => {
+            let direct = direct.clone();
+            tokio::spawn(async move { notice(&direct, studio.sort(set, column, descending).await) });
+        }
         Request::Refine { set, refinement } => match studio.refinement(set, &refinement) {
             Ok((line, lineage)) => {
                 tokio::spawn(async move { studio.run(&line, Some(lineage)).await });

@@ -12,7 +12,7 @@ use crate::agent::{Agent, AgentEvent};
 use crate::lane::{Lane, LaneStatus, Mode};
 use crate::projects::{Project, Projects, valid_file};
 use crate::results::{
-    self, Lineage, MAX_REQUEST_ROWS, Opening, Plan, Refinement, Results, Row, SetId, Total,
+    self, Lineage, MAX_REQUEST_ROWS, Opening, Plan, Refinement, Results, Row, SORT_ROWS, SetId, Total,
 };
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
@@ -875,6 +875,48 @@ impl Studio {
         self.results().set_loading(id, None);
         self.publish_sets([id]);
         served
+    }
+
+    /// Open a set of `id`'s rows sorted by `column`. Queries have no order,
+    /// so Studio reads every row, up to `SORT_ROWS`, and sorts them; the
+    /// transcript shows the sort as an entry naming the new set.
+    pub async fn sort(&self, id: SetId, column: usize, descending: bool) -> Result<(), String> {
+        let started = Instant::now();
+        let lineage = self.results().sorting(id, column, descending)?;
+        let mut rows: Vec<Row> = Vec::new();
+        let read = loop {
+            let start = rows.len() as u64;
+            self.results().set_loading(id, Some(format!("reading rows to sort: {start} so far")));
+            self.publish_sets([id]);
+            match self.rows(id, start, start + MAX_REQUEST_ROWS).await {
+                Ok(window) if window.is_empty() => break Ok(()),
+                Ok(window) => rows.extend(window),
+                Err(why) => break Err(why),
+            }
+            if rows.len() > SORT_ROWS {
+                break Err(format!("{id} has more than {SORT_ROWS} rows, too many to sort here"));
+            }
+        };
+        self.results().set_loading(id, None);
+        self.publish_sets([id]);
+        read?;
+        let line = format!("sort {id} by {}", lineage.refinement.trim_start_matches("sort by "));
+        let n = rows.len();
+        let sorted = self.results().sorted(lineage, column, descending, rows)?;
+        self.publish_sets([sorted]);
+        // Shown as a query's entry is: a link to its set, with its rows.
+        let result = serde_json::json!({"kind": "query", "query-mode": "rows",
+            "query-status": "complete", "query-shown": n, "lines": []});
+        let session = self.session.lock().await.view().clone();
+        let outcome = Outcome {
+            line,
+            ms: started.elapsed().as_millis() as u64,
+            result: Some(result),
+            error: None,
+            session: session.clone(),
+        };
+        self.publish_outcome(Origin::Repl, &session, &outcome, Some(sorted));
+        Ok(())
     }
 
     /// Kill the main lane's server; its session and cursor go with it.

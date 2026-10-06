@@ -29,7 +29,9 @@ use std::fmt;
 /// The most rows one browser request may ask for.
 pub const MAX_REQUEST_ROWS: u64 = 1000;
 /// Rows cached across all sets; the least recently used pages go first.
-const CACHE_ROWS: usize = 50_000;
+const CACHE_ROWS: usize = 200_000;
+/// The most rows Studio reads to sort a set (queries have no order).
+pub const SORT_ROWS: usize = 100_000;
 /// Sets kept; the oldest is forgotten when another opens.
 const MAX_SETS: usize = 100;
 /// The query register's guard operators (compiler/query-front.rkt).
@@ -139,16 +141,37 @@ pub struct Lineage {
     pub refinement: String,
 }
 
+/// The order Studio sorted a set's rows in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct Order {
+    pub column: usize,
+    pub descending: bool,
+}
+
 /// A gesture on a set, made into a new query.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Refinement {
-    /// Keep the rows whose `column` holds `value`: a guard `(= VAR value)`.
-    Filter { column: usize, value: String },
+    /// Keep the rows whose `column` holds `value`: a guard `(= VAR value)`,
+    /// or another of the query's guard operators.
+    Filter {
+        column: usize,
+        value: String,
+        #[serde(default)]
+        guard: Option<String>,
+    },
     /// Stop showing `column`: a projection of the others.
     Drop { column: usize },
     /// The query, as edited by hand.
     Edit { line: String },
+    /// The rows in the order of `column`'s values. Queries have no order
+    /// (studio-design.md §7.4), so Studio reads every row and sorts them:
+    /// `Studio::sort`, not a query.
+    Sort {
+        column: usize,
+        #[serde(default)]
+        descending: bool,
+    },
 }
 
 /// Everything a tab shows about a set except its rows.
@@ -176,6 +199,8 @@ pub struct View {
     pub relation: Option<String>,
     /// Why the answers are not kept as a relation, when they are not.
     pub unkept: Option<String>,
+    /// Studio sorted the rows; they are the parent's, in this order.
+    pub sorted: Option<Order>,
 }
 
 /// A query's answers kept as a relation: its name, and its columns as the
@@ -249,6 +274,9 @@ struct Set {
     loading: Option<String>,
     parent: Option<Lineage>,
     kept: Result<String, String>,
+    /// The rows were sorted by Studio: they cannot be read again, only
+    /// sorted again.
+    sorted: Option<Order>,
 }
 
 struct Page {
@@ -365,6 +393,7 @@ impl Results {
                 loading: None,
                 parent,
                 kept,
+                sorted: None,
             },
         );
         while self.sets.len() > MAX_SETS {
@@ -468,6 +497,10 @@ impl Results {
             self.clock += 1;
             return Plan::Serve(set.take(start, end, self.clock));
         };
+        if set.sorted.is_some() {
+            let parent = set.parent.as_ref().map_or(id, |lineage| lineage.parent);
+            return Plan::Fail(format!("{id}'s sorted rows left the cache; sort {parent} again"));
+        }
         if set.epoch != epoch {
             return Plan::Fail(format!(
                 "the database changed since {id} ran, so only its cached rows remain; run its query again"
@@ -512,14 +545,21 @@ impl Results {
                 .ok_or_else(|| format!("cannot read {id}'s query to refine it; edit it instead"))
         };
         let (line, label) = match refinement {
-            Refinement::Filter { column: index, value } => {
+            Refinement::Filter { column: index, value, guard } => {
                 let column = column(*index)?;
                 let var = column.var.as_ref().ok_or_else(|| {
                     format!("{} is a constant of the query: every row has the same value", column.name)
                 })?;
+                let guard = guard.as_deref().unwrap_or("=");
+                if !GUARDS.contains(&guard) {
+                    return Err(format!("{guard} is not a guard; the guards are {}", GUARDS.join(" ")));
+                }
+                if value.trim().is_empty() {
+                    return Err(format!("{} {guard} what?", column.name));
+                }
                 let mut query = parsed()?.clone();
-                query.clauses.push(format!("(= {var} {value})"));
-                (query.text(), format!("{} = {value}", column.name))
+                query.clauses.push(format!("({guard} {var} {})", value.trim()));
+                (query.text(), format!("{} {guard} {}", column.name, value.trim()))
             }
             Refinement::Drop { column: index } => {
                 let dropped = column(*index)?;
@@ -546,8 +586,75 @@ impl Results {
                 let label = if line.trim() == set.query.trim() { "re-run" } else { "edited" };
                 (line.trim().to_owned(), label.to_owned())
             }
+            Refinement::Sort { .. } => return Err("a sort orders rows; it runs no query".to_owned()),
         };
         Ok((line, Lineage { parent: id, refinement: label }))
+    }
+
+    /// The name of `id`'s `column` and the lineage label of sorting by it,
+    /// before any row is read.
+    pub fn sorting(&self, id: SetId, column: usize, descending: bool) -> Result<Lineage, String> {
+        let set = self.sets.get(&id).ok_or_else(|| format!("{id} is no longer kept"))?;
+        let name = match set.columns.get(column) {
+            Some(column) => column.name.clone(),
+            None if set.columns.is_empty() => (column + 1).to_string(),
+            None => return Err(format!("{id} has no column {}", column + 1)),
+        };
+        let order = if descending { "descending" } else { "ascending" };
+        Ok(Lineage { parent: id, refinement: format!("sort by {name}, {order}") })
+    }
+
+    /// Open a set of `rows`, all of `lineage.parent`'s rows, sorted by
+    /// `column`. It shows the parent's query, and its rows are the parent's
+    /// relation's; they are held in the cache, as the one page of a set no
+    /// query can read again.
+    pub fn sorted(
+        &mut self,
+        lineage: Lineage,
+        column: usize,
+        descending: bool,
+        mut rows: Vec<Row>,
+    ) -> Result<SetId, String> {
+        let parent = self
+            .sets
+            .get(&lineage.parent)
+            .ok_or_else(|| format!("{} is no longer kept", lineage.parent))?;
+        sort_rows(&mut rows, column, descending);
+        let n = rows.len() as u64;
+        let set = Set {
+            query: parent.query.clone(),
+            read: parent.read.clone(),
+            parsed: parent.parsed.clone(),
+            columns: parent.columns.clone(),
+            duplicates: parent.duplicates,
+            total: if parent.budget { Total::AtLeast(n) } else { Total::Exact(n) },
+            total_note: None,
+            cursor: Cursor::Exhausted,
+            budget: parent.budget,
+            at: n,
+            seen: n,
+            pages: BTreeMap::new(),
+            epoch: parent.epoch,
+            loading: None,
+            parent: Some(lineage),
+            kept: parent.kept.clone(),
+            sorted: Some(Order { column, descending }),
+        };
+        let id = SetId(self.next);
+        self.next += 1;
+        self.sets.insert(id, set);
+        while self.sets.len() > MAX_SETS {
+            let oldest = *self.sets.keys().next().expect("more than MAX_SETS sets");
+            self.forget(oldest);
+        }
+        if n > 0 {
+            self.clock += 1;
+            let set = self.sets.get_mut(&id).expect("just opened");
+            set.pages.insert(0, Page { rows, used: self.clock });
+            self.cached += n as usize;
+            self.evict();
+        }
+        Ok(id)
     }
 
     /// How to keep the answers of the rows query `read` as the relation
@@ -638,12 +745,47 @@ impl Results {
             parent: set.parent.clone(),
             relation: set.kept.as_ref().ok().cloned(),
             unkept: set.kept.as_ref().err().filter(|why| !why.is_empty()).cloned(),
+            sorted: set.sorted,
         })
+    }
+
+    /// Drop `id`'s cached rows, as the cache's bound would.
+    #[cfg(test)]
+    fn forget_rows(&mut self, id: SetId) {
+        let set = self.sets.get_mut(&id).expect("a kept set");
+        self.cached -= set.pages.values().map(|page| page.rows.len()).sum::<usize>();
+        set.pages.clear();
     }
 
     pub fn views(&self) -> Vec<View> {
         self.sets.keys().filter_map(|id| self.view(*id)).collect()
     }
+}
+
+/// Sort rows by one column's values, stably: numbers by value, before
+/// everything else, which sorts by its printed text (strings, symbols, and
+/// compound values by their constructor first).
+pub fn sort_rows(rows: &mut [Row], column: usize, descending: bool) {
+    fn text(row: &Row, column: usize) -> &str {
+        row.get(column).map_or("", |cell| cell.text.as_str())
+    }
+    // not `inf` or `nan`, which are symbols
+    let number = |row: &Row| {
+        let text = text(row, column);
+        let numeral = text
+            .trim_start_matches(['+', '-'])
+            .starts_with(|c: char| c.is_ascii_digit() || c == '.');
+        text.parse::<f64>().ok().filter(|_| numeral)
+    };
+    rows.sort_by(|a, b| {
+        let order = match (number(a), number(b)) {
+            (Some(x), Some(y)) => x.total_cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => text(a, column).cmp(text(b, column)),
+        };
+        if descending { order.reverse() } else { order }
+    });
 }
 
 impl Set {
@@ -950,7 +1092,7 @@ fn is_variable(term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CACHE_ROWS, Cursor, Opening, Plan, Refinement, Results, Row, SetId, Total, row};
+    use super::{CACHE_ROWS, Cell, Cursor, Opening, Plan, Refinement, Results, Row, SetId, Total, row, sort_rows};
     use serde_json::{Value, json};
 
     /// A rows page as compiler/repl.rkt's render-query-page prints it.
@@ -1060,10 +1202,21 @@ mod tests {
         let refine = |id: SetId, refinement: Refinement| {
             results.refine(id, &refinement).map(|(line, lineage)| (line, lineage.refinement))
         };
-        let filter = |column, value: &str| Refinement::Filter { column, value: value.to_owned() };
+        let filter = |column, value: &str| Refinement::Filter { column, value: value.to_owned(), guard: None };
+        let guarded = |guard: &str, value: &str| Refinement::Filter {
+            column: 1,
+            value: value.to_owned(),
+            guard: Some(guard.to_owned()),
+        };
 
         assert_eq!(refine(sugar, filter(1, "2")).unwrap(), ("? (path 1 Y) (= Y 2)".to_owned(), "path.2 = 2".to_owned()));
         assert!(refine(sugar, filter(0, "1")).unwrap_err().contains("constant"));
+        // a column's filter is any of the query's guards
+        assert_eq!(refine(sugar, guarded(">=", " 10 ")).unwrap(), ("? (path 1 Y) (>= Y 10)".to_owned(), "path.2 >= 10".to_owned()));
+        assert_eq!(refine(sugar, guarded("/=", "\"a b\"")).unwrap().0, "? (path 1 Y) (/= Y \"a b\")");
+        assert!(refine(sugar, guarded("like", "3")).unwrap_err().contains("not a guard"));
+        assert!(refine(sugar, guarded("<", "")).is_err());
+        assert!(refine(sugar, Refinement::Sort { column: 1, descending: false }).is_err());
         assert_eq!(refine(sugar, Refinement::Drop { column: 0 }).unwrap().0, "? (path 1 Y) -> (Y)");
         assert!(refine(sugar, Refinement::Drop { column: 1 }).unwrap_err().contains("no variable"));
         assert_eq!(
@@ -1077,6 +1230,40 @@ mod tests {
         let edit = |line: &str| Refinement::Edit { line: line.to_owned() };
         assert_eq!(refine(sugar, edit("?(path 1 Y)")).unwrap().1, "re-run");
         assert!(refine(sugar, edit("tables")).is_err());
+    }
+
+    /// Studio sorts a set's rows itself: numbers by value and first, then
+    /// the rest by their text, stably; the sorted set holds every row, and
+    /// cannot read them again.
+    #[test]
+    fn a_sorted_set_holds_its_rows_in_order() {
+        let cells = |texts: &[&str]| texts.iter().map(|t| Cell { text: (*t).to_owned(), handle: None }).collect::<Row>();
+        let mut rows: Vec<Row> = [["b", "10"], ["a", "9"], ["c", "\"x\""], ["d", "-2.5"], ["e", "9"]]
+            .iter()
+            .map(|row| cells(row))
+            .collect();
+        sort_rows(&mut rows, 1, false);
+        assert_eq!(texts(&rows).iter().map(|row| row[0]).collect::<String>(), "daebc");
+        sort_rows(&mut rows, 1, true);
+        assert_eq!(texts(&rows).iter().map(|row| row[1]).collect::<Vec<_>>(), ["\"x\"", "10", "9", "9", "-2.5"]);
+
+        let tuples: Vec<String> = (0..120).map(|i| format!("({i} {})", 1000 - i)).collect();
+        let mut results = Results::default();
+        let parent = results.open(as_typed("?(n X Y)"), &page("Query · (X Y)", 0, &tuples[..50], "complete")).unwrap().unwrap();
+        let Plan::Serve(rows) = results.plan(parent, 0, 50) else { panic!("cached") };
+        let lineage = results.sorting(parent, 1, false).unwrap();
+        assert_eq!(lineage.refinement, "sort by Y, ascending");
+        assert!(results.sorting(parent, 2, false).is_err());
+        let id = results.sorted(lineage, 1, false, rows).unwrap();
+        let view = results.view(id).unwrap();
+        assert_eq!((view.total, view.cursor, view.seen), (Total::Exact(50), Cursor::Exhausted, 50));
+        assert_eq!(view.parent.map(|lineage| lineage.parent), Some(parent));
+        let Plan::Serve(rows) = results.plan(id, 0, 3) else { panic!("cached") };
+        assert_eq!(texts(&rows), [["49", "951"], ["48", "952"], ["47", "953"]]);
+        // rows past the end are none, as for any exhausted set
+        assert_eq!(results.plan(id, 50, 60), Plan::Serve(vec![]));
+        results.forget_rows(id);
+        assert!(matches!(results.plan(id, 0, 1), Plan::Fail(why) if why.contains("sort r1 again")));
     }
 
     /// The scratch definition that keeps a query's answers: declared with the
@@ -1146,7 +1333,7 @@ mod tests {
 /// Result sets over a real session server, through `Studio`.
 #[cfg(test)]
 mod served {
-    use super::{Cursor, Refinement, Row, SetId, Total, View};
+    use super::{Cursor, Order, Refinement, Row, SetId, Total, View};
     use crate::lane::Mode;
     use crate::store::tests::Scratch;
     use crate::studio::{Event, Studio, tests};
@@ -1319,7 +1506,7 @@ mod served {
             fixture.views().await.pop().expect("the refinement opened a set")
         };
 
-        let filtered = refine(Refinement::Filter { column: 0, value: x.clone() }).await;
+        let filtered = refine(Refinement::Filter { column: 0, value: x.clone(), guard: None }).await;
         assert_eq!(filtered.parent.as_ref().map(|lineage| lineage.parent), Some(path));
         let x: u64 = x.parse().unwrap();
         let expected: BTreeSet<(u64, u64)> = closure().into_iter().filter(|&(from, _)| from == x).collect();
@@ -1335,6 +1522,23 @@ mod served {
         let firsts: Vec<u64> = fixture.all_rows(dropped.id).await.iter().map(|row| row[0].text.parse().unwrap()).collect();
         assert_eq!(firsts.into_iter().collect::<BTreeSet<_>>(), (1..N).collect());
         assert_eq!(dropped.total, Total::Exact(N - 1));
+
+        // a column's filter, as a guard
+        let guard = Some(">".to_owned());
+        let guarded = refine(Refinement::Filter { column: 1, value: "15".to_owned(), guard }).await;
+        let expected: BTreeSet<(u64, u64)> = closure().into_iter().filter(|&(_, y)| y > 15).collect();
+        assert_eq!(pairs(&fixture.all_rows(guarded.id).await).into_iter().collect::<BTreeSet<_>>(), expected);
+
+        // a sort is Studio's, over every row: a new set, in order
+        fixture.studio.sort(path, 1, true).await.expect("sorted");
+        let sorted = fixture.views().await.pop().expect("the sort opened a set");
+        assert_eq!(sorted.sorted, Some(Order { column: 1, descending: true }));
+        assert_eq!(sorted.parent.map(|lineage| lineage.parent), Some(path));
+        assert_eq!(sorted.total, Total::Exact(closure().len() as u64));
+        let read = pairs(&fixture.all_rows(sorted.id).await);
+        assert!(read.windows(2).all(|pair| pair[0].1 >= pair[1].1), "not in order");
+        assert_eq!(read.len(), closure().len());
+        assert_eq!(read.into_iter().collect::<BTreeSet<_>>(), closure());
         fixture.finish().await;
     }
 
