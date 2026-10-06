@@ -79,14 +79,49 @@ Considered and not taken:
   would be right for states that differ only by a Run or by renames, and
   could serve as a fast path once the daemon has versioned contents.
 
+## Views are bound to their state
+
+Every view of rows was read at a state, and stays there
+(`studio/state-scoped`):
+
+- A result set records the state its query ran at. While the session is
+  still at that state, and its database unchanged, the set pages from the
+  main lane as before. Otherwise its rows, past what is cached, are read on
+  a *past lane*: a session server holding that state, re-derived and
+  read-only (`states.rs` `Pasts`; two lanes, the least recently used is
+  re-derived for another state, so paging costs one replay, not one per
+  page). A set's kept relation (`r1`) and any it names are defined there
+  first, from the definition the set kept.
+- A refinement of such a set runs at its state, as a new set of that
+  state. Queries at an explored state open sets of that state too.
+- "Show at t8" (`{t: "show-now", set}`) runs the set's query at the
+  session's state, as a new set.
+- The states (with their names) and the result sets are kept in the
+  project's store (`states`, `results`), so they come back after a studio
+  restart. The session does not, so a reopened studio starts at a new
+  `studio restarted` state; every older set is then read at its own state.
+- A state can be named (`{t: "name-state", id, name}`): double-click any
+  stamp.
+
+In the page, `web/stamp.js` renders a name with its state as a superscript
+(`r2`ᵗ¹, or `r2`^baseline), tinted when the state is past, and gives every
+stamp a hover card (what made the state, its time, strata and size changes,
+where it came from, what was asked there, its sets) and the rename. It
+stamps result-set tabs, transcript set links and rows/relations titles,
+queries that name a set, the Execution view's relations, and completion
+details (as text, `at t1`).
+
 ## What is not done
 
-- A replay replays what made the state, not Studio's own work: a query's
-  kept relation (`r1`, …) is not re-defined, so a later line naming one
-  fails to replay. A Debug run's breaks and trace arming are not replayed.
+- A replay replays what made the state, not Studio's own work: a later
+  change line naming a kept relation (`r1`) fails to replay (reads define
+  what they name; replays do not). A Debug run's breaks and trace arming
+  are not replayed.
+- A kept relation is a rule: `?(r1 …)` at t8 is r1's query at t8, not
+  r1's rows at t1. Its superscript names where the set was read.
 - The live preview of a query being typed, and the REPL assistant, read the
   main session even while a past state is explored.
-- The states are the studio process's: a restarted studio starts at t0. A
-  server crash shows as a `restart` state at the next command.
-- Explored answers show inline in the transcript; they open no result set
-  (a set pages from the main lane).
+- A server crash shows as a `restart` state at the next command.
+- Sorted sets are not kept across a restart (their order is Studio's own).
+- Past lanes are extra session servers; server mode's lane limit does not
+  count them.
