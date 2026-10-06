@@ -373,6 +373,7 @@
    "  preview             re-render the pending proposal's diffs/dispositions"
    "  activate            run the pending proposal's activation transaction"
    "  stage +(R V..) -(..) queue signed edits; `status` shows them pending"
+   "  unstage +(R V..) ..  withdraw staged edits; the rest stay pending"
    "  flush               commit everything staged as one update epoch"
    "  recount [force]     re-establish (or force-rebuild) the count cache"
    "  counts REL          dump one relation's count sidecar rows"
@@ -430,6 +431,43 @@
   datum)
 
 (define (relation-key value) (~a value))
+
+;; Gate S1's staged-change spelling, shared by `stage` and `unstage`:
+;; +(REL V...) and -(REL V...), a bare fact meaning +.  -> (cons sign fact)s
+(define (read-signed-changes who argument)
+  (define datums
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (error who "unreadable staged change: ~a" (exn-message e)))])
+      (port->list read (open-input-string argument))))
+  (when (null? datums)
+    (error who "expected: ~a +(REL V...) -(REL V...) ..." who))
+  (let loop ([ds datums] [acc '()])
+    (match ds
+      ['() (reverse acc)]
+      [(list-rest '+ (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '+ fact) acc))]
+      [(list-rest '- (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '- fact) acc))]
+      [(list-rest (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '+ fact) acc))]
+      [_ (error who
+                "malformed staged change; expected signed facts like +(edge 1 2)")])))
+
+;; The batch still queued after a stage/unstage, one line.
+(define (pending-lines s)
+  (define summary (session-pending-summary s))
+  (if (null? summary)
+      (list "nothing is staged")
+      (list (format "pending: ~a — `flush` commits one update epoch"
+                    (string-join
+                     (for/list ([p (in-list summary)])
+                       (match-define (list _anchor rel adds dels) p)
+                       (format "~a~a~a" rel
+                               (if (positive? adds) (format " +~a" adds) "")
+                               (if (positive? dels) (format " -~a" dels) "")))
+                     "; ")))))
 
 ;; ---- the value-handle table (repl.md §1) ----------------------------------
 ;;
@@ -4420,27 +4458,7 @@
     ;; epoch with one change summary.
     ["stage"
      (define rs (ensure-mutable-session-record! state 'stage))
-     (define datums
-       (with-handlers
-           ([exn:fail?
-             (lambda (e)
-               (error 'stage "unreadable staged change: ~a" (exn-message e)))])
-         (port->list read (open-input-string argument))))
-     (when (null? datums)
-       (error 'stage "expected: stage +(REL V...) -(REL V...) ..."))
-     (define staged
-       (let loop ([ds datums] [acc '()])
-         (match ds
-           ['() (reverse acc)]
-           [(list-rest '+ (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '+ fact) acc))]
-           [(list-rest '- (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '- fact) acc))]
-           ;; a bare fact stages as an add
-           [(list-rest (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '+ fact) acc))]
-           [_ (error 'stage
-                     "malformed staged change; expected signed facts like +(edge 1 2)")])))
+     (define staged (read-signed-changes 'stage argument))
      ;; every change is checked before any is queued, so a refused stage
      ;; leaves the pending batch as it was
      (for ([sf (in-list staged)])
@@ -4449,28 +4467,51 @@
      (for ([sf (in-list staged)])
        (match-define (cons sign (cons rel vals)) sf)
        (session-batch! (repl-session-session rs) sign rel vals))
-     (define summary (session-pending-summary (repl-session-session rs)))
      (text-result
       (format "Staged ~a change~a"
               (length staged) (if (= (length staged) 1) "" "s"))
       (append
        (for/list ([sf (in-list staged)])
          (format "~a~a" (car sf) (cdr sf)))
-       (list (format "pending: ~a — `flush` commits one update epoch"
-                     (string-join
-                      (for/list ([p (in-list summary)])
-                        (match-define (list _anchor rel adds dels) p)
-                        (format "~a~a~a" rel
-                                (if (positive? adds) (format " +~a" adds) "")
-                                (if (positive? dels) (format " -~a" dels) "")))
-                      "; "))))
+       (pending-lines (repl-session-session rs)))
+      #:kind "stage")]
+    ;; M-06: a refused flush keeps the batch, so the change that broke it is
+    ;; withdrawn by name, in the spelling it was staged with.
+    ["unstage"
+     (define rs (ensure-mutable-session-record! state 'unstage))
+     (define s (repl-session-session rs))
+     (define changes (read-signed-changes 'unstage argument))
+     (define-values (withdrawn missing)
+       (partition (lambda (sf)
+                    (match-define (cons sign (cons rel vals)) sf)
+                    (session-unbatch! s sign rel vals))
+                  changes))
+     (text-result
+      (format "Unstaged ~a change~a"
+              (length withdrawn) (if (= (length withdrawn) 1) "" "s"))
+      (append
+       (for/list ([sf (in-list withdrawn)])
+         (format "~a~a" (car sf) (cdr sf)))
+       (for/list ([sf (in-list missing)])
+         (format "~a~a was not staged" (car sf) (cdr sf)))
+       (pending-lines s))
       #:kind "stage")]
     ["flush"
      (define rs (ensure-mutable-session-record! state 'flush))
+     (define s (repl-session-session rs))
      (define-values (_ _events change)
-       (capture-semantic-change
-        state rs "flush" "settled" '()
-        (lambda () (session-flush! (repl-session-session rs)))))
+       (with-handlers
+           ([exn:fail?
+             (lambda (e)
+               ;; a batch that failed validation is still queued; say so,
+               ;; rather than leave the user to guess it was dropped
+               (if (null? (session-pending-summary s))
+                   (raise e)
+                   (error 'flush "~a; nothing was applied, and the staged changes are kept (`unstage` withdraws one)"
+                          (exn-message e))))])
+         (capture-semantic-change
+          state rs "flush" "settled" '()
+          (lambda () (session-flush! s)))))
      (set-repl-session-changed?! rs #t)
      (semantic-text-result
       "Flush"
@@ -4553,11 +4594,17 @@
        (capture-semantic-change
         state rs verb "settled" requested
         (lambda ()
-          (session-batch! (repl-session-session rs)
-                          (if (string=? verb "add") '+ '-)
-                          (string->symbol (relation-key rel))
-                          values)
-          (session-flush! (repl-session-session rs)))))
+          (define s (repl-session-session rs))
+          (define sign (if (string=? verb "add") '+ '-))
+          (define rel* (string->symbol (relation-key rel)))
+          (session-batch! s sign rel* values)
+          ;; a refused flush keeps the batch queued; this edit was never
+          ;; staged by the user, so it must not outlive its own refusal
+          (with-handlers ([exn:fail?
+                           (lambda (e)
+                             (session-unbatch! s sign rel* values)
+                             (raise e))])
+            (session-flush! s)))))
      (set-repl-session-changed?! rs #t)
      (semantic-text-result
       (format "~a · ~a" (string-titlecase verb) (relation-key rel))
@@ -5302,6 +5349,29 @@
             "drop path"
             ":quit")))
    (file->string semantic-session-golden))
+
+  ;; M-06: a flush refused by one staged change keeps the batch; withdrawing
+  ;; that change lets the rest commit.  A refused `del` is not left queued.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/reach.slog"
+                  "stage +(edge 9 9) -(edge 7 7)"
+                  "flush"
+                  "unstage -(edge 7 7)"
+                  "flush"
+                  "?(edge 9 X)"
+                  "del edge 7 7"
+                  ":status"
+                  ":quit")))])
+    (check-regexp-match
+     #px"tuple is absent; nothing was applied, and the staged changes are kept"
+     transcript)
+    (check-regexp-match #px"◆ Query\n  1 row\n  1  \\(edge 9 9\\)" transcript)
+    (check-regexp-match #px"› del edge 7 7\n! Command failed" transcript)
+    (check-false
+     (regexp-match? #px"pending" (last (string-split transcript "› :status")))))
 
   ;; The `?` register (R2): grammar refusals need no daemon; the live rows/
   ;; count/exists/explain checks drive a real scratch session over
