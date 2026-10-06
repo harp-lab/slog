@@ -21,6 +21,7 @@ mod session;
 mod store;
 mod studio;
 mod summary;
+mod versions;
 mod web;
 
 use accounts::Accounts;
