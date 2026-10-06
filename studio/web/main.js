@@ -16,6 +16,7 @@ import { createSummary } from "./summary.js";
 import * as structure from "./paredit.js";
 import { createResults } from "./results.js";
 import { initTrace } from "./trace.js";
+import { initAssist } from "./assist.js";
 
 const $ = (id) => document.getElementById(id);
 // Local mode's launch token; a server's login rides in a cookie instead.
@@ -144,11 +145,12 @@ const receive = {
       state.heldTitle = entry.result.title;
       renderStatus();
     }
-    append(renderEntry(entry, {
+    const node = append(renderEntry(entry, {
       inProject: (span) => files.pathOf(span.file) !== null,
       onSpan: (span) => files.reveal(span),
       onSet: results.show,
     }));
+    assist.entry(entry, node); // "explain", "Ask why", and the assistant's context
     // The area follows the newest output: a query's set, else the
     // transcript, unless the Execution tab shows what it was about.
     const executing = trace.entry(entry);
@@ -226,7 +228,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    for (const handlers of [files.receive, receive, versions.receive]) handlers[data.t]?.(data);
+    for (const handlers of [files.receive, receive, versions.receive, assist.receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -285,6 +287,19 @@ prompt.addEventListener("keydown", (event) => {
   }
 });
 prompt.addEventListener("input", fitPrompt);
+
+// The REPL's assistant (`??`, or Tab on an empty prompt) and the live
+// preview of a query being typed; its keys come before the prompt's own.
+const assist = initAssist({
+  prompt,
+  transcript: $("transcript"),
+  send,
+  showTranscript: () => results.show(null),
+  openThread(thread) {
+    agent.asked({ thread });
+    if ($("drawer").hidden || $("drawer").dataset.tab !== "ask") showTab("ask");
+  },
+});
 
 function fitPrompt() {
   prompt.rows = Math.min(12, prompt.value.split("\n").length);

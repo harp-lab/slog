@@ -421,6 +421,7 @@ export function bindPrompt(area, { program }) {
 
   const structure = structureKeys(area);
   area.addEventListener("keydown", (event) => {
+    if (area.dataset.mode === "ask") return; // a question to the assistant (assist.js)
     const quit = event.ctrlKey && event.code === "KeyG"; // Emacs's C-g
     const keys = shown && quit ? close : shown && {
       ArrowDown: () => { shown.index = (shown.index + 1) % shown.items.length; render(); },
@@ -446,6 +447,7 @@ export function bindPrompt(area, { program }) {
   // Typing a word, an opener, `?`, `->`, or the space after a command's
   // word opens the list; typing with it open narrows it.
   area.addEventListener("input", (event) => {
+    if (area.dataset.mode === "ask") return close();
     if (accepting) return;
     const typed = event.data ?? "";
     const prompts = /[A-Za-z0-9_'.?>-]$/.test(typed) || typed.includes("(")
