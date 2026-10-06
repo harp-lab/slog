@@ -34,8 +34,9 @@ use tokio::time::timeout;
 const DEBOUNCE: Duration = Duration::from_millis(400);
 const REIFY_LIMIT: Duration = Duration::from_secs(60);
 
-/// The tiers, quick to deep: each program includes the one before, and
-/// adds these relations to what the editor is shown.
+/// The tiers, quick to deep: each program adds its rules over the
+/// relations of the ones before, and these relations to what the editor
+/// is shown.
 const TIERS: [(&str, &[(&str, &str)]); 3] = [
     (
         "lint-local.slog",
@@ -58,11 +59,10 @@ const TIERS: [(&str, &[(&str, &str)]); 3] = [
     ("lint-deep.slog", &[("demand_calls", "?(demand_calls F G)")]),
 ];
 
-/// Whether tier k+1 runs over tier k's session rather than a fresh one. A
-/// second program over a session whose first had rules crashes the daemon
-/// today (compiler temp relations collide by name), so each tier reopens
-/// the facts and recomputes the tiers before it.
-const LAYERED: bool = false;
+/// Whether tier k+1 runs as a layer on tier k's session, computing only
+/// its own rules. Without, each tier reopens the facts and runs every tier
+/// up to it again, in a fresh session.
+const LAYERED: bool = true;
 
 /// The facts' databases are `data/slog-lint-...`, apart from the author's.
 pub const DATABASE_PREFIX: &str = "slog-lint-";
@@ -446,12 +446,15 @@ impl Linter {
         tier: usize,
         job: &Job,
     ) -> Result<(Vec<Finding>, BTreeMap<String, Vec<Vec<String>>>), String> {
-        let program = self.config.analysis.current().join(TIERS[tier].0);
+        let analysis = self.config.analysis.current();
         let mut steps = Vec::new();
-        if tier == 0 || !LAYERED {
+        let first = if LAYERED { tier } else { 0 };
+        if first == 0 {
             steps.extend(self.fresh(session));
         }
-        steps.push(format!("run {}", program.display()));
+        for (program, _) in &TIERS[first..=tier] {
+            steps.push(format!("run {}", analysis.join(program).display()));
+        }
         for line in steps {
             let outcome = session.execute(&self.lane, &line).await;
             if let Some(error) = outcome.error {
@@ -553,7 +556,7 @@ impl Linter {
         // `finding` must be live before the run for a watch to record it
         steps.push(format!("run {}", analysis.join("schema.slog").display()));
         steps.push("watch finding level 1 why".to_owned());
-        steps.push(format!("run {}", analysis.join(TIERS[TIERS.len() - 1].0).display()));
+        steps.push(format!("run {}", analysis.join("lint.slog").display()));
         for line in steps {
             if let Some(error) = session.execute(&self.lane, &line).await.error {
                 return Err(format!("{line}: {}", error.message));

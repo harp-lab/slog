@@ -10,7 +10,7 @@ findings and semantic hover while the author edits.*
 |---|---|---|
 | reifier | `compiler/reify.rkt` | the compiler's parser + include resolution → facts over the schema; `FILE` (a Slog program), `--freeze NAME` (a database), `--serve` (JSON, unsaved texts as in `check.rkt`) |
 | schema | `analysis/schema.slog` | the facts, as `table`/`struct`/`union` declarations, plus `finding` |
-| analysis | `analysis/lint-{local,graph,deep}.slog`, `slog-lint.slog` | three tiers, each including the one before; `slog-lint.slog` = all of it + `include "facts.slog"` |
+| analysis | `analysis/lint-{local,graph,deep}.slog`, `findings.slog`, `lint.slog`, `slog-lint.slog` | three tiers, each only its own rules over the relations of the ones before; `findings.slog` words issues into findings (every tier includes it); `lint.slog` = the three as one program; `slog-lint.slog` = `lint.slog` + `include "facts.slog"` |
 | tests | `analysis/test.rkt`, `analysis/tests/*.slog` | each test line marks the findings it must produce; self-check; `--corpus` |
 | Studio | `studio/src/lint.rs`, `web/lint.js` | the runner, the Problems list, markers, hover, why?, graph |
 
@@ -90,9 +90,10 @@ Per job (an edit after a debounce, a save, the main file changing):
    freezes the facts to `data/slog-lint-<project>`.
 2. On the **analysis lane** (its own `repl.rkt`, never the author's):
    `discard session` · `open slog-lint-<project>` · `run lint-local.slog`,
-   dump `finding`/`writer`/`reader` → publish tier 0; then the same with
-   `lint-graph.slog` (tier 1) and `lint-deep.slog` (tier 2).
-3. An edit while a tier runs interrupts the lane and starts again from tier 0.
+   dump `finding`/`writer`/`reader` → publish tier 1; then `run
+   lint-graph.slog` (tier 2) and `run lint-deep.slog` (tier 3) on the same
+   session, as layers, each published as it finishes.
+3. An edit while a tier runs interrupts the lane and starts again from tier 1.
 
 Why a database: including the facts in the program made every edit
 recompile them, and the compile cost was dominated by the cache key
@@ -100,11 +101,25 @@ recompile them, and the compile cost was dominated by the cache key
 per stratum: 51 MB of progstr for arithm's facts, ~1.2 s).  Opening a frozen
 database and running the analysis compiles only the analysis.
 
-Why a fresh session per tier: layering a second program onto a session
-whose first program had rules crashes the daemon (`plan install failed ...
-relation arity mismatch for temp6x1`: compiler temp relations are named by
-stratum index and collide across programs).  Once fixed, tier k+1 could run
-as a layer over tier k's results instead of recomputing them.
+Layered tiers (`LAYERED` in lint.rs): tier 1 runs on a fresh session over
+the facts, and tiers 2 and 3 each run on that same session as a layer,
+computing only their own rules.  (Before the compiler named its temp
+relations by content, a second program with rules collided with the
+first's temps and crashed the daemon, so each tier reopened the facts and
+ran every tier up to it again.)  Two things make a tier a layer:
+
+- It declares what it reads of the tiers before -- a short "what it reads
+  of tier 1" block at its top -- since a program's rules see only the
+  relations it declares; it does not include them, which would rederive
+  them as new versions.
+- A tier's rules see only the rows of the tiers before it, never the rows a
+  later layer adds to a relation they read.  So no tier's rules may be
+  relied on for a later tier's issues: the wording of issues into reports
+  and findings lives in findings.slog, which every tier includes, and each
+  tier words all the issues there are so far.
+
+`analysis/test.rkt` analyzes every test and corpus program both ways, as
+one program (`lint.slog`) and as layers, and requires the same findings.
 
 ## 5. Laziness and stability
 
@@ -171,10 +186,18 @@ including the 400 ms debounce.
 | arithm.slog (501 lines) | 245-280 ms | 0.9-1.5 s | 1.4-2.2 s | 1.5-2.5 s | 1.9-2.4 s | 4.7-6.8 s |
 | examples/kcfa (5 files) | 265-310 ms | 0.9-1.1 s | 1.3-1.7 s | 1.3-1.8 s | 1.7-2.0 s | 4.3-5.4 s |
 
-Each tier recompiles the analysis's front end (~0.5 s CPU: the cache key
-prints the program and sha256s it per stratum) and recomputes the tiers
-before it.  Both go once `fix/layering-and-key` lands: flip `LAYERED` in
-lint.rs and tier k+1 runs only its own rules over tier k's session.
+That was each tier recomputing the tiers before it on a fresh session.
+Layered (load average 11-23), four edits each, the same findings either way:
+
+| program | mode | tier 1 | tier 2 | tier 3 | everything |
+|---|---|---|---|---|---|
+| arithm.slog | fresh session per tier | 0.96-2.7 s | 1.4-3.8 s | 1.8-3.4 s | 5.6-10.5 s |
+| arithm.slog | layered | 0.7-1.9 s | 0.57-1.1 s | 0.56-1.3 s | 2.8-4.7 s |
+| examples/kcfa | fresh session per tier | 0.52-0.71 s | 0.98-1.15 s | 1.1-1.5 s | 3.8-4.0 s |
+| examples/kcfa | layered | 0.65-0.73 s | 0.57-0.69 s | 0.48-0.68 s | 2.6-3.0 s |
+
+Tier 1 (first findings, 1.4-1.9 s after a keystroke, debounce included)
+does not change; tiers 2 and 3 now cost only their own rules.
 
 ## 9. Status of the pieces around it
 
