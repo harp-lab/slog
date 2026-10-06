@@ -23,15 +23,10 @@
 ;; threading through the whole module resolver:
 ;;   current-source-override : #f, or a hash (source-key -> source-string).  When
 ;;     set, parse-file reads a module's text from the hash instead of the disk.
+;;     (ir-shared.rkt, where errors quoting the source read it too.)
 ;;   current-source-capture  : #f, or a mutable hash.  When set, parse-file
 ;;     records every (source-key -> text) it reads, snapshotting a closure.
-;; Keys are a pure (no-filesystem) canonicalisation of the path so save-time and
-;; load-time lookups agree without touching absent files (symlink-free tree).
-(define current-source-override (make-parameter #f))
 (define current-source-capture (make-parameter #f))
-
-(define (source-key filename)
-  (path->string (simplify-path (path->complete-path filename) #f)))
 
 ;; Parse a module from an in-memory source string (filename is used only for
 ;; token source positions / error context).

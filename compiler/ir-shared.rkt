@@ -20,6 +20,8 @@
  arm-mark! planned-rule-arm
  ;; provenance
  syn? syn-prov strip-prov rule-location-string with-rule-context syn-source
+ ;; sources read in place of files (parser.rkt's recompute-on-load hook)
+ current-source-override source-key
  ;; atoms
  var? slog-literal?
  ;; primitive operators
@@ -102,21 +104,40 @@
      (format "~a:~a" (if p (path->string p) file) (add1 line))]
     [_ "<unknown>"]))
 
+;; #f, or a hash (source-key -> text): the texts parse-file reads in place of
+;; the files they name -- a program replayed from a saved database, or an
+;; editor's unsaved buffers (check.rkt).  Keys are a pure (no-filesystem)
+;; canonicalisation of the path, so lookups agree without touching absent
+;; files (symlink-free tree).
+(define current-source-override (make-parameter #f))
+
+(define (source-key filename)
+  (path->string (simplify-path (path->complete-path filename) #f)))
+
+;; A source file's lines, from the override when it has them, or #f.
+(define (source-lines file)
+  (define override (current-source-override))
+  (define text (and override (hash-ref override (source-key file) #f)))
+  (cond
+    [text (string-split text "\n" #:trim? #f)]
+    [(file-exists? file) (file->lines file)]
+    [else #f]))
+
 ;; How an error should quote a rule or clause: the user's own text, read back
-;; from its file between the form's delimiting tokens, whitespace collapsed.
+;; from its source between the form's delimiting tokens, whitespace collapsed.
 ;; The form itself is desugared -- lifted constants and nested terms are
 ;; gensyms (`(path X _tconst6jUh7)` for `(path X "s")`) -- so printing it
 ;; shows the user something they never wrote.  Falls back to the stripped
-;; form when the text is out of reach: a synthetic token, a hand-built
-;; fixture, or a source replayed from a saved database rather than a file.
+;; form when the text is out of reach: a synthetic token or a hand-built
+;; fixture.
 (define (syn-source form)
   (match form
     [`(syn (prov (token ,_ (pos ,file ,line ,col ,_ ,_) ,_)
                  (token ,_ (pos ,file ,_ ,_ ,end-line ,end-col) ,_))
            ,_ ...)
      #:when (and (exact-integer? col) (exact-integer? end-col)
-                 (<= line end-line) (file-exists? file))
-     (define lines (file->lines file))
+                 (<= line end-line) (source-lines file))
+     (define lines (source-lines file))
      (if (< end-line (length lines))
          (string-normalize-spaces
           (string-join

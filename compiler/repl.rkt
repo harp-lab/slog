@@ -48,6 +48,7 @@
          ;; synthetic preview resolution
          (only-in "modules.rkt" load-program-list)
          (only-in "compile.rkt" program->jobs emit-program-image)
+         (only-in "check.rkt" check-report diagnostic-line)
          (only-in "program-change.rkt" seal-program-draft
                   program-change-set-key)
          "change-pcs.rkt"
@@ -376,6 +377,8 @@
    ""
    "Extend a mutable database"
    "  run PATH            compile and run a .slog program"
+   "  check PATH          check a program statically (parse, types, strata)"
+   "                      without running it or touching the session"
    "  rule ...| table ... a Slog definition is a scratch fragment; it"
    "                      compiles against the live schema and runs now"
    "  scratch             show the scratch layer's accumulated program"
@@ -489,6 +492,7 @@
     (("schema") ("") "the daemon's raw live schema")
     (("pipeline") ("") "the daemon's raw versioned pipeline")
     (("run") ("PATH") "compile and run a .slog program")
+    (("check") ("PATH") "check a program statically, without running it")
     (("scratch") ("") "the scratch layer's accumulated program")
     (("keep") ("scratch as FILE.slog") "export the scratch layer to a file and promote it")
     (("clear") ("scratch") "retract the whole scratch layer")
@@ -519,6 +523,22 @@
      (match (regexp-match #px"^([^[:space:]]+)(?:[[:space:]]+(.*))?$" text)
        [(list _ verb argument)
         (values (string-downcase verb) (or argument ""))])]))
+
+;; `check PATH`: the static check (check.rkt) -- parse, includes, types,
+;; strata -- with no session read or changed, so it is safe beside a held run.
+(define (check-result argument)
+  (when (string=? argument "")
+    (error 'check "expected: check PATH"))
+  (define report (check-report argument))
+  (define diagnostics (hash-ref report 'diagnostics))
+  (hash-set* (text-result (if (hash-ref report 'ok) "Check passed" "Check failed")
+                          (if (null? diagnostics)
+                              (list (format "~a checks clean (~a ms)" argument (hash-ref report 'ms)))
+                              (map diagnostic-line diagnostics))
+                          #:kind "check")
+             'ok (hash-ref report 'ok)
+             'ms (hash-ref report 'ms)
+             'diagnostics diagnostics))
 
 (define (text-result title lines #:kind [kind "text"] #:change [change #f])
   (define result (hasheq 'kind kind 'title title 'lines lines))
@@ -4572,7 +4592,7 @@
 (define keep-cursor-verbs
   '(":help" "help" "?" ":ping" ":status" "library" "current" "resident"
     "sessions" "mode" ":share" ":clear" ":theme" "more" "cancel" "scratch" "keep"
-    "tiers" "code" "stage"))
+    "tiers" "code" "stage" "check"))
 
 ;; ---- T5 slice (c) / R4: the pre-commit gate as a place ---------------------
 ;; A level-1 watch is an explicit request to stop the run before it commits,
@@ -5295,6 +5315,7 @@
     ["clear" (clear-scratch-result state argument)]
     ["tiers" (tiers-result state)]
     ["code" (code-result state argument)]
+    ["check" (check-result argument)]
     ["images" (program-images-result state)]
     ["image" (program-image-result state argument)]
     ;; Gate S1 (roadmap §5 item 1): the staged-batch surface -- the git
@@ -5905,7 +5926,17 @@
                               (hash-ref scratch-span 'line)
                               (hash-ref scratch-span 'col))
                         (list (string->path "1.slog") 1 6))
-          (check-true (hash-ref (command ":ping") 'ok))))
+          (check-true (hash-ref (command ":ping") 'ok))
+          ;; `check` reports a broken program's errors, located, and leaves
+          ;; the sessions as they were
+          (define sessions (hash-count (server-state-sessions state)))
+          (define checked (hash-ref (command (format "check ~a" broken)) 'result))
+          (check-equal? (hash-count (server-state-sessions state)) sessions)
+          (check-false (hash-ref checked 'ok))
+          (check-equal? (for/list ([d (hash-ref checked 'diagnostics)])
+                          (list (hash-ref d 'line) (hash-ref d 'col)))
+                        '((2 31)))
+          (check-true (hash-ref (hash-ref (command "check tests/reach.slog") 'result) 'ok))))
       (lambda ()
         (close-server-session! state)
         (delete-file broken))))

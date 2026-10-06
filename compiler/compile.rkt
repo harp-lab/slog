@@ -30,6 +30,7 @@
          stratum-meta-dynamic-rels   ; segment write-sets (incremental B0)
          read-stratum-meta           ; cone/polarity input (incremental B4)
          program->jobs    ; tooling/debug: inspect a program's stratum jobs
+         check-program    ; the static check (check.rkt): front end only
          emit-program-image ; RF2-A: sealed read-only compiler image package
          flavored-native?  ; session M4N admission: no native leg for anti-delta variants
          opt-mode-override) ; R3 scratch: force interp-only for one compile
@@ -168,6 +169,88 @@
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
 
+;; The semantic front end: a program's rules, simplified, typechecked and
+;; stratified, with every check on the way -- everything that can reject a
+;; program before planning and codegen.  program->jobs builds on it, and
+;; check-program (the static check, check.rkt) is it alone.
+(define (program-front-end mods type-env decomps)
+  (define all-rules
+    (foldl set-union (set) (map module-ir-rules (set->list mods))))
+  ;; lattice declaration occurrence restrictions run before typechecking
+  ;; (a misplaced lattice type should be its own error, not a type error);
+  ;; the monotone-use calculus needs the strata for the same-SCC bit
+  (check-lattice-declarations type-env)
+  ;; sequence-pattern expansion (docs/sequences.md §5, seq-expand.rkt):
+  ;; lower the desugar's neutral seq-pat clauses onto prim computes/guards/
+  ;; occurrence joins.  Post-simplification (wildcards are __-gensym'd, D13),
+  ;; pre-typecheck (the emitted clauses are ordinary surface forms).  May
+  ;; declare the $seq_at/$seq_atr occurrence relations and return their
+  ;; stratification edges (base -> occurrence, decomp-edges style).
+  (define-values (expanded0 type-env0+ seq-edges)
+    (expand-seq-patterns (simplify-all all-rules) type-env))
+  ;; S3 fragment factoring (docs/static-join-decomposition.md,
+  ;; fragment-factor.rkt): same slot contract as seq expansion -- rewrite
+  ;; bodies, declare synthesized $frag relations.  No manual stratification
+  ;; edges: the synthesized rule is an ordinary rule, so stratify derives
+  ;; base -> fragment from it directly (unlike $seq_at, which has no
+  ;; defining rule).
+  (define-values (expanded type-env+)
+    (factor-shared-fragments expanded0 type-env0+))
+  (define typed (typecheck-all type-env+ expanded decomps))
+  ;; the M2.4 decomposition's derived dependency edges: R -> R_has as if a
+  ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so
+  ;; a derived relation closes no earlier than its base -- and shares its SCC
+  ;; when some rule feeds R_has back into R (in-SCC enumeration)
+  (define derived-edges
+    (set-union (for/set ([(derived info) (in-hash decomps)])
+                 (cons (first info) derived))
+               seq-edges))
+  ;; An oracle answer table grows from its demand struct through the daemon's
+  ;; dispatch/harvest side channel.  It is a real semantic dependency even
+  ;; though no source rule owns it; without demand -> answer, RF5's union cone
+  ;; can preserve stale answer/downstream state after a program replacement.
+  (define oracle-edges
+    (for/set ([(name decl) (in-hash (type-env-rels type-env+))]
+              #:when (and (pair? decl) (eq? (car decl) 'oracle)))
+      (match decl
+        [`(oracle ,_ ,demand ,answer) (cons demand answer)])))
+  (define extra-edges (set-union derived-edges oracle-edges))
+  (define extra-edge-kinds
+    (for/hash ([edge (in-set extra-edges)])
+      (values edge (if (set-member? oracle-edges edge) 'oracle 'derived))))
+  (define-values (full-strata full-model)
+    (stratify-all/model typed extra-edges extra-edge-kinds))
+  ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
+  ;; place); the split only moves body-less rules, which can never violate the
+  ;; monotone-use calculus, so passing here implies the split is safe too.
+  (check-lattice-strata full-strata type-env+ decomps)
+  ;; the §5.3 blowup warning (docs/sequences.md, defense (b)): a fed list
+  ;; column on a relation that grows RECURSIVELY materializes O(n) list ids
+  ;; x O(len) occurrence rows while indexing is active.  Warn, don't error:
+  ;; sometimes the quadratic index is exactly what the user wants.
+  (when (hash-has-key? (type-env-rels type-env+) '$seq_at)
+    (define fed (list->set (seq-fed-relations (type-env-rels type-env+))))
+    (for ([s (in-list full-strata)])
+      ;; recursive in this stratum = written AND read here (SCC-merged
+      ;; strata make this the head∩body of the whole level, catching
+      ;; mutual recursion too)
+      (define-values (hs bs)
+        (for/fold ([hs (set)] [bs (set)]) ([rule (in-set (stratum-rules s))])
+          (values (set-union hs (rule-head-rels rule))
+                  (set-union bs (rule-body-rels rule)))))
+      (for ([r (in-list (sort (set->list (set-intersect hs bs fed))
+                              symbol<?))])
+        (eprintf "warning: relation ~a carries a sequence column and grows recursively (stratum ~a) while occurrence indexing is active -- its occurrence rows can reach O(lists x elements); prefer the bound direction or restructure (docs/sequences.md §5.3)\n"
+                 r (stratum-level s)))))
+  (values typed type-env+ extra-edges extra-edge-kinds full-strata full-model))
+
+;; Reject a program the way compiling it would, without planning, codegen
+;; or a cache key.  Ground facts are checked in place: no peeling.
+(define (check-program prog)
+  (program-front-end (program-ir-modules prog) (program-ir-type-env prog)
+                     (program-ir-decomps prog))
+  (void))
+
 ;; program->jobs returns
 ;;   (list jobs facts-stratum? frozen final-type-env full-program-model).
 ;; The trailing RF2 analysis values are additive: existing execution callers
@@ -301,74 +384,8 @@
                0
                (if debug-mode 8 32)))
 
-  (define all-rules
-    (foldl set-union (set) (map module-ir-rules (set->list mods))))
-  ;; lattice declaration occurrence restrictions run before typechecking
-  ;; (a misplaced lattice type should be its own error, not a type error);
-  ;; the monotone-use calculus needs the strata for the same-SCC bit
-  (check-lattice-declarations type-env)
-  ;; sequence-pattern expansion (docs/sequences.md §5, seq-expand.rkt):
-  ;; lower the desugar's neutral seq-pat clauses onto prim computes/guards/
-  ;; occurrence joins.  Post-simplification (wildcards are __-gensym'd, D13),
-  ;; pre-typecheck (the emitted clauses are ordinary surface forms).  May
-  ;; declare the $seq_at/$seq_atr occurrence relations and return their
-  ;; stratification edges (base -> occurrence, decomp-edges style).
-  (define-values (expanded0 type-env0+ seq-edges)
-    (expand-seq-patterns (simplify-all all-rules) type-env))
-  ;; S3 fragment factoring (docs/static-join-decomposition.md,
-  ;; fragment-factor.rkt): same slot contract as seq expansion -- rewrite
-  ;; bodies, declare synthesized $frag relations.  No manual stratification
-  ;; edges: the synthesized rule is an ordinary rule, so stratify derives
-  ;; base -> fragment from it directly (unlike $seq_at, which has no
-  ;; defining rule).
-  (define-values (expanded type-env+)
-    (factor-shared-fragments expanded0 type-env0+))
-  (define typed (typecheck-all type-env+ expanded decomps))
-  ;; the M2.4 decomposition's derived dependency edges: R -> R_has as if a
-  ;; rule read R and wrote R_has (the base's merge tasks do exactly that), so
-  ;; a derived relation closes no earlier than its base -- and shares its SCC
-  ;; when some rule feeds R_has back into R (in-SCC enumeration)
-  (define derived-edges
-    (set-union (for/set ([(derived info) (in-hash decomps)])
-                 (cons (first info) derived))
-               seq-edges))
-  ;; An oracle answer table grows from its demand struct through the daemon's
-  ;; dispatch/harvest side channel.  It is a real semantic dependency even
-  ;; though no source rule owns it; without demand -> answer, RF5's union cone
-  ;; can preserve stale answer/downstream state after a program replacement.
-  (define oracle-edges
-    (for/set ([(name decl) (in-hash (type-env-rels type-env+))]
-              #:when (and (pair? decl) (eq? (car decl) 'oracle)))
-      (match decl
-        [`(oracle ,_ ,demand ,answer) (cons demand answer)])))
-  (define extra-edges (set-union derived-edges oracle-edges))
-  (define extra-edge-kinds
-    (for/hash ([edge (in-set extra-edges)])
-      (values edge (if (set-member? oracle-edges edge) 'oracle 'derived))))
-  (define-values (full-strata full-model)
-    (stratify-all/model typed extra-edges extra-edge-kinds))
-  ;; check the ORIGINAL stratification (a superset that keeps iter0 rules in
-  ;; place); the split only moves body-less rules, which can never violate the
-  ;; monotone-use calculus, so passing here implies the split is safe too.
-  (check-lattice-strata full-strata type-env+ decomps)
-  ;; the §5.3 blowup warning (docs/sequences.md, defense (b)): a fed list
-  ;; column on a relation that grows RECURSIVELY materializes O(n) list ids
-  ;; x O(len) occurrence rows while indexing is active.  Warn, don't error:
-  ;; sometimes the quadratic index is exactly what the user wants.
-  (when (hash-has-key? (type-env-rels type-env+) '$seq_at)
-    (define fed (list->set (seq-fed-relations (type-env-rels type-env+))))
-    (for ([s (in-list full-strata)])
-      ;; recursive in this stratum = written AND read here (SCC-merged
-      ;; strata make this the head∩body of the whole level, catching
-      ;; mutual recursion too)
-      (define-values (hs bs)
-        (for/fold ([hs (set)] [bs (set)]) ([rule (in-set (stratum-rules s))])
-          (values (set-union hs (rule-head-rels rule))
-                  (set-union bs (rule-body-rels rule)))))
-      (for ([r (in-list (sort (set->list (set-intersect hs bs fed))
-                              symbol<?))])
-        (eprintf "warning: relation ~a carries a sequence column and grows recursively (stratum ~a) while occurrence indexing is active -- its occurrence rows can reach O(lists x elements); prefer the bound direction or restructure (docs/sequences.md §5.3)\n"
-                 r (stratum-level s)))))
+  (define-values (typed type-env+ extra-edges extra-edge-kinds full-strata full-model)
+    (program-front-end mods type-env decomps))
   (define rel-names (list->set (hash-keys (type-env-rels type-env+))))
   (define fact-rules
     (if split-facts? (ground-fact-rules typed rel-names) (set)))

@@ -14,6 +14,7 @@
          ;; session replay their recipes through the live session machinery
          "session.rkt"
          "dbtool.rkt"
+         "check.rkt"
          (only-in "tools.rkt" pool-drain!))
 
 (define EXIT-FILE-NOT-FOUND 1)
@@ -238,6 +239,7 @@
   (define show-help? #f)
   (define verbose? #f)
   (define sizes? #f)
+  (define check? #f)
   (define program-name "slog")
 
   (define parsed-args
@@ -273,11 +275,18 @@
      [("--version") "Print Slog version and exit" (set! print-version? #t)]
      [("--verbose" "-v") "Enable verbose output" (set! verbose? #t)]
      [("--sizes") "Report each relation's tuple count after the run" (set! sizes? #t)]
+     [("--check") "Check the program statically (parse, types, strata) without running it"
+      (set! check? #t)]
      #:args (slog-file)
      (cond
        [print-version?
         (printf "slog ~a\n" slog-version)
         (exit 0)]
+       [check?
+        (define report (check-report slog-file))
+        (for ([d (in-list (hash-ref report 'diagnostics))])
+          (displayln (diagnostic-line d)))
+        (exit (if (hash-ref report 'ok) 0 1))]
        [else
         (run-slog* slog-file
                    #:db-name db-name

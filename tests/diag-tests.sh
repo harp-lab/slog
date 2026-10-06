@@ -369,6 +369,13 @@ if echo "$o" | grep -qF 'Error: the ( at 2:6 opening `(lib "plus" ...` is never 
   ok unbalanced-brackets-located
 else bad unbalanced-brackets-located "$o"; fi
 
+# 22. --check reports the same error, located, without compiling or running
+o="$(racket compiler/run.rkt --check "$D/unclosed.slog" 2>&1; echo "exit $?")"
+if echo "$o" | grep -qE 'unclosed\.slog:2:6: error: the \( at 2:6 opening' \
+   && echo "$o" | grep -q 'exit 1'; then
+  ok check-reports-located
+else bad check-reports-located "$o"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

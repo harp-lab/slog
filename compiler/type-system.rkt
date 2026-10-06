@@ -35,6 +35,8 @@
 ;; including the synthetic enum fact rules.
 
 (provide typecheck-rules
+         current-rule-errors
+         current-rule-types
          error-wrap-rule
          error-wrap-rule-for-arm
          prim-error-arms
@@ -63,13 +65,32 @@
 ;; Pass driver: check every rule, then intern every enum constant the
 ;; program mentions via one synthetic fact rule each.
 
+;; #f, or a procedure told each rule and its variables' types (a hash from
+;; variable to type) as they are inferred: the static check's hovers.
+(define current-rule-types (make-parameter #f))
+
+;; #f, or a box: then a rule's type error is added to the box and the rule
+;; skipped, so one pass reports every rule's error (the static check,
+;; check.rkt).  The pass still fails, with the first, once all are seen.
+(define current-rule-errors (make-parameter #f))
+
 (define (typecheck-rules type-env rules [decomp-env (hash)])
+  (define errors (current-rule-errors))
+  (define (check rule)
+    (with-rule-context rule (lambda () ((typecheck-rule type-env decomp-env) rule))))
   (define-values (checked enum-consts)
     (for/fold ([acc (set)] [consts (set)])
               ([rule (in-set rules)])
       (define-values (rule+ consts+)
-        (with-rule-context rule (lambda () ((typecheck-rule type-env decomp-env) rule))))
-      (values (set-add acc rule+) (set-union consts consts+))))
+        (if errors
+            (with-handlers ([exn:fail? (lambda (e)
+                                         (set-box! errors (cons e (unbox errors)))
+                                         (values #f (set)))])
+              (check rule))
+            (check rule)))
+      (values (if rule+ (set-add acc rule+) acc) (set-union consts consts+))))
+  (when (and errors (pair? (unbox errors)))
+    (raise (last (unbox errors))))
   (define synth-prov `(prov ,synth-token ,synth-token))
   (for/fold ([acc checked]) ([s (in-set enum-consts)])
     (define cx (gensymb '_tconst))
@@ -322,6 +343,8 @@
                   [(? symbol? x) (hash-set env x (hash-ref local-env-proto x))]))
               (hash)
               (hash-keys local-env-proto)))
+     (let ([note (current-rule-types)])
+       (when note (note rule local-env)))
 
      (define (type-match? t0 x)
        ;; Union MEMBERS resolve through lattice-base-type too: a union may
