@@ -6,6 +6,7 @@ import { createEditor } from "./editor.js";
 import { createFiles } from "./files.js";
 import { formAt, forms } from "./forms.js";
 import { initAgent } from "./agent.js";
+import { createHistory } from "./history.js";
 import { renderEntry } from "./render.js";
 import { createSummary } from "./summary.js";
 
@@ -58,12 +59,16 @@ const files = createFiles({
   editor,
   transmit,
   note,
-  // The summary's notes and findings belong on the main file.
-  onOpen: () => summary.show(),
+  onOpen() {
+    // The summary's notes and findings belong on the main file.
+    summary.show();
+    versions.opened();
+  },
   onSaved: () => summary.refresh(),
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
+const versions = createHistory({ send, files });
 
 function save() {
   files.flush();
@@ -167,7 +172,7 @@ function connect() {
   };
   socket.onmessage = (message) => {
     const data = JSON.parse(message.data);
-    for (const handlers of [files.receive, receive]) handlers[data.t]?.(data);
+    for (const handlers of [files.receive, receive, versions.receive]) handlers[data.t]?.(data);
   };
   socket.onclose = () => {
     failedAttempts += 1;
@@ -366,6 +371,7 @@ function showTab(tab) {
     button.setAttribute("aria-pressed", String(open && button.dataset.tab === tab));
   }
   if (open && tab === "scenarios") send({ t: "scenarios" });
+  if (open && tab === "history") versions.render();
 }
 for (const button of document.querySelectorAll(".panel-toggle")) {
   button.addEventListener("click", () => showTab(button.dataset.tab));

@@ -43,6 +43,7 @@
         Review <span id="pending" class="count" hidden></span>
       </button>
       <button class="panel-toggle" data-tab="scenarios" aria-pressed="false" title="Scenarios: tests and debugging sessions beside the program">Scenarios</button>
+      <button class="panel-toggle" data-tab="history" aria-pressed="false" title="History: every version of the project">History</button>
     </div>
     <!--account-->
   </div>
@@ -59,6 +60,19 @@
     <section id="summary" hidden></section>
     <div id="tabs"></div>
     <div id="editor"></div>
+    <div id="viewer" hidden></div>
+    <div id="timeline">
+      <div id="viewing" hidden>
+        <span id="viewing-title"></span>
+        <button id="viewing-restore" class="primary small" title="Make these files current again, as a new version">Restore</button>
+        <button id="viewing-branch" class="secondary small" title="Start a new branch from this version and edit there">Branch from here</button>
+        <button id="viewing-back" class="secondary small" title="Return to the files you are editing">Back to head</button>
+      </div>
+      <div class="timeline-row">
+        <input id="timeline-slider" type="range" min="0" max="0" value="0" aria-label="Versions on this branch">
+        <span id="timeline-label"></span>
+      </div>
+    </div>
     <div id="divider" title="Drag to resize"></div>
     <section id="repl">
       <div id="transcript"></div>
@@ -83,6 +97,10 @@
     <div class="tab" data-tab="scenarios">
       <p class="hint">Files named <code>*.scenario.toml</code> beside the program.</p>
       <div id="scenario-list"></div>
+    </div>
+    <div class="tab" data-tab="history">
+      <p class="hint">Every version of the project, newest first. Click one to look at it.</p>
+      <div id="history-list"></div>
     </div>
   </aside>
 </main>
