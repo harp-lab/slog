@@ -325,6 +325,9 @@
    "  frames              the join stack at the current step stop"
    "  peek REL [LIMIT]    REL's delta at the park: the iteration's signed"
    "                      change, or the read's pending candidates"
+   "  trace on [sample K] [focus REL ...] [rules] | trace off"
+   "                      record each change's strata and iterations: signed"
+   "                      counts, sampled rows, and (rules) fires per rule"
    "  watch cone REL [image KEY]  derive level-0 watches over REL's whole"
    "                      dependency-ancestor cone in the mounted image; the"
    "                      SET re-derives semantically (rerun after an edit)"
@@ -2936,6 +2939,18 @@
        (hasheq 'class (~a class)
                'detail (for/list ([d (in-list detail)]) (format "~s" d)))])))
 
+;; Every stratum the event ran, from its `(fixpoint SCC "NAME" ITERS MS)`
+;; line.  NAME is the stratum's content hash, suffixed `_FLAVOR` for its
+;; count and maintenance incarnations (runtime-observability §1.1).
+(define (fixpoint-records events)
+  (for/list ([line (in-list events)]
+             #:do [(define datum (read-datum line))]
+             #:when (match datum [`(fixpoint ,_ ,(? string?) ,_ ,_) #t] [_ #f]))
+    (match-define `(fixpoint ,scc ,name ,iterations ,ms) datum)
+    (match-define (list _ hash flavor)
+      (or (regexp-match #px"^([^_]*)_(.+)$" name) (list name name "normal")))
+    (hasheq 'scc scc 'hash hash 'flavor flavor 'iterations iterations 'ms ms)))
+
 (define max-change-relations 8)
 
 (define (assemble-change operation target status requested events before after
@@ -2953,7 +2968,8 @@
           'sizes-observed (and before after #t)
           'routes (route-records events)
           'tiers (tier-records events)
-          'refusals (refusal-records events)))
+          'refusals (refusal-records events)
+          'strata (fixpoint-records events)))
 
 (define (make-change s operation target status requested events before after)
   (define-values (revision counts) (settled-session-state s))
@@ -2999,8 +3015,12 @@
       (capture-session-events state thunk)))
   (define after (catalog-size-snapshot s))
   (define change
-    (make-change s operation (or (repl-session-database rs) "scratch")
-                 status requested events before after))
+    (let ([change (make-change s operation
+                               (or (repl-session-database rs) "scratch")
+                               status requested events before after)])
+      (if (session-tracing? s)
+          (hash-set change 'trace (session-trace-read! s))
+          change)))
   ;; watches settle after the event: in-run hits from the captured stream,
   ;; relation intents rebound to successor keys, query intents re-counted
   (define watch-notes (settle-watches! state rs events))
@@ -3089,8 +3109,45 @@
                      (string-join (cons (hash-ref record 'class)
                                         (hash-ref record 'detail)) " "))
                    "; ")))))
+   (let ([trace (hash-ref change 'trace #f)])
+     (if trace (trace-summary-lines trace) '()))
    ;; the operator's heartbeat: watch hits, rebinds, and query deltas
    (hash-ref change 'watches '())))
+
+;; One line per traced stratum: its iterations and each program relation's
+;; net signed change across them (internal relations stay in the record).
+;; The per-iteration detail and the samples are the structured field.
+(define (trace-summary-lines trace)
+  (append
+   (for/list ([st (in-list (hash-ref trace 'strata))])
+     (define iterations (hash-ref st 'iterations))
+     (define totals
+       (for*/fold ([totals (hash)])
+                  ([it (in-list iterations)]
+                   [rel (in-list (hash-ref it 'relations))]
+                   #:unless (internal-relation? (hash-ref rel 'relation)))
+         (hash-update totals (hash-ref rel 'relation)
+                      (lambda (pm) (cons (+ (car pm) (hash-ref rel 'plus))
+                                         (+ (cdr pm) (hash-ref rel 'minus))))
+                      (cons 0 0))))
+     (format "trace ~a: ~a iteration~a · ~a"
+             (let ([name (hash-ref st 'stratum)])
+               (if (eq? name 'null) (format "s~a" (hash-ref st 'scc)) name))
+             (length iterations) (if (= (length iterations) 1) "" "s")
+             (if (hash-empty? totals)
+                 "no change"
+                 (string-join
+                  (for/list ([name (in-list (sort (hash-keys totals) string<?))])
+                    (match-define (cons plus minus) (hash-ref totals name))
+                    (string-append name
+                                   (if (zero? plus) "" (format " +~a" plus))
+                                   (if (zero? minus) "" (format " -~a" minus))))
+                  ", "))))
+   (let ([dropped (hash-ref trace 'dropped)])
+     (if (positive? dropped)
+         (list (format "trace: ~a sample row~a dropped at the 16 MB cap"
+                       dropped (if (= dropped 1) "" "s")))
+         '()))))
 
 (define (brief-change-summary-lines change)
   ;; The structured change record remains authoritative and the Rust client
@@ -3940,6 +3997,49 @@
    state
    (text-result (format "Peek · ~a" rel) rendered #:kind "peek")))
 
+;; `trace on [sample K] [focus REL ...] [rules]` / `trace off`: the execution
+;; trace (docs/pausing.md §15).  While on, every change carries its strata,
+;; iterations, signed counts and coordinated samples in 'trace, and its
+;; summary gains one line per stratum.
+(define (trace-result state argument)
+  (define s (ensure-session! state))
+  (match (string-split argument)
+    [(list "off")
+     (session-trace-off! s)
+     (text-result "Trace off" (list "changes no longer carry an execution trace")
+                  #:kind "trace")]
+    [(list "on" options ...)
+     (define-values (sample focus rules?)
+       (let loop ([words options] [sample #f] [focus '()] [rules? #f])
+         (match words
+           ['() (values sample (reverse focus) rules?)]
+           [(list "sample" (app string->number (? exact-nonnegative-integer? k))
+                  rest ...)
+            (loop rest k focus rules?)]
+           [(list "rules" rest ...) (loop rest sample focus #t)]
+           [(list "focus" rest ...)
+            (define-values (names more)
+              (splitf-at rest (lambda (w) (not (member w '("sample" "rules"))))))
+            (when (null? names) (error 'trace "focus names at least one relation"))
+            (loop more sample (append (reverse names) focus) rules?)]
+           [_ (error 'trace "expected: trace on [sample K] [focus REL ...] [rules] | trace off")])))
+     (session-trace-on! s #:sample sample #:focus focus #:rules? rules?)
+     (text-result
+      "Trace on"
+      (append
+       (list "each change carries its execution trace: strata, iterations, signed counts"
+             (cond
+               [(eqv? sample 0) "counts only: no sample rows"]
+               [else (format "samples: the ~a rows of smallest value hash per relation, iteration and sign~a"
+                             (or sample 8)
+                             (if (null? focus)
+                                 ""
+                                 (format "; ~a for ~a" (max (or sample 8) 64)
+                                         (string-join focus ", "))))]))
+       (if rules? (list "rule fires per iteration") '()))
+      #:kind "trace")]
+    [_ (error 'trace "expected: trace on [sample K] [focus REL ...] [rules] | trace off")]))
+
 ;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
 ;;
 ;;   why                       the candidates that tripped the pre-commit gate
@@ -4300,6 +4400,7 @@
     [(or "uses" "find") (uses-result state argument)]
     ["why" (why-result state argument)]
     ["peek" (peek-result state argument)]
+    ["trace" (trace-result state argument)]
     ["whynot" (whynot-result state argument)]
     ["break" (break-result state argument)]
     ["unbreak" (unbreak-result state argument)]
@@ -5067,7 +5168,8 @@
   (define sample-change
     (assemble-change "add" "scratch" "settled" sample-request
                      (list "(route maintain 2)"
-                           "(tier 3 4f0b9c11 o0)")
+                           "(tier 3 4f0b9c11 o0)"
+                           "(fixpoint 3 \"4f0b9c11_maint1\" 2 0.356)")
                      (hash "edge" 3) (hash "edge" 4)
                      7 "valid"))
   (check-equal?
@@ -5085,7 +5187,10 @@
            'routes (list (hasheq 'kind "maintain" 'detail (list "2")))
            'tiers (list (hasheq 'scc 3 'hash "4f0b9c11" 'rung "o0"))
            ;; T5 slice (c): no debugger continuation was declined here
-           'refusals '()))
+           'refusals '()
+           ;; the fixpoint line, split into the stratum hash and its flavor
+           'strata (list (hasheq 'scc 3 'hash "4f0b9c11" 'flavor "maint1"
+                                 'iterations 2 'ms 0.356))))
   ;; the arrival note renders from the captured tier event (live arrivals
   ;; depend on clang wall-clock vs fixpoint length, so the rendering is
   ;; pinned here and the verbs in the interp battery below)
@@ -5784,6 +5889,100 @@
                   (list "+(path 97 97)" "1 row · this iteration's settled delta"))
     (check-regexp-match #px"path \\+1" (text (run! "commit")))
     (void (run! ":quit")))
+
+  ;; The execution trace (docs/pausing.md §15).  Each iteration of the
+  ;; traced stratum of `flavor` that writes `relation`: the relation's signed
+  ;; counts and sample rows, as (plus minus (row sign kind) ...), the sample
+  ;; in row order, or () where the iteration left it unchanged.
+  (define (traced-iterations change flavor relation)
+    (define (entry it)
+      (findf (lambda (r) (equal? (hash-ref r 'relation) relation))
+             (hash-ref it 'relations)))
+    (define st
+      (findf (lambda (st)
+               (and (equal? (hash-ref st 'flavor) flavor)
+                    (ormap entry (hash-ref st 'iterations))))
+             (hash-ref (hash-ref change 'trace) 'strata)))
+    (for/list ([it (in-list (hash-ref st 'iterations))])
+      (match (entry it)
+        [#f '()]
+        [r (list* (hash-ref r 'plus) (hash-ref r 'minus)
+                  (sort (for/list ([x (in-list (hash-ref r 'sample))])
+                          (list (hash-ref x 'row) (hash-ref x 'sign)
+                                (hash-ref x 'kind)))
+                        string<? #:key first))])))
+
+  ;; reach.slog, cold: path grows by 3, 2, 1, then the empty iteration that
+  ;; is fixpoint.  `add edge 4 5` re-runs the cone as runtime-observability
+  ;; §1.5 narrates it: the lazy count round, then _maint1 -- iteration 1
+  ;; derives (4 5) through the non-recursive rule and (1..3 5) through the
+  ;; recursive one, iteration 2 is empty.
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (run! line) (dispatch-command state line))
+    (void (run! "trace on"))
+    (define cold (hash-ref (run! "run tests/reach.slog") 'change))
+    (check-equal? (traced-iterations cold "normal" "path")
+                  '((3 0 ("1 2" "+" "none") ("2 3" "+" "none") ("3 4" "+" "none"))
+                    (2 0 ("1 3" "+" "none") ("2 4" "+" "none"))
+                    (1 0 ("1 4" "+" "none"))
+                    ()))
+    (define added (run! "add edge 4 5"))
+    (define change (hash-ref added 'change))
+    (check-equal? (for/list ([st (in-list (hash-ref change 'strata))])
+                    (list (hash-ref st 'flavor) (hash-ref st 'iterations)))
+                  '(("count" 2) ("count" 2) ("maint1" 2)))
+    (check-equal? (traced-iterations change "maint1" "path")
+                  '((4 0 ("1 5" "+" "rec") ("2 5" "+" "rec") ("3 5" "+" "rec")
+                       ("4 5" "+" "nonrec"))
+                    ()))
+    (check-not-false
+     (member (format "trace ~a_maint1: 2 iterations · path +4"
+                     (hash-ref (last (hash-ref change 'strata)) 'hash))
+             (hash-ref added 'lines)))
+    (void (run! ":quit")))
+
+  ;; A deletion's iterations carry minus signs, and its rows still render
+  ;; the struct instances the same iteration retracted (M5 tombstones).
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (run! line) (dispatch-command state line))
+    (void (run! "run tests/session/m4s_chain.slog"))
+    (void (run! "add in 1"))
+    (void (run! "add in 2"))
+    (void (run! "trace on"))
+    (define change (hash-ref (run! "del in 2") 'change))
+    (check-equal? (traced-iterations change "maint3neg" "q")
+                  '(() (0 1 ("(bar (foo 2))" "-" "nonrec")) ()))
+    (void (run! ":quit")))
+
+  ;; Coordinated samples choose rows by a hash of their VALUES, so a run's
+  ;; trace is identical at one thread and at many -- here over struct
+  ;; values, whose intern ids the hash must not see.  Only the timings may
+  ;; differ.
+  (define (hops-trace threads)
+    (define environment (environment-variables-copy test-environment))
+    ;; #f unsets it: the driver default, one worker per core but one
+    (environment-variables-set! environment #"SLOG_THREADS" threads)
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables environment])
+      (define state (make-server-state))
+      (void (dispatch-command state "trace on"))
+      (define trace
+        (hash-ref (hash-ref (dispatch-command state "run tests/trace_hops.slog")
+                            'change)
+                  'trace))
+      (void (dispatch-command state ":quit"))
+      (for/list ([st (in-list (hash-ref trace 'strata))])
+        (hash-remove st 'fixpoint))))
+  (let ([single (hops-trace #"1")])
+    (check-true (for/or ([st (in-list single)])
+                  (for/or ([it (in-list (hash-ref st 'iterations))])
+                    (for/or ([r (in-list (hash-ref it 'relations))])
+                      (positive? (hash-ref r 'sample-omitted))))))
+    (check-equal? (hops-trace #f) single))
 
   ;; T5 slice (c3): stepping the held read (contract §3, repl-ux §9.3).
   ;; From the gate a step REPLAYS the completed read and stops at the first
