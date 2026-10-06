@@ -246,9 +246,18 @@
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
              '() '() (hash) #f '() '()))
-  (session-action! s `(set-evaluation ,(session-evaluation-id s))
-                   read-one-line-quiet!)
+  (set-evaluation! s)
   s)
+
+;; Name this daemon's EvaluationId: a command verb, not an action plugin --
+;; the id is fresh per session, so a plugin would cost a clang build each time.
+(define (set-evaluation! s)
+  (write `(set-evaluation ,(session-evaluation-id s)) (session-in s))
+  (newline (session-in s))
+  (flush-output (session-in s))
+  (define reply (read-line (session-out s)))
+  (unless (equal? reply "(evaluation-set)")
+    (error 'session (format "could not set the evaluation id: ~a" reply))))
 
 ;; A session facade over an existing daemon connection (the one-shot
 ;; driver's, for recipe-chain loads -- runslog's recipe-chain-loader hook).
@@ -261,8 +270,7 @@
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
                      '() '() (hash) #f '() '()))
-  (session-action! s `(set-evaluation ,(session-evaluation-id s))
-                   read-one-line-quiet!)
+  (set-evaluation! s)
   (define-values (_cur strata-pos _chains) (introspect! s))
   (set-session-next-scc! s (hash-count strata-pos))
   s)

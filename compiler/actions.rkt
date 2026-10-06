@@ -343,9 +343,6 @@
     ;; can rederive the point->(name->version) map from a live daemon.
     ;; Read-only; safe when suspended.
     [`(pipeline) "  d->emitPipeline();\n"]
-    [`(set-evaluation ,id)
-     (format "  d->setEvaluationId(\"~a\");\n"
-             (escape-c-string-literal id))]
     ;; Versioned sizes (§0.4 addressing): one (sizes-at P (NAME SIZE) ...)
     ;; line with every name resolved at position P.  Read-only.
     [`(sizes-at ,pos)
