@@ -10,6 +10,7 @@
 use crate::auth::{self, Gate};
 use crate::lane::Mode;
 use crate::registry::Registry;
+use crate::results::{Refinement, Row, SetId};
 use crate::store::Files;
 use crate::studio::{Event, HistoryView, Refused, Snapshot, Studio};
 use axum::Router;
@@ -121,6 +122,10 @@ enum Request {
     DeleteFile { path: String },
     /// Make `path` the file Run and Debug evaluate.
     SetMain { path: String },
+    /// Rows `start..end` (0-based) of a result set.
+    Rows { set: SetId, start: u64, end: u64 },
+    /// Run a refinement of a result set as a new query.
+    Refine { set: SetId, refinement: Refinement },
 }
 
 impl Request {
@@ -134,6 +139,8 @@ impl Request {
                 | Request::Command { .. }
                 | Request::Restart
                 | Request::Mode { .. }
+                | Request::Rows { .. }
+                | Request::Refine { .. }
         )
     }
 }
@@ -157,6 +164,13 @@ enum Reply<'a> {
     /// The thread an ask went to (new threads get an id here).
     Asked { thread: u32 },
     Notice { message: &'a str },
+    /// The rows asked for, as many as exist; or why they cannot be had.
+    Rows {
+        set: SetId,
+        start: u64,
+        rows: Vec<Row>,
+        error: Option<String>,
+    },
 }
 
 async fn socket(
@@ -307,11 +321,11 @@ fn handle(
             });
         }
         Request::Restart => {
-            studio.lane.kill();
+            studio.restart();
             warm(studio);
         }
         Request::Mode { mode } => {
-            studio.lane.set_mode(mode);
+            studio.set_mode(mode);
             warm(studio);
         }
         Request::Scenarios => {
@@ -370,6 +384,27 @@ fn handle(
         Request::RenameFile { from, to } => notice(direct, studio.rename_file(&from, &to)),
         Request::DeleteFile { path } => notice(direct, studio.delete_file(&path)),
         Request::SetMain { path } => notice(direct, studio.set_main(&path)),
+        Request::Rows { set, start, end } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let (rows, error) = match studio.rows(set, start, end).await {
+                    Ok(rows) => (rows, None),
+                    Err(why) => (Vec::new(), Some(why)),
+                };
+                let _ = direct.send(json(&Reply::Rows {
+                    set,
+                    start,
+                    rows,
+                    error,
+                }));
+            });
+        }
+        Request::Refine { set, refinement } => match studio.refinement(set, &refinement) {
+            Ok((line, lineage)) => {
+                tokio::spawn(async move { studio.run(&line, Some(lineage)).await });
+            }
+            Err(message) => notice(direct, Err(message)),
+        },
     }
 }
 

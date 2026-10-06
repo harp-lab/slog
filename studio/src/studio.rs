@@ -11,6 +11,7 @@
 use crate::agent::{Agent, AgentEvent};
 use crate::lane::{Lane, LaneStatus, Mode};
 use crate::projects::{Project, Projects, valid_file};
+use crate::results::{self, Lineage, MAX_REQUEST_ROWS, Plan, Refinement, Results, Row, SetId, Total};
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::session::{Outcome, Session, SessionView, run_argument};
@@ -46,6 +47,7 @@ pub struct Snapshot {
     pub agent_unavailable: Option<String>,
     /// `None` until a summarizer is attached.
     pub summary: Option<summary::View>,
+    pub results: Vec<results::View>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -103,12 +105,17 @@ pub enum Event {
     Log {
         line: String,
     },
-    /// One command and its outcome.
+    /// One command and its outcome; a `?` query's names the result set
+    /// its rows opened.
     Entry {
         origin: Origin,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        set: Option<SetId>,
         #[serde(flatten)]
         outcome: Outcome,
     },
+    /// A result set opened, or what is known about it changed.
+    ResultSet(results::View),
     Evaluation { phase: Phase, ok: bool, ms: u64 },
     /// Progress of an agent turn.
     Agent(AgentEvent),
@@ -279,6 +286,7 @@ pub struct Studio {
     /// Held across each command, and across a whole evaluation, so commands
     /// from different tabs never interleave within one.
     session: Mutex<Session>,
+    results: std::sync::Mutex<Results>,
     events: broadcast::Sender<Event>,
     /// Signalled on every change to the working files; `watch_edits` makes
     /// an Auto version once they pause.
@@ -313,6 +321,7 @@ impl Studio {
             preview_session: Mutex::new((Session::new(&preview), None)),
             preview,
             port: OnceLock::new(),
+            results: std::sync::Mutex::new(Results::default()),
             summary: OnceLock::new(),
         }
     }
@@ -417,6 +426,7 @@ impl Studio {
             lane: self.lane.status().borrow().clone(),
             session,
             breakpoints: open.breakpoints.clone(),
+            results: self.results().views(),
         }
     }
 
@@ -658,10 +668,128 @@ impl Studio {
 
     /// Run one line typed at the REPL prompt.
     pub async fn command(&self, line: &str) {
+        self.run(line, None).await;
+    }
+
+    /// Run a REPL line. A `?` query's rows open a result set, refining
+    /// `lineage`'s set when given. The set's total is a `?count` of the
+    /// same query, sent first: once the query holds the cursor, any other
+    /// command would discard it (audit Q-10).
+    pub async fn run(&self, line: &str, lineage: Option<Lineage>) {
         let mut session = self.session.lock().await;
         let before = session.view().clone();
+        let total = match results::count_line(line) {
+            Some(count) => {
+                let counted = session.execute(&self.lane, &count).await;
+                match (&counted.result, counted.error) {
+                    (Some(result), _) => {
+                        Total::of_count(result).ok_or_else(|| "the count's answer was unreadable".to_owned())
+                    }
+                    (None, error) => Err(error.map_or_else(String::new, |error| error.message)),
+                }
+            }
+            None => Ok(Total::Unknown),
+        };
         let outcome = session.execute(&self.lane, line).await;
-        self.publish_outcome(Origin::Repl, &before, &outcome);
+        let (touched, opened) = {
+            let mut results = self.results();
+            // Any command may have discarded the cursor (audit Q-10).
+            let mut touched: Vec<SetId> = results.park().into_iter().collect();
+            if changes_database(&before, &outcome) {
+                touched = results.changed();
+            }
+            let opened = match &outcome.result {
+                Some(result) => {
+                    results.learn(result);
+                    results.open(line, result, lineage)
+                }
+                None => Ok(None),
+            };
+            if let Ok(Some(id)) = opened {
+                results.counted(id, total);
+            }
+            (touched, opened)
+        };
+        let set = opened.unwrap_or_else(|why| {
+            self.publish(Event::Log {
+                line: format!("Studio could not read the query's rows: {why}"),
+            });
+            None
+        });
+        self.publish_sets(touched.into_iter().chain(set));
+        self.publish_outcome(Origin::Repl, &before, &outcome, set);
+    }
+
+    /// The query a gesture on a result set runs, and its lineage.
+    pub fn refinement(&self, id: SetId, refinement: &Refinement) -> Result<(String, Lineage), String> {
+        self.results().refine(id, refinement)
+    }
+
+    /// Rows `start..end` (0-based) of a result set: from its cache, or read
+    /// from its query on the main lane, running the query again when
+    /// another set holds the cursor or the rows lie behind it.
+    pub async fn rows(&self, id: SetId, start: u64, end: u64) -> Result<Vec<Row>, String> {
+        let end = end.min(start.saturating_add(MAX_REQUEST_ROWS));
+        // Cached rows are served even while a long command holds the lane.
+        if let Plan::Serve(rows) = self.results().plan(id, start, end) {
+            return Ok(rows);
+        }
+        let mut session = self.session.lock().await;
+        let mut cursor_lost = false;
+        let served = loop {
+            let plan = self.results().plan(id, start, end);
+            let line = match plan {
+                Plan::Serve(rows) => break Ok(rows),
+                Plan::Fail(why) => break Err(why),
+                Plan::More => "more".to_owned(),
+                Plan::Rerun(query) => {
+                    let parked = {
+                        let mut results = self.results();
+                        let note = format!("running the query again to reach row {}", start + 1);
+                        results.set_loading(id, Some(note));
+                        results.park()
+                    };
+                    self.publish_sets(parked.into_iter().chain([id]));
+                    query
+                }
+            };
+            let before = session.view().clone();
+            let outcome = session.execute(&self.lane, &line).await;
+            if outcome.session != before {
+                self.publish(Event::Session(outcome.session.clone()));
+            }
+            let absorbed = match &outcome.result {
+                Some(result) => self.results().absorb(id, result),
+                None => Err(outcome.error.map_or_else(String::new, |error| error.message)),
+            };
+            match absorbed {
+                Ok(()) => {}
+                // The cursor went some way this studio did not see: run
+                // the query again, once.
+                Err(_) if line == "more" && !cursor_lost => {
+                    cursor_lost = true;
+                    self.results().park();
+                }
+                Err(why) => break Err(why),
+            }
+        };
+        self.results().set_loading(id, None);
+        self.publish_sets([id]);
+        served
+    }
+
+    /// Kill the main lane's server; its session and cursor go with it.
+    pub fn restart(&self) {
+        self.lane.kill();
+        let touched = self.results().changed();
+        self.publish_sets(touched);
+    }
+
+    /// Run the server in `mode` from now on; it restarts.
+    pub fn set_mode(&self, mode: Mode) {
+        self.lane.set_mode(mode);
+        let touched = self.results().changed();
+        self.publish_sets(touched);
     }
 
     /// Save, then evaluate the main file from nothing in a fresh session.
@@ -683,10 +811,16 @@ impl Studio {
             ok: false,
             ms: 0,
         });
+        let touched = {
+            let mut results = self.results();
+            results.forget_catalog();
+            results.changed()
+        };
+        self.publish_sets(touched);
         let ok = match self.save(if debug { "debug" } else { "run" }) {
             Err(message) => {
                 let failure = session.failure("save", "save", &message);
-                self.publish_outcome(Origin::Evaluate, session.view(), &failure);
+                self.publish_outcome(Origin::Evaluate, session.view(), &failure, None);
                 false
             }
             Ok((version, text)) => {
@@ -699,8 +833,11 @@ impl Studio {
                 let mut tables = None;
                 let ok = session
                     .evaluate(&self.lane, &main, &prepare, &mut |outcome| {
-                        self.publish_outcome(Origin::Evaluate, &shown, outcome);
+                        self.publish_outcome(Origin::Evaluate, &shown, outcome, None);
                         shown = outcome.session.clone();
+                        if let Some(result) = &outcome.result {
+                            self.results().learn(result);
+                        }
                         if outcome.line == "tables" {
                             tables = outcome.result.clone();
                         }
@@ -811,15 +948,37 @@ impl Studio {
     }
 
     /// Publish an entry, and the session state when it moved past `before`.
-    fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome) {
+    fn publish_outcome(&self, origin: Origin, before: &SessionView, outcome: &Outcome, set: Option<SetId>) {
         if outcome.session != *before {
             self.publish(Event::Session(outcome.session.clone()));
         }
         self.publish(Event::Entry {
             origin,
+            set,
             outcome: outcome.clone(),
         });
     }
+
+    fn publish_sets(&self, ids: impl IntoIterator<Item = SetId>) {
+        let views: Vec<results::View> = {
+            let results = self.results();
+            ids.into_iter().filter_map(|id| results.view(id)).collect()
+        };
+        for view in views {
+            self.publish(Event::ResultSet(view));
+        }
+    }
+
+    fn results(&self) -> std::sync::MutexGuard<'_, Results> {
+        self.results.lock().expect("results lock")
+    }
+}
+
+/// Whether a command may have changed what queries on its lane see: every
+/// semantic verb reports a `change`, and a switched, discarded or held
+/// session shows in the session view.
+fn changes_database(before: &SessionView, outcome: &Outcome) -> bool {
+    outcome.session != *before || outcome.result.as_ref().is_some_and(|result| result.get("change").is_some())
 }
 
 /// The directories under `root/data`, by name: the databases the REPL
@@ -839,7 +998,7 @@ fn databases(root: &std::path::Path) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{databases, Event, Made, Origin, Refused, Studio};
     use crate::review::Change;
     use crate::lane::{Lane, Mode};
@@ -849,7 +1008,7 @@ mod tests {
     use slog_repl::server::project_root;
 
     /// A studio on a new project in `scratch` whose main file holds `text`.
-    fn studio(scratch: &Scratch, mode: Mode, text: &str) -> Studio {
+    pub(crate) fn studio(scratch: &Scratch, mode: Mode, text: &str) -> Studio {
         let projects = Projects::new(scratch.path());
         projects.create("p").expect("project");
         let (project, files) = projects.open("p").expect("open");
@@ -1096,6 +1255,7 @@ mod tests {
                 Event::Entry {
                     origin: Origin::Evaluate,
                     outcome,
+                    ..
                 } => Some(outcome),
                 _ => None,
             })

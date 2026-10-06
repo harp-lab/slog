@@ -17,6 +17,7 @@ mod mcp;
 mod projects;
 mod registry;
 mod review;
+mod results;
 mod scenario;
 mod session;
 mod store;

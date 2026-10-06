@@ -32,6 +32,7 @@
 //! a break and `run {program}` again into the session to stop there.
 
 use crate::lane::{Lane, Mode};
+use crate::results::{self, Total};
 use crate::session::{Outcome, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -452,9 +453,6 @@ impl Runner<'_> {
     async fn judge_query(&mut self, result: &Value, expect: &Expect) -> Vec<String> {
         let mut failures = Vec::new();
         let mode = result["query-mode"].as_str().unwrap_or("");
-        let matched = result["query-matched"].as_u64();
-        // A count that hit the work budget is printed with a trailing `+`.
-        let exact = !text_of(result).contains("+ row");
         let rows = if mode == "rows" {
             match self.all_rows(result).await {
                 Ok(rows) => Some(rows),
@@ -468,7 +466,12 @@ impl Runner<'_> {
         };
         let count = match (mode, &rows) {
             ("rows", Some(rows)) => Some(rows.len() as u64),
-            ("count" | "exists", _) if exact => matched,
+            // never a budget's lower bound
+            ("count", _) => match Total::of_count(result) {
+                Some(Total::Exact(n)) => Some(n),
+                _ => None,
+            },
+            ("exists", _) => result["query-matched"].as_u64(),
             _ => None,
         };
         if let Some(expected) = expect.count
@@ -544,14 +547,7 @@ fn page_rows(page: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter_map(|line| {
-            let line = line.trim_start();
-            let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
-            // The header ("3 rows") also starts with a number.
-            let tuple = rest.trim_start();
-            (rest.len() < line.len() && tuple.len() < rest.len() && tuple.starts_with('('))
-                .then(|| normalize(tuple))
-        })
+        .filter_map(|line| results::row_line(line).map(|(_, tuple)| normalize(tuple)))
         .collect()
 }
 
