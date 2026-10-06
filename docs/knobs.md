@@ -33,6 +33,8 @@ artifacts), `SLOG_FLAVORED_NATIVE` (the differential's native leg),
 `SLOG_TIER_PROFILE`, `SLOG_TIER_SKIP_MS`/`PROMOTE_MS`/`PROMOTE_MULT`,
 `SLOG_BUILD_JOBS`, `SLOG_CORES`, `SLOG_O2_RECLAIM_SECS`,
 `SLOG_O_CACHE_MAX_AGE_DAYS`/`_MAX_MB` — fast-compile.md, t3b-contract.md.
+`SLOG_AWAIT_BUILDS=1` makes `run.rkt` wait for the builds its run queued
+before exiting (the tier harnesses set it; by default a run exits at once).
 
 ## Daemon runtime
 

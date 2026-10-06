@@ -28,6 +28,7 @@ fail() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
 export SLOG_OPT=tiered
 export SLOG_SMT_SOLVERS=mock
+export SLOG_AWAIT_BUILDS=1     # each run's queued builds land before it exits
 export SLOG_NO_FREEZE=1
 unset SLOG_TIER_PROFILE SLOG_TIER_SKIP_MS SLOG_TIER_PROMOTE_MS 2>/dev/null || true
 
@@ -91,7 +92,7 @@ done
 
 # ---- 1: the cold run -- cap vs control -------------------------------------
 run_fix cold || fail cold-run
-# both O0s land (pool drains before driver exit); give the detached O2 a
+# both O0s land (SLOG_AWAIT_BUILDS drains the pool); give the detached O2 a
 # moment to at least CLAIM
 ok=1
 for h in $O0MAX $TIERED; do
