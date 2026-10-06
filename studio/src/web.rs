@@ -160,6 +160,13 @@ enum Request {
     /// The total and first rows of the query being typed, apart from the
     /// transcript; `seq` names the answer.
     Preview { line: String, seq: u64 },
+    /// Part of a relation or query, or another read, apart from the
+    /// transcript and the result sets (peek.rs); `seq` names the answer.
+    Peek {
+        seq: u64,
+        #[serde(flatten)]
+        ask: crate::peek::Ask,
+    },
     /// Accept these ops, with the earlier ops of their threads they build on.
     Accept { ops: Vec<u32> },
     Reject { op: u32 },
@@ -223,6 +230,7 @@ impl Request {
                 | Request::Explore { .. }
                 | Request::BranchState { .. }
                 | Request::ShowNow { .. }
+                | Request::Peek { .. }
         )
     }
 }
@@ -257,6 +265,14 @@ enum Reply<'a> {
         seq: u64,
         #[serde(flatten)]
         read: Option<crate::assist::Read>,
+        error: Option<String>,
+        busy: bool,
+    },
+    /// A peek's answer; `busy` when another command held the lane.
+    Peeked {
+        seq: u64,
+        #[serde(flatten)]
+        peeked: Option<crate::peek::Peeked>,
         error: Option<String>,
         busy: bool,
     },
@@ -498,6 +514,19 @@ fn handle(
                     }
                 };
                 let _ = direct.send(json(&Reply::Preview { seq, read, error, busy }));
+            });
+        }
+        Request::Peek { seq, ask } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                let (peeked, error, busy) = match studio.peek(ask).await {
+                    Ok(peeked) => (Some(peeked), None, false),
+                    Err(why) => {
+                        let busy = why == crate::assist::BUSY;
+                        (None, (!busy).then_some(why), busy)
+                    }
+                };
+                let _ = direct.send(json(&Reply::Peeked { seq, peeked, error, busy }));
             });
         }
         Request::Accept { ops } => {

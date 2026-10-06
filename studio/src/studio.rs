@@ -145,6 +145,9 @@ pub enum Event {
     },
     /// A result set opened, or what is known about it changed.
     ResultSet(results::View),
+    /// The database queries see may have changed: what was read of it
+    /// before `epoch` is stale.
+    Database { epoch: u64 },
     Evaluation { phase: Phase, ok: bool, ms: u64 },
     /// Progress of an agent turn.
     Agent(AgentEvent),
@@ -328,6 +331,8 @@ pub struct Studio {
     tracing: std::sync::atomic::AtomicBool,
     /// The breaks armed for the editor's breakpoints (breakpoints.rs).
     pub(crate) armed: std::sync::Mutex<crate::breakpoints::Armed>,
+    /// Rows read for peeks, by query, while the database stands (peek.rs).
+    pub(crate) peeks: std::sync::Mutex<crate::peek::Peeks>,
     /// The port this studio serves on, which agent runs connect back to.
     port: OnceLock<u16>,
     /// Summarizes each saved text in the background, once attached.
@@ -408,6 +413,7 @@ impl Studio {
             preview,
             port: OnceLock::new(),
             results: std::sync::Mutex::new(results),
+            peeks: Default::default(),
             summary: OnceLock::new(),
             states: std::sync::Mutex::new(states),
             pasts: Default::default(),
@@ -899,6 +905,9 @@ impl Studio {
             }
             touched
         };
+        if changes_database(&before, &outcome) {
+            self.publish_database();
+        }
         self.publish_sets(touched);
         let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
         let (mut shown, set) = match (query, results::rows_line(line)) {
@@ -1125,6 +1134,7 @@ impl Studio {
         self.lane.kill();
         self.keep_tables(None);
         let touched = self.results().changed();
+        self.publish_database();
         self.publish_sets(touched);
     }
 
@@ -1133,6 +1143,7 @@ impl Studio {
         self.lane.set_mode(mode);
         self.keep_tables(None);
         let touched = self.results().changed();
+        self.publish_database();
         self.publish_sets(touched);
     }
 
@@ -1169,6 +1180,7 @@ impl Studio {
             self.keep_tables(None);
             results.changed()
         };
+        self.publish_database();
         self.publish_sets(touched);
         // A program that fails the static check is refused at once, at its
         // error, without starting or discarding a session.
@@ -1423,6 +1435,15 @@ impl Studio {
 
     pub(crate) fn result_views(&self) -> Vec<results::View> {
         self.results().views()
+    }
+
+    fn publish_database(&self) {
+        let epoch = self.results().epoch();
+        self.publish(Event::Database { epoch });
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.results().epoch()
     }
 
     pub(crate) fn results(&self) -> std::sync::MutexGuard<'_, Results> {
