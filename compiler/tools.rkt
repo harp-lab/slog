@@ -61,16 +61,27 @@
                                 (file-exists? (build-path dir f))))
            (file->string (build-path dir f)))))
 
+;; The fingerprints below are SHA-256 hex digests of the concatenated
+;; sources, not the sources themselves: they are folded into cache keys that
+;; are built on every compile and every action (the job-hash string, action
+;; and freeze keys), and carrying ~3MB of source text through each of those
+;; dominated a small program's compile time.
+(define (text-digest s)
+  (bytes->hex-string (sha256 (string->bytes/utf-8 s))))
+
 ;; Fingerprint of the daemon headers.  Generated .so's #include daemon
 ;; headers and inline Database's layout and methods, so any header change
 ;; must invalidate cached .so's (otherwise a stale .so reads members at the
 ;; wrong offsets).  Folded into every .so cache key.
 (define daemon-headers-fingerprint
-  (string-append native-toolchain-fingerprint (fingerprint-dir daemon-dir #rx"\\.h$")))
+  (text-digest
+   (string-append native-toolchain-fingerprint
+                  (fingerprint-dir daemon-dir #rx"\\.h$"))))
 
 ;; Fingerprint of the compiler itself, so editing a pass invalidates cached
 ;; .so's (previously a stale .so could silently mask a codegen change).
-(define compiler-sources-fingerprint (fingerprint-dir compiler-dir #rx"\\.rkt$"))
+(define compiler-sources-fingerprint
+  (text-digest (fingerprint-dir compiler-dir #rx"\\.rkt$")))
 
 (define (delete-folder path)
   (define-values (sp out in err) (subprocess #f #f #f "/bin/rm" "-rf" path))
@@ -829,36 +840,43 @@
        (eprintf "warning: systemd-run not found on PATH; launching slogd without a ~a memory cap\n" cap))
      (cons slogd extra-args*)]))
 
-;; Let make check sources and the toolchain stamp on every launch. Checking
-;; source mtimes alone misses compiler/flag changes and can pair incompatible
-;; daemon and plugin ABIs. A warm make leaves the binaries untouched.
+;; Let make check sources and the toolchain stamp, once per target per
+;; process. Checking source mtimes alone misses compiler/flag changes and can
+;; pair incompatible daemon and plugin ABIs. A warm make leaves the binaries
+;; untouched, but still costs ~200ms (the toolchain stamp re-runs the
+;; compiler), which a long-lived REPL server paid on every session. Once per
+;; process matches the plugin side: daemon-headers-fingerprint, which keys
+;; every plugin build, is also read once, at load.
 ;; Serialize on-demand builds across threads AND driver processes: the daemon
 ;; and freezer share an object/stamp, and concurrent makes must not overwrite
 ;; each other's binaries or logs. Keep the OS lock outside the disposable cache;
 ;; it is released automatically if a driver dies.
 (define native-build-lock (make-semaphore 1))
+(define ensured-native-targets (make-hash))
 (define (ensure-native-target target log-name)
   (call-with-semaphore native-build-lock
     (lambda ()
-      (let wait ()
-        (call-with-file-lock/timeout
-         #f 'exclusive
-         (lambda ()
-           (make-directory* (fullpath "build"))
-           (define log-path (fullpath (string-append "build/" log-name)))
-           (call-with-output-file log-path #:exists 'truncate
-             (lambda (logport)
-               (define-values (sp out in err)
-                 (subprocess logport #f logport (find-executable-path "make")
-                             "-C" "daemon" target))
-               (close-output-port in)
-               (subprocess-wait sp)
-               (unless (zero? (subprocess-status sp))
-                 (flush-output logport)
-                 (error 'native-build "Something went wrong compiling ~a!\n~a"
-                        target (file->string log-path))))))
-         wait
-         #:lock-file (build-path daemon-dir ".build.lock"))))))
+      (unless (hash-ref ensured-native-targets target #f)
+        (let wait ()
+          (call-with-file-lock/timeout
+           #f 'exclusive
+           (lambda ()
+             (make-directory* (fullpath "build"))
+             (define log-path (fullpath (string-append "build/" log-name)))
+             (call-with-output-file log-path #:exists 'truncate
+               (lambda (logport)
+                 (define-values (sp out in err)
+                   (subprocess logport #f logport (find-executable-path "make")
+                               "-C" "daemon" target))
+                 (close-output-port in)
+                 (subprocess-wait sp)
+                 (unless (zero? (subprocess-status sp))
+                   (flush-output logport)
+                   (error 'native-build "Something went wrong compiling ~a!\n~a"
+                          target (file->string log-path))))))
+           wait
+           #:lock-file (build-path daemon-dir ".build.lock")))
+        (hash-set! ensured-native-targets target #t)))))
 
 (define (ensure-slogd-exists)
   (ensure-native-target "slogd" "slogd-build.log"))
@@ -918,10 +936,7 @@
 ;; and -g, and the fingerprint invalidates it when a daemon header changes.
 
 (define pch-build-lock (make-semaphore 1))
-(define daemon-fp8
-  (substring (bytes->hex-string
-              (sha256 (string->bytes/utf-8 daemon-headers-fingerprint)))
-             0 8))
+(define daemon-fp8 (substring daemon-headers-fingerprint 0 8))
 (define (pch-path opt)
   (fullpath (format "build/slog-~a-~a~a.pch"
                     daemon-fp8 (substring opt 1) (if (debug-build?) "g" ""))))

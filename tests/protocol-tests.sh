@@ -709,6 +709,14 @@ if [ "$(grep -c '(protocol-mode path)' out/proto-mode.log)" -eq 2 ] \
   ok "mode-legacy-literals-stay-path"; else bad "mode-legacy-literals-stay-path"; fi
 racket tests/api/drive.rkt "(bogus)" "(protocol-mode)" > out/proto-mode2.log 2>&1
 expect "mode-refusal-marks-command" "(protocol-mode command)" out/proto-mode2.log
+# set-evaluation is session metadata: it answers, stays mode-neutral (a
+# recipe-chain load sends it over a legacy driver's connection), and refuses
+# a missing id.
+racket tests/api/drive.rkt '(set-evaluation "e7")' "(protocol-mode)" \
+  "(set-evaluation)" > out/proto-mode3.log 2>&1
+expect "set-evaluation-answers" "(evaluation-set)" out/proto-mode3.log
+expect "set-evaluation-mode-neutral" "(protocol-mode path)" out/proto-mode3.log
+expect_rx "set-evaluation-needs-id" '\(refused parse [0-9]+ \(verb set-evaluation\)' out/proto-mode3.log
 
 # --- 5b. T0(d) uniform command-stack pause record ----------------------------
 # The pure wire formatter has one checked-in transcript corpus covering budget,

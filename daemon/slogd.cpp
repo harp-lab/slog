@@ -2362,6 +2362,24 @@ static void dispatch_command(slog::Daemon* d, CommandBuilders& builders,
         return;
     }
 
+    // (set-evaluation "ID"): name the EvaluationId this daemon runs in.
+    // A session sends it once, first, with a freshly minted id.  It was an
+    // action plugin, which made every new session pay a clang build for a
+    // one-of-a-kind source text; as a verb it costs nothing.  Mode-neutral
+    // and lease-admitted, exactly as the plugin path it replaces was.
+    if (verb == "set-evaluation")
+    {
+        if (argc != 1 || form.children[1].kind != slog::sexp::SExp::K::string
+            || form.children[1].text.empty())
+        {
+            refuse(d, "parse", "(verb set-evaluation) (detail \"expected "
+                   "(set-evaluation \\\"ID\\\")\")");
+            return;
+        }
+        d->setEvaluationId(form.children[1].text);
+        return;
+    }
+
     // T0(c) c2: rule-meta registration and its introspection twin live
     // ABOVE the protocol-mode mark and the boundary lease, deliberately.
     // Mode-neutral: registration is session METADATA -- a driver that
