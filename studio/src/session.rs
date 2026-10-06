@@ -81,9 +81,11 @@ impl Session {
     }
 
     /// Send one REPL line and follow the session state its answer reports.
+    /// A query makes a result set only when it names one (`as rN`, as the
+    /// REPL prompt's do, results.rs); the studio's own reads make none.
     pub async fn execute(&mut self, lane: &Lane, line: &str) -> Outcome {
         let started = Instant::now();
-        let answer = lane.command(line).await;
+        let answer = lane.command(&crate::results::naming(line, None)).await;
         self.refresh(lane);
         let (result, error) = match answer {
             Ok(Response {

@@ -465,13 +465,14 @@ impl Studio {
             }
             Ok(past) => {
                 self.define_kept(past, line).await;
-                let outcome = past.session.execute(&past.lane, line).await;
+                let id = (results::naming(line, None) != line.trim()).then(|| self.results().reserve());
+                let sent = results::naming(line, id);
+                let outcome = Outcome { line: line.to_owned(), ..past.session.execute(&past.lane, &sent).await };
                 past.holder = None;
-                let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
-                match (query, results::rows_line(line)) {
-                    (Some("rows" | "exists"), Some(read)) => {
+                match id {
+                    Some(id) if outcome.result.as_ref().is_some_and(|result| result.get("set").is_some()) => {
                         let (shown, set) = self
-                            .open_set(&mut past.session, &past.lane, line, &read, &outcome, lineage, stamp, false)
+                            .open_set(&mut past.session, &past.lane, id, &outcome, lineage, stamp, false)
                             .await;
                         past.holder = set;
                         (shown, set)
@@ -510,10 +511,11 @@ impl Studio {
                     Plan::Serve(rows) => break Ok(rows),
                     Plan::Fail(why) => break Err(why),
                     Plan::More if past.holder == Some(id) => "more".to_owned(),
+                    // the set made again, on this lane, under its name
                     Plan::More | Plan::Rerun(_) => {
                         let read = self.results().read_line(id).ok_or_else(|| format!("{id} is no longer kept"))?;
                         self.define_kept(past, &read).await;
-                        read
+                        results::naming(&read, Some(id))
                     }
                 };
                 let outcome = past.session.execute(&past.lane, &line).await;
@@ -678,11 +680,7 @@ impl Studio {
             states.derive_from(id, Kind::Branch, &format!("branch from t{id}"), version, None);
         }
         self.publish_states();
-        let touched = {
-            let mut results = self.results();
-            results.forget_catalog();
-            results.changed()
-        };
+        let touched = self.results().changed();
         self.publish_sets(touched);
         let fresh = [
             session.view().held.then(|| "abort".to_owned()),
@@ -705,7 +703,6 @@ impl Studio {
                 continue;
             }
             if let Some(result) = &outcome.result {
-                self.results().learn(result);
                 let mut states = self.states();
                 let current = states.current;
                 states.name(current, result);
@@ -960,9 +957,9 @@ mod tests {
             .expect("a set opened")
     }
 
-    /// A set from t1 read past its first page while the session is at t2
-    /// reads t1's rows, not the live session's; its refinement runs at t1;
-    /// and "show now" runs its query at t2.
+    /// A set from t1, no longer watched, read past its first page while
+    /// the session is at t2 reads t1's rows, not the live session's; its
+    /// refinement runs at t1; and "show now" runs its query at t2.
     #[tokio::test]
     async fn a_set_pages_at_its_own_state() {
         let scratch = Scratch::new("paging");
@@ -971,6 +968,7 @@ mod tests {
         studio.evaluate().await;
         studio.command("?(path X Y)").await;
         let r1 = opened(&mut events);
+        studio.command("unwatch r1").await;
         studio.command("add (edge 15 16)").await;
         assert_eq!(studio.states().current, 2);
         assert_eq!(studio.results().past(r1, 2), Some(1));
@@ -1006,6 +1004,8 @@ mod tests {
         studio.command("?(path X Y)").await;
         let r1 = opened(&mut events);
         studio.name_state(1, "  the   baseline ");
+        // not watched, the set keeps to the state it was read at
+        studio.command("unwatch r1").await;
         studio.command("add (edge 15 16)").await;
         studio.lane.shutdown().await;
         drop(studio);

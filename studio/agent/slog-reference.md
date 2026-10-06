@@ -711,7 +711,7 @@ Queries run against the evaluated program. One line:
 ?(rel T ...)                         one relation
 ? (rel ...) (rel ...) ... -> (X Y)   join, then project
 ?count (rel ...) ...                 number of matches
-?exists (rel ...) ...                yes / no
+?exists (rel ...) ...                the rows that witness it, if any
 ```
 
 - `?(atom)` single relation; `? atom atom ... -> (Vars)` join with projection;
@@ -720,7 +720,10 @@ Queries run against the evaluated program. One line:
 - Computes `(= V (op ...))` only for `tofloat size sidx shas aslst llen lref
   lidx lmem`. Everything else (`+`, `cget`, ...) is rejected: add a rule to
   the program instead and query its relation.
-- `?count` counts matches; `?exists` stops at the first.
+- `?count` counts matches; `?exists` answers with its witnesses, and a
+  query with no variable with the fact itself, or no rows.
+- At the author's prompt each query makes a result set, `r1`, `r2`, ...,
+  re-counted after every change the author commits; your reads make none.
 - `#N` splices a value handle shown in an earlier answer (`?(prog #3)`).
 
 Known pitfalls (do not misread the answers):
@@ -736,12 +739,15 @@ Known pitfalls (do not misread the answers):
 - **`=` does not bind:** `(= Z 3)` is only a post-filter; write the constant in
   the atom instead (`(p Y 3)`), or a large join may exhaust its work budget
   and report 0 rows.
-- **Not queryable:** lattice relations ("unknown relation"; add a rule that
-  copies the closed values into a plain table), struct/constructor relations,
-  constructor patterns like `?(prog (num X))` (only variables, numbers,
-  strings, and `#N` are terms), and `true`/`false` (read as variables). To
-  find rows holding a structured value, add a rule such as
-  `rule (prog (num N)) --> (prog_num N)` and query `prog_num`.
+- **Not queryable by your reads:** relations with a lattice column ("has a
+  lattice column"; add a rule that copies the closed values into a plain
+  table, or `show` it), struct/constructor relations, constructor patterns
+  like `?(prog (num X))` (only variables, numbers, strings, and `#N` are
+  terms), and `true`/`false` (read as variables). To find rows holding a
+  structured value, add a rule such as `rule (prog (num N)) --> (prog_num N)`
+  and query `prog_num`. At the author's prompt, lattice columns and
+  constructor patterns read through a scratch rule, kept as the set's
+  relation.
 - **`?count` stops at a work budget** on big joins and reports `N+`.
 
 The examples below run against this program; a `;; =>` line shows (part of)
@@ -774,9 +780,9 @@ rule (prog (negate (num 3))) (prog (num 4))
 ? (path X Y) (edge Y Z) -> (X Z)
 ;; => 3 rows
 ?count (path X _)
-;; => 6 rows match
+;; => 6 rows
 ?exists (path 1 4)
-;; => yes
+;; => 1  (path 1 4)
 ? (path X Y) (< X Y) (/= Y 3) -> (X Y)
 ;; => 4 rows
 ? (node X) ~(has_out X)
@@ -786,7 +792,7 @@ rule (prog (negate (num 3))) (prog (num 4))
 ?(path _ Y)
 ;; => 6 rows
 ? (name X N) (/= N "zzz")
-;; => 0 rows
+;; => no rows
 ? (name X N) (/= N "one")
 ;; => 1 row
 ? (node X) ~(edge X _)
@@ -794,13 +800,13 @@ rule (prog (negate (num 3))) (prog (num 4))
 ? (edge X Y) (= Z (+ X Y)) -> (Z)
 ;; => error: not in the audited query-compute whitelist
 ?(dist X Y D)
-;; => error: unknown relation "dist"
+;; => error: dist has a lattice column
 ?(dist_plain 1 Y D)
 ;; => 3 rows
 ?(prog E)
 ;; => (prog (negate (num 3)) #1)
 ?(prog #1)
-;; => yes
+;; => 1  (prog #1)
 ?(prog (num X))
 ;; => error: unsupported query term
 ?(path 1 "a")

@@ -2,21 +2,27 @@
 //! can page through, count, and refine with more Slog
 //! (docs/REPL-exploration-kris/notes/studio-design.md §7).
 //!
-//! The session server answers `?` with a page of rows as text and, while
-//! rows remain, holds the connection's one query cursor: `more` continues
-//! it, and almost any other command discards it (audit Q-10). So a set
-//! keeps a bounded cache of its pages; only the most recently browsed set
-//! holds the main lane's cursor, the others are *parked*; and rows past a
-//! parked set's cache are reached by running its query again and skipping
-//! ahead. A set's total comes from a `?count` of the same query, sent just
-//! before the query opens its cursor, so counting never costs the cursor.
+//! The session server makes every query a result set, r1, r2, ...
+//! (compiler/repl.rkt): it counts it, shows its first page, names its
+//! columns, and re-counts it after each committed change while it is live.
+//! Studio names the set it opens (`?QUERY as rN`, so its numbering holds
+//! across lanes and restarts), and its own reads make none (`as _`).
+//!
+//! The server answers with a page of rows as text and, while rows remain,
+//! holds the connection's one query cursor: `more` continues it, and
+//! almost any other command discards it (audit Q-10). So a set keeps a
+//! bounded cache of its pages; only the most recently browsed set holds
+//! the main lane's cursor, the others are *parked*; and rows past a parked
+//! set's cache are reached by reading the set again (`show rN`) and
+//! skipping ahead.
 //!
 //! A query's answers are also kept as a relation of the session, named
-//! after the set (r1, r2, ...): a scratch definition `table (rN T...) rule
-//! (rN V...) <-- BODY` joins the session's scratch layer, computed over the
-//! live database without running the program again, and the set reads that
-//! relation back. Later queries and refinements can name it, and its rows
-//! are a set, not the query's bag (audit Q-02).
+//! after the set: `keep rN` has the server join a scratch definition
+//! `table (rN T...) rule (rN V...) <-- BODY` to the session's scratch
+//! layer, computed over the live database without running the program
+//! again, and the set reads that relation back. Later queries and
+//! refinements can name it, and its rows are a set, not the query's bag
+//! (audit Q-02). A count is of matches, and stays the query's.
 //!
 //! This module is the bookkeeping, with no I/O: it reads the server's
 //! answers and says which command to send next. `Studio` sends them.
@@ -24,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::states::Stamp;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The most rows one browser request may ask for.
@@ -182,8 +188,6 @@ pub struct View {
     pub query: String,
     pub columns: Vec<Column>,
     pub total: Total,
-    /// Why the total is unknown or still coming.
-    pub total_note: Option<String>,
     pub cursor: Cursor,
     /// The work budget ended the query before its last row.
     pub budget: bool,
@@ -193,6 +197,9 @@ pub struct View {
     pub duplicates: bool,
     /// The database changed since the query ran; only cached rows remain.
     pub stale: bool,
+    /// Advanced whenever the server re-counted the set after a change: its
+    /// rows may differ, and are read again.
+    pub revision: u64,
     /// What the server is doing for this set, while it does it.
     pub loading: Option<String>,
     pub parent: Option<Lineage>,
@@ -206,33 +213,54 @@ pub struct View {
     pub state: Option<Stamp>,
 }
 
-/// A query's answers kept as a relation: its name, and its columns as the
-/// set shows them, each naming its variable in `read`.
+/// A query's answers kept as a relation (`keep rN`).
 #[derive(Clone, Debug)]
 pub struct Kept {
     pub relation: String,
-    pub columns: Vec<Column>,
     /// The scratch definition that keeps them, to define it again where
     /// the set is read at a past state (states.rs).
     pub definition: String,
 }
 
-/// How to keep a query's answers: the scratch definition to send, the
-/// query that reads the relation back, and what is then kept.
-#[derive(Clone, Debug)]
-pub struct Keep {
-    pub definition: String,
-    pub read: String,
-    pub kept: Kept,
+impl Kept {
+    /// What a `keep rN` answer says is kept: the relation, and the `?`
+    /// line and columns it is read back with.
+    pub fn of(result: &Value) -> Option<(Kept, String, Vec<Column>)> {
+        let kept = Kept {
+            relation: result["set"]["relation"].as_str()?.to_owned(),
+            definition: result["definition"].as_str()?.to_owned(),
+        };
+        let read = result["set"]["read"].as_str()?.to_owned();
+        Some((kept, read, columns_of(result)))
+    }
+}
+
+/// A set answer's columns, as the server names and types them.
+pub fn columns_of(result: &Value) -> Vec<Column> {
+    serde_json::from_value(result["columns"].clone()).unwrap_or_default()
+}
+
+/// The size a set answer says its set has.
+pub fn total_of(result: &Value) -> Total {
+    let set = &result["set"];
+    match (set["count"].as_u64(), set["exact"].as_bool()) {
+        (Some(n), Some(true)) => Total::Exact(n),
+        (Some(n), _) => Total::AtLeast(n),
+        _ => Total::Unknown,
+    }
 }
 
 /// What a set opens with besides its first page.
 pub struct Opening {
+    /// The name the set was made with (`Results::reserve`).
+    pub id: SetId,
     /// The query as typed: shown, and edited.
     pub query: String,
     /// The `?` line whose pages the set shows: a kept relation read back,
-    /// or the query itself.
+    /// or the query's rows.
     pub read: String,
+    /// As the server names and types them.
+    pub columns: Vec<Column>,
     pub kept: Result<Kept, String>,
     pub parent: Option<Lineage>,
     /// The session state the query ran at (states.rs).
@@ -256,8 +284,6 @@ pub struct Results {
     live: Option<SetId>,
     /// Advanced whenever the database the main lane queries may change.
     epoch: u64,
-    /// Declared column types by relation, from `tables`.
-    catalog: HashMap<String, Vec<String>>,
     clock: u64,
     cached: usize,
 }
@@ -270,7 +296,6 @@ struct Set {
     columns: Vec<Column>,
     duplicates: bool,
     total: Total,
-    total_note: Option<String>,
     cursor: Cursor,
     budget: bool,
     /// Rows the live cursor has delivered since the query last ran.
@@ -288,6 +313,7 @@ struct Set {
     /// sorted again.
     sorted: Option<Order>,
     state: Option<Stamp>,
+    revision: u64,
 }
 
 struct Page {
@@ -302,7 +328,6 @@ impl Default for Results {
             next: 1,
             live: None,
             epoch: 0,
-            catalog: HashMap::new(),
             clock: 0,
             cached: 0,
         }
@@ -331,69 +356,70 @@ impl Results {
         Some(id)
     }
 
-    /// Learn the declared column types from a `tables` answer.
-    pub fn learn(&mut self, result: &Value) {
-        if result["kind"] != "tables" {
-            return;
-        }
-        for relation in result["relations"].as_array().into_iter().flatten() {
-            if let (Some(name), Some(detail)) = (relation["name"].as_str(), relation["detail"].as_array()) {
-                let types = detail.iter().map(|t| t.as_str().unwrap_or("").to_owned()).collect();
-                self.catalog.insert(name.to_owned(), types);
-            }
-        }
-    }
-
     /// Advanced whenever the database queries see may have changed.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
-    pub fn forget_catalog(&mut self) {
-        self.catalog.clear();
+    /// The name the next set opens with, taken: the query is sent naming
+    /// it, so the session's set is the studio's, on any lane.
+    pub fn reserve(&mut self) -> SetId {
+        self.next += 1;
+        SetId(self.next - 1)
     }
 
-    /// The id the next set opens with, and so the relation its answers
-    /// are kept in.
-    fn next_id(&self) -> SetId {
-        SetId(self.next)
+    /// The session re-counted its live sets after a committed change
+    /// (`change.sets`): each that still reads is current again, at state
+    /// `state` and its new size; its cached rows are dropped, to be read
+    /// again when asked, as a count does not see rows that change in place.
+    /// Returns the sets whose views changed.
+    pub fn settled(&mut self, records: &Value, state: Stamp) -> Vec<SetId> {
+        let mut touched = Vec::new();
+        for record in records.as_array().into_iter().flatten() {
+            let Some(id) = record["name"].as_str().and_then(|name| SetId::try_from(name.to_owned()).ok()) else {
+                continue;
+            };
+            let (Some(after), Some(set)) = (record["after"].as_u64(), self.sets.get_mut(&id)) else {
+                continue;
+            };
+            if set.sorted.is_some() {
+                continue;
+            }
+            self.cached -= set.pages.values().map(|page| page.rows.len()).sum::<usize>();
+            set.pages.clear();
+            set.total = if record["exact"] == true { Total::Exact(after) } else { Total::AtLeast(after) };
+            set.cursor = Cursor::Parked;
+            set.at = 0;
+            set.seen = 0;
+            set.budget = false;
+            set.epoch = self.epoch;
+            set.state = Some(state);
+            set.revision += 1;
+            touched.push(id);
+        }
+        touched
     }
 
     /// Open a set on the first page of its `read` query; an answer that is
     /// not a rows page opens none.
     pub fn open(&mut self, opening: Opening, result: &Value) -> Result<Option<SetId>, String> {
-        let Opening { query, read, kept, parent, state } = opening;
+        let Opening { id, query, read, columns, kept, parent, state } = opening;
         if result["query-mode"] != "rows" || !read.trim_start().starts_with('?') {
             return Ok(None);
         }
+        self.next = self.next.max(id.0 + 1);
         let parsed = Query::parse(&read);
-        let (columns, duplicates, kept) = match kept {
-            Ok(Kept { relation, columns, definition: kept_by }) => {
-                debug_assert_eq!(relation, self.next_id().to_string());
-                // later queries over it are typed, and kept, like any other
-                let types = columns.iter().map(|column| column.kind.clone().unwrap_or_default()).collect();
-                self.catalog.insert(relation.clone(), types);
-                (columns, false, Ok((relation, kept_by)))
-            }
+        let (duplicates, kept, definition) = match kept {
+            Ok(Kept { relation, definition }) => (false, Ok(relation), Some(definition)),
             Err(why) => {
                 let projected = projection_of(result["title"].as_str().unwrap_or(""));
-                let columns = parsed.as_ref().map_or_else(Vec::new, |query| match &projected {
-                    Some(vars) => query.projected_columns(vars, &self.catalog),
-                    None => query.atom_columns(&self.catalog),
-                });
                 let duplicates = match (&parsed, &projected) {
                     (Some(query), Some(vars)) => query.hides_variables(vars),
                     _ => false,
                 };
-                (columns, duplicates, Err(why))
+                (duplicates, Err(why), None)
             }
         };
-        let (kept, definition) = match kept {
-            Ok((relation, definition)) => (Ok(relation), Some(definition)),
-            Err(why) => (Err(why), None),
-        };
-        let id = SetId(self.next);
-        self.next += 1;
         self.sets.insert(
             id,
             Set {
@@ -402,8 +428,7 @@ impl Results {
                 parsed,
                 columns,
                 duplicates,
-                total: Total::Unknown,
-                total_note: None,
+                total: total_of(result),
                 cursor: Cursor::Parked,
                 budget: false,
                 at: 0,
@@ -416,6 +441,7 @@ impl Results {
                 definition,
                 sorted: None,
                 state,
+                revision: 0,
             },
         );
         while self.sets.len() > MAX_SETS {
@@ -585,18 +611,6 @@ impl Results {
             .and_then(|set| set.definition.as_deref())
     }
 
-    pub fn counted(&mut self, id: SetId, total: Result<Total, String>) {
-        if let Some(set) = self.sets.get_mut(&id) {
-            match total {
-                Ok(total) => {
-                    set.total = set.total.and(total);
-                    set.total_note = None;
-                }
-                Err(why) => set.total_note = Some(format!("not counted: {why}")),
-            }
-        }
-    }
-
     pub fn set_loading(&mut self, id: SetId, loading: Option<String>) {
         if let Some(set) = self.sets.get_mut(&id) {
             set.loading = loading;
@@ -700,7 +714,6 @@ impl Results {
             columns: parent.columns.clone(),
             duplicates: parent.duplicates,
             total: if parent.budget { Total::AtLeast(n) } else { Total::Exact(n) },
-            total_note: None,
             cursor: Cursor::Exhausted,
             budget: parent.budget,
             at: n,
@@ -713,9 +726,9 @@ impl Results {
             definition: parent.definition.clone(),
             sorted: Some(Order { column, descending }),
             state: parent.state,
+            revision: 0,
         };
-        let id = SetId(self.next);
-        self.next += 1;
+        let id = self.reserve();
         self.sets.insert(id, set);
         while self.sets.len() > MAX_SETS {
             let oldest = *self.sets.keys().next().expect("more than MAX_SETS sets");
@@ -731,79 +744,6 @@ impl Results {
         Ok(id)
     }
 
-    /// How to keep the answers of the rows query `read` as the relation
-    /// the next set is named for. `page` is its first page, whose title
-    /// names its projection; a query without variables has none, and keeps
-    /// the facts it names.
-    pub fn keep(&self, read: &str, page: Option<&Value>) -> Result<Keep, String> {
-        let query = Query::parse(read).ok_or("the query does not read as clauses")?;
-        let projected = page.map(|page| projection_of(page["title"].as_str().unwrap_or("")));
-        let (columns, head) = match projected {
-            Some(Some(vars)) => (query.projected_columns(&vars, &self.catalog), vars),
-            // a one-atom query's facts, or a ground query's
-            Some(None) | None => {
-                let head: Vec<String> = query
-                    .atoms()
-                    .iter()
-                    .flat_map(|(_, terms)| terms.iter().map(|term| (*term).to_owned()))
-                    .collect();
-                if head.iter().any(|term| term == "_") {
-                    return Err("`_` matches without naming a value to keep".to_owned());
-                }
-                (query.atom_columns(&self.catalog), head)
-            }
-        };
-        let types = columns
-            .iter()
-            .map(|column| {
-                column
-                    .kind
-                    .clone()
-                    .ok_or_else(|| format!("the type of {} is not known", column.name))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        // Read back by variable: the head's own, or a fresh one for a
-        // constant or a repeat.
-        let mut vars: Vec<String> = Vec::new();
-        for (i, term) in head.iter().enumerate() {
-            let mut var = if is_variable(term) { term.clone() } else { format!("C{}", i + 1) };
-            while vars.contains(&var) || (!is_variable(term) && head.contains(&var)) {
-                var.push('_');
-            }
-            vars.push(var);
-        }
-        // `~ (rel …)` is a query's spelling of `~(rel …)`
-        let mut body: Vec<String> = Vec::new();
-        let mut absent = false;
-        for clause in &query.clauses {
-            if clause == "~" {
-                absent = true;
-            } else {
-                body.push(if std::mem::take(&mut absent) { format!("~{clause}") } else { clause.clone() });
-            }
-        }
-        let relation = self.next_id().to_string();
-        let definition = format!(
-            "table ({relation} {}) rule ({relation} {}) <-- {}",
-            types.join(" "),
-            head.join(" "),
-            body.join(" ")
-        );
-        Ok(Keep {
-            definition: definition.clone(),
-            read: format!("?({relation} {})", vars.join(" ")),
-            kept: Kept {
-                relation,
-                definition,
-                columns: columns
-                    .into_iter()
-                    .zip(vars)
-                    .map(|(column, var)| Column { var: Some(var), ..column })
-                    .collect(),
-            },
-        })
-    }
-
     pub fn view(&self, id: SetId) -> Option<View> {
         let set = self.sets.get(&id)?;
         Some(View {
@@ -811,12 +751,12 @@ impl Results {
             query: set.query.clone(),
             columns: set.columns.clone(),
             total: set.total,
-            total_note: set.total_note.clone(),
             cursor: set.cursor,
             budget: set.budget,
             seen: set.seen,
             duplicates: set.duplicates,
             stale: set.epoch != self.epoch,
+            revision: set.revision,
             loading: set.loading.clone(),
             parent: set.parent.clone(),
             relation: set.kept.as_ref().ok().cloned(),
@@ -879,7 +819,6 @@ impl Results {
                 columns: kept.columns,
                 duplicates: kept.duplicates,
                 total: kept.total,
-                total_note: None,
                 cursor: if kept.complete { Cursor::Exhausted } else { Cursor::Parked },
                 budget: kept.budget,
                 at: 0,
@@ -892,6 +831,7 @@ impl Results {
                 definition: kept.definition,
                 sorted: None,
                 state: kept.state,
+                revision: 0,
             };
             results.sets.insert(kept.id, set);
         }
@@ -1188,43 +1128,30 @@ impl Query {
         atoms
     }
 
-    /// The columns of the facts the atoms name: `rel.1`, `rel.2`, … for a
-    /// one-atom query's rows, and each atom's in turn for a ground query.
-    fn atom_columns(&self, catalog: &HashMap<String, Vec<String>>) -> Vec<Column> {
-        self.atoms()
-            .into_iter()
-            .flat_map(|(relation, terms)| {
-                terms.into_iter().enumerate().map(move |(i, term)| Column {
-                    name: format!("{relation}.{}", i + 1),
-                    var: is_variable(term).then(|| term.to_owned()),
-                    kind: declared(catalog, relation, i),
-                })
-            })
-            .collect()
-    }
-
-    /// The columns of a projection: one per variable, typed by the first
-    /// atom column it is drawn from.
-    fn projected_columns(&self, vars: &[String], catalog: &HashMap<String, Vec<String>>) -> Vec<Column> {
-        let atoms = self.atoms();
-        vars.iter()
-            .map(|var| Column {
-                name: var.clone(),
-                var: Some(var.clone()),
-                kind: atoms.iter().find_map(|(relation, terms)| {
-                    let position = terms.iter().position(|term| term == var)?;
-                    declared(catalog, relation, position)
-                }),
-            })
-            .collect()
-    }
-
     /// Whether a variable of the atoms is not shown, or `_` matches
     /// anything: rows then repeat once per hidden binding (audit Q-02).
     fn hides_variables(&self, shown: &[String]) -> bool {
         self.atoms().iter().flat_map(|(_, terms)| terms).any(|term| {
             *term == "_" || (is_variable(term) && !shown.iter().any(|var| var == term))
         })
+    }
+}
+
+/// `line` as sent to the session: a query names the set it makes `id`, or,
+/// with none, makes no set (`as _`); a query already naming one, and any
+/// other line, as typed.
+pub fn naming(line: &str, id: Option<SetId>) -> String {
+    let line = line.trim();
+    let named = line.rsplit_once(" as ").is_some_and(|(_, name)| {
+        let name = name.trim();
+        name == "_" || SetId::try_from(name.to_owned()).is_ok()
+    });
+    if !line.starts_with('?') || line == "?" || named {
+        return line.to_owned();
+    }
+    match id {
+        Some(id) => format!("{line} as {id}"),
+        None => format!("{line} as _"),
     }
 }
 
@@ -1249,10 +1176,6 @@ pub fn count_line(line: &str) -> Option<String> {
     Some(format!("?count {body}"))
 }
 
-fn declared(catalog: &HashMap<String, Vec<String>>, relation: &str, position: usize) -> Option<String> {
-    catalog.get(relation)?.get(position).filter(|t| !t.is_empty()).cloned()
-}
-
 /// Symbols are variables in a query, except `_`; literals are numbers,
 /// strings, `#t`/`#f`, and `#N` handles.
 fn is_variable(term: &str) -> bool {
@@ -1264,7 +1187,8 @@ fn is_variable(term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CACHE_ROWS, Cell, Cursor, Opening, Plan, Refinement, Results, Row, SetId, Total, row, sort_rows};
+    use super::{CACHE_ROWS, Cell, Cursor, Opening, Plan, Refinement, Results, Row, SetId, Total, columns_of, naming, row, sort_rows};
+    use crate::states::Stamp;
     use serde_json::{Value, json};
 
     /// A rows page as compiler/repl.rkt's render-query-page prints it.
@@ -1276,11 +1200,22 @@ mod tests {
                "query-status": status, "query-matched": shown, "query-shown": shown})
     }
 
-    /// A set reading `line` itself, its answers not kept as a relation.
-    fn as_typed(line: &str) -> Opening {
+    /// Set `rN` reading `line` itself, its answers not kept as a relation,
+    /// its columns as the server names them: `X`, a variable's; `edge.1`,
+    /// a constant's; `edge.2:Y`, a fact's column holding variable Y.
+    fn as_typed(n: u32, line: &str, columns: &[&str]) -> Opening {
+        let columns = columns
+            .iter()
+            .map(|column| {
+                let (name, var) = column.split_once(':').unwrap_or((column, column));
+                super::Column { name: name.to_owned(), var: (!var.contains('.')).then(|| var.to_owned()), kind: None }
+            })
+            .collect();
         Opening {
+            id: SetId(n),
             query: line.to_owned(),
             read: line.to_owned(),
+            columns,
             kept: Err(String::new()),
             parent: None,
             state: None,
@@ -1291,22 +1226,23 @@ mod tests {
         rows.iter().map(|row| row.iter().map(|cell| cell.text.as_str()).collect()).collect()
     }
 
-    /// Real answers from a session on reach.slog
-    /// (docs/REPL-exploration-kris/prototype/captures/session-reach.jsonl):
-    /// `tables`, a one-atom query, and a projected join.
+    /// Answers as a session on reach.slog gives them: a one-atom query and a
+    /// projected join, each a set, named and counted, its columns typed by
+    /// the server.
     #[test]
     fn captured_pages_read_as_typed_columns_and_cells() {
-        let tables = json!({"kind": "tables", "relations": [
-            {"arity": 2, "detail": ["int", "int"], "kind": "table", "name": "edge", "rows": 3},
-            {"arity": 2, "detail": ["int", "int"], "kind": "table", "name": "path", "rows": 6}]});
-        let fact = json!({"kind": "query", "lines": ["3 rows", "1  (path 1 2)", "2  (path 1 3)", "3  (path 1 4)"],
-            "query-matched": 3, "query-mode": "rows", "query-shown": 3, "query-status": "complete", "title": "Query"});
-        let join = json!({"kind": "query", "lines": ["2 rows", "1  (2 4)", "2  (1 3)"], "query-matched": 2,
-            "query-mode": "rows", "query-shown": 2, "query-status": "complete", "title": "Query · (X Z)"});
+        let fact = json!({"kind": "query", "lines": ["r1 · 3 rows", "1  (path 1 2)", "2  (path 1 3)", "3  (path 1 4)"],
+            "query-matched": 3, "query-mode": "rows", "query-shown": 3, "query-status": "complete", "title": "Query",
+            "set": {"name": "r1", "count": 3, "exact": true},
+            "columns": [{"name": "path.1", "var": null, "type": "int"}, {"name": "path.2", "var": "Y", "type": "int"}]});
+        let join = json!({"kind": "query", "lines": ["r2 · 2 rows", "1  (2 4)", "2  (1 3)"], "query-matched": 2,
+            "query-mode": "rows", "query-shown": 2, "query-status": "complete", "title": "Query · (X Z)",
+            "set": {"name": "r2", "count": 2, "exact": true},
+            "columns": [{"name": "X", "var": "X", "type": "int"}, {"name": "Z", "var": "Z", "type": "int"}]});
         let mut results = Results::default();
-        results.learn(&tables);
+        let typed = |n, line: &str, answer: &serde_json::Value| Opening { columns: columns_of(answer), ..as_typed(n, line, &[]) };
 
-        let id = results.open(as_typed("?(path 1 Y)"), &fact).unwrap().unwrap();
+        let id = results.open(typed(1, "?(path 1 Y)", &fact), &fact).unwrap().unwrap();
         let view = results.view(id).unwrap();
         let columns: Vec<_> = view.columns.iter().map(|c| (c.name.as_str(), c.var.as_deref(), c.kind.as_deref())).collect();
         assert_eq!(columns, [("path.1", None, Some("int")), ("path.2", Some("Y"), Some("int"))]);
@@ -1314,7 +1250,7 @@ mod tests {
         let Plan::Serve(rows) = results.plan(id, 0, 10) else { panic!("the page is cached") };
         assert_eq!(texts(&rows), [["1", "2"], ["1", "3"], ["1", "4"]]);
 
-        let id = results.open(as_typed("? (edge X Y) (edge Y Z) -> (X Z)"), &join).unwrap().unwrap();
+        let id = results.open(typed(2, "? (edge X Y) (edge Y Z) -> (X Z)", &join), &join).unwrap().unwrap();
         let view = results.view(id).unwrap();
         let columns: Vec<_> = view.columns.iter().map(|c| (c.name.as_str(), c.kind.as_deref())).collect();
         assert_eq!(columns, [("X", Some("int")), ("Z", Some("int"))]);
@@ -1339,27 +1275,58 @@ mod tests {
         assert_eq!(texts(r#"(word "5" tall" 3)"#), [r#"(word "5" tall" 3)"#]);
     }
 
-    /// A `?count` the budget cut short is a lower bound, whatever the rows
+    /// A count the budget cut short is a lower bound, whatever the rows
     /// read so far; only a complete count or reading every row is exact.
     #[test]
     fn a_total_is_exact_only_when_nothing_cut_it_short() {
         let count = |line: &str, n: u64| json!({"query-mode": "count", "query-matched": n, "lines": [line]});
-        assert_eq!(Total::of_count(&count("6 rows match", 6)), Some(Total::Exact(6)));
-        assert_eq!(Total::of_count(&count("2157385+ rows match", 2157385)), Some(Total::AtLeast(2157385)));
+        assert_eq!(Total::of_count(&count("6 rows", 6)), Some(Total::Exact(6)));
+        assert_eq!(Total::of_count(&count("2157385+ rows", 2157385)), Some(Total::AtLeast(2157385)));
 
         let tuples = |range: std::ops::Range<u64>| range.map(|i| format!("({i})")).collect::<Vec<_>>();
         let mut results = Results::default();
-        let id = results.open(as_typed("?(n X)"), &page("Query · (X)", 0, &tuples(0..50), "open")).unwrap().unwrap();
-        assert_eq!(results.view(id).unwrap().total, Total::Unknown);
-        results.counted(id, Ok(Total::AtLeast(70)));
+        let mut first = page("Query · (X)", 0, &tuples(0..50), "open");
+        first["set"] = json!({"name": "r1", "count": 70, "exact": false});
+        let id = results.open(as_typed(1, "?(n X)", &["X"]), &first).unwrap().unwrap();
         assert_eq!(results.view(id).unwrap().total, Total::AtLeast(70));
         // the work budget stops the rows at 80: still only a lower bound
         results.absorb(id, &page("Query · (X)", 50, &tuples(50..80), "budget")).unwrap();
         let view = results.view(id).unwrap();
         assert_eq!((view.total, view.budget, view.cursor), (Total::AtLeast(80), true, Cursor::Exhausted));
-        // an exact count settles it
-        results.counted(id, Ok(Total::Exact(1000)));
-        assert_eq!(results.view(id).unwrap().total, Total::Exact(1000));
+    }
+
+    /// After a committed change the session re-counts its live sets; each
+    /// it names is current again at the new state, at its new size, its
+    /// cached rows dropped to be read again. A set it does not name goes
+    /// stale, keeping its rows.
+    #[test]
+    fn a_settled_set_is_current_again_and_reads_its_rows_again() {
+        let tuples = |range: std::ops::Range<u64>| range.map(|i| format!("({i})")).collect::<Vec<_>>();
+        let mut results = Results::default();
+        let live = results.open(as_typed(1, "?(n X)", &["X"]), &page("Query · (X)", 0, &tuples(0..3), "complete")).unwrap().unwrap();
+        let other = results.open(as_typed(2, "?(m X)", &["X"]), &page("Query · (X)", 0, &tuples(0..2), "complete")).unwrap().unwrap();
+        results.changed();
+        let state = Stamp { id: 4, pred: Some(3) };
+        let records = json!([{"name": "r1", "before": 3, "after": 5, "exact": true, "stale": null},
+                             {"name": "r9", "before": 1, "after": 2, "exact": true, "stale": null}]);
+        assert_eq!(results.settled(&records, state), [live]);
+        let view = results.view(live).unwrap();
+        assert_eq!((view.total, view.stale, view.revision, view.state), (Total::Exact(5), false, 1, Some(state)));
+        assert!(matches!(results.plan(live, 0, 5), Plan::Rerun(query) if query == "?(n X)"));
+        let view = results.view(other).unwrap();
+        assert!(view.stale);
+        assert!(matches!(results.plan(other, 0, 2), Plan::Serve(rows) if rows.len() == 2));
+    }
+
+    /// A query names the set it makes; a read of Studio's own makes none.
+    #[test]
+    fn a_query_is_sent_naming_its_set() {
+        assert_eq!(naming("?(path X Y)", Some(SetId(3))), "?(path X Y) as r3");
+        assert_eq!(naming(" ?count (path X _) ", None), "?count (path X _) as _");
+        assert_eq!(naming("?(path X Y) as r7", Some(SetId(3))), "?(path X Y) as r7");
+        assert_eq!(naming("? (label X \"a as b\")", None), "? (label X \"a as b\") as _");
+        assert_eq!(naming("tables", Some(SetId(3))), "tables");
+        assert_eq!(naming("?", None), "?");
     }
 
     #[test]
@@ -1367,9 +1334,9 @@ mod tests {
         let fact = page("Query", 0, &["(path 1 2)".to_owned()], "complete");
         let join = page("Query · (X Z)", 0, &["(1 3)".to_owned()], "complete");
         let mut results = Results::default();
-        let sugar = results.open(as_typed("?(path 1 Y)"), &fact).unwrap().unwrap();
+        let sugar = results.open(as_typed(1, "?(path 1 Y)", &["path.1", "path.2:Y"]), &fact).unwrap().unwrap();
         let projected = results
-            .open(as_typed("? (path X Y) ~(edge X Y) (edge Y Z) -> (X Z)"), &join)
+            .open(as_typed(2, "? (path X Y) ~(edge X Y) (edge Y Z) -> (X Z)", &["X", "Z"]), &join)
             .unwrap()
             .unwrap();
         let refine = |id: SetId, refinement: Refinement| {
@@ -1422,7 +1389,7 @@ mod tests {
 
         let tuples: Vec<String> = (0..120).map(|i| format!("({i} {})", 1000 - i)).collect();
         let mut results = Results::default();
-        let parent = results.open(as_typed("?(n X Y)"), &page("Query · (X Y)", 0, &tuples[..50], "complete")).unwrap().unwrap();
+        let parent = results.open(as_typed(1, "?(n X Y)", &["X", "Y"]), &page("Query · (X Y)", 0, &tuples[..50], "complete")).unwrap().unwrap();
         let Plan::Serve(rows) = results.plan(parent, 0, 50) else { panic!("cached") };
         let lineage = results.sorting(parent, 1, false).unwrap();
         assert_eq!(lineage.refinement, "sort by Y, ascending");
@@ -1439,55 +1406,13 @@ mod tests {
         assert!(matches!(results.plan(id, 0, 1), Plan::Fail(why) if why.contains("sort r1 again")));
     }
 
-    /// The scratch definition that keeps a query's answers: declared with the
-    /// types of the relation columns its values come from, headed by what
-    /// the set shows, its body the query's clauses, and read back by
-    /// variable.
-    #[test]
-    fn answers_are_kept_by_a_definition_over_the_query_body() {
-        let mut results = Results::default();
-        results.learn(&json!({"kind": "tables", "relations": [
-            {"name": "edge", "detail": ["int", "int"]}, {"name": "at", "detail": ["int", "pt"]}]}));
-        let keep = |results: &Results, read: &str, page: Option<Value>| {
-            results.keep(read, page.as_ref()).map(|keep| (keep.definition, keep.read))
-        };
-        let facts = Some(page("Query", 0, &[], "complete"));
-        let projected = |vars: &str| Some(page(&format!("Query · ({vars})"), 0, &[], "complete"));
-
-        assert_eq!(
-            keep(&results, "?(edge 1 Y)", facts.clone()).unwrap(),
-            ("table (r1 int int) rule (r1 1 Y) <-- (edge 1 Y)".to_owned(), "?(r1 C1 Y)".to_owned())
-        );
-        // a repeated variable reads back as two
-        assert_eq!(keep(&results, "?(edge X X)", facts).unwrap().1, "?(r1 X X_)");
-        assert_eq!(
-            keep(&results, "? (edge X Y) ~ (edge Y X) (at Y P) (< X 3) -> (P X)", projected("P X")).unwrap(),
-            (
-                "table (r1 pt int) rule (r1 P X) <-- (edge X Y) ~(edge Y X) (at Y P) (< X 3)".to_owned(),
-                "?(r1 P X)".to_owned()
-            )
-        );
-        // a ground query keeps the facts it names, if they hold
-        assert_eq!(
-            keep(&results, "? (edge 1 2) (edge 2 3)", None).unwrap(),
-            (
-                "table (r1 int int int int) rule (r1 1 2 2 3) <-- (edge 1 2) (edge 2 3)".to_owned(),
-                "?(r1 C1 C2 C3 C4)".to_owned()
-            )
-        );
-        assert!(keep(&results, "?(edge 1 _)", None).unwrap_err().contains("`_`"));
-        // a computed value's type is not a relation column's
-        let computed = keep(&results, "? (edge X Y) (= Z (+ X Y)) -> (Z)", projected("Z"));
-        assert!(computed.unwrap_err().contains("type of Z"));
-    }
-
     /// Pages beyond the cache's bound are dropped least recently used
     /// first; a dropped row is read again by running the query.
     #[test]
     fn the_cache_is_bounded_and_dropped_rows_are_read_again() {
         let tuples = |start: u64| (start..start + 50).map(|i| format!("({i})")).collect::<Vec<_>>();
         let mut results = Results::default();
-        let id = results.open(as_typed("?(n X)"), &page("Query · (X)", 0, &tuples(0), "open")).unwrap().unwrap();
+        let id = results.open(as_typed(1, "?(n X)", &["X"]), &page("Query · (X)", 0, &tuples(0), "open")).unwrap().unwrap();
         let mut at = 50;
         while at < CACHE_ROWS as u64 + 100 {
             assert_eq!(results.plan(id, at, at + 50), Plan::More);
@@ -1716,8 +1641,9 @@ mod served {
     }
 
     /// A query's answers become a relation named for its set, which later
-    /// queries read; an existence question still answers yes or no, and
-    /// shows the rows; answers that cannot be kept are read as typed.
+    /// queries read; an existence question answers with its witnesses, a
+    /// ground one with its fact, never a bare yes or no; answers that
+    /// cannot be kept are read as typed.
     #[tokio::test]
     async fn answers_are_kept_as_relations_named_for_their_sets() {
         let fixture = Fixture::new("kept").await;
@@ -1731,14 +1657,14 @@ mod served {
         assert_eq!(fixture.view(next).await.relation.as_deref(), Some("r2"));
 
         let (answer, set) = fixture.entry("?(edge 1 2)").await;
-        assert_eq!(answer["lines"][0], "yes — at least one row matches");
+        assert_eq!(answer["lines"][0], "r3 · 1 row");
         let rows = fixture.studio.rows(set.expect("a set"), 0, 10).await.unwrap();
         assert_eq!(pairs(&rows), [(1, 2)]);
         let (answer, set) = fixture.entry("?(edge 2 1)").await;
-        assert_eq!(answer["lines"][0], "no rows match");
+        assert_eq!(answer["lines"][0], "r4 · no rows");
         assert_eq!(fixture.view(set.expect("a set")).await.total, Total::Exact(0));
         let (answer, set) = fixture.entry("?exists (path 3 Y)").await;
-        assert_eq!(answer["query-mode"], "exists");
+        assert_eq!(answer["lines"][0], format!("r5 · {} rows", N - 3));
         let rows = fixture.studio.rows(set.expect("a set"), 0, 100).await.unwrap();
         let from_3: BTreeSet<(u64, u64)> = closure().into_iter().filter(|&(x, _)| x == 3).collect();
         assert_eq!(pairs(&rows).into_iter().collect::<BTreeSet<_>>(), from_3);
@@ -1751,6 +1677,46 @@ mod served {
         assert_eq!(view.relation, None);
         assert!(view.unkept.is_some());
         assert_eq!(fixture.studio.rows(unkept, 0, 10).await.unwrap().len(), 1);
+
+        // a nested pattern reads through a scratch rule, kept from the start
+        let nested = fixture.query("?(at X (pt 1 2))").await;
+        assert_eq!(fixture.view(nested).await.relation, Some(nested.to_string()));
+        let row = &fixture.studio.rows(nested, 0, 10).await.unwrap()[0];
+        assert_eq!((row[0].text.as_str(), row[1].text.as_str()), ("1", "(pt 1 2)"));
+        fixture.finish().await;
+    }
+
+    /// A set is watched for the session: a committed change re-counts it
+    /// in the session, and the studio's set is current again, at the new
+    /// state and size, its rows read again. A count is a set too, of the
+    /// query's matches. A fresh Run leaves the sets of the old session
+    /// stale, their rows and sizes as they were.
+    #[tokio::test]
+    async fn a_set_follows_the_sessions_changes() {
+        let fixture = Fixture::new("live").await;
+        let from_1 = fixture.query("?(path 1 Y)").await;
+        assert_eq!(fixture.view(from_1).await.total, Total::Exact(N - 1));
+        assert_eq!(fixture.studio.rows(from_1, 0, 100).await.unwrap().len() as u64, N - 1);
+        let (answer, count) = fixture.entry("?count (path X _)").await;
+        assert_eq!(answer["lines"][0], format!("r2 · {} rows", closure().len()));
+        let count = count.expect("a count is a set");
+        assert_eq!(fixture.view(count).await.relation, None);
+
+        let before = fixture.view(from_1).await;
+        let (answer, _) = fixture.entry(&format!("add edge {N} {}", N + 1)).await;
+        let said: Vec<&str> = answer["brief-lines"].as_array().unwrap().iter().filter_map(|line| line.as_str()).collect();
+        assert!(said.contains(&"r1: +1 row (now 21)"), "{said:?}");
+        let view = fixture.view(from_1).await;
+        assert_eq!((view.total, view.stale, view.revision), (Total::Exact(N), false, before.revision + 1));
+        assert_ne!(view.state.map(|state| state.id), before.state.map(|state| state.id));
+        let ends: BTreeSet<u64> = fixture.all_rows(from_1).await.iter().map(|row| row[1].text.parse().unwrap()).collect();
+        assert_eq!(ends, (2..=N + 1).collect());
+        assert_eq!(fixture.view(count).await.total, Total::Exact(closure().len() as u64 + N));
+
+        fixture.studio.evaluate().await;
+        let view = fixture.view(from_1).await;
+        assert!(view.stale);
+        assert_eq!(view.total, Total::Exact(N));
         fixture.finish().await;
     }
 }
