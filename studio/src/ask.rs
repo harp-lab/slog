@@ -41,7 +41,7 @@ impl Studio {
         drop(review);
         self.publish_review();
         let file = self.main_name();
-        let context = format!("- Program file: {file}\n");
+        let context = format!("(Slog Studio: the program file is {file}.)\n");
         tokio::spawn(agent::run(self.clone(), thread, message, context));
         Ok(thread)
     }
