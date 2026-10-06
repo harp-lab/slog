@@ -79,13 +79,15 @@ const files = createFiles({
 });
 // Every message goes behind the edits already made, so it sees them.
 const send = files.send;
-// The static check, live as the author types, and the hovers it feeds.
-const check = createCheck({ editor, files, send });
 // Proposals are reviewed in the editor; the change graph and the history
 // strip show only when asked for or when they matter.
 const changes = createChangePanel($("work"));
 // What the analysis of Slog in Slog finds as the author edits (lint.js).
+// Monaco shows the most recently registered hover provider's part first,
+// so this registers before the check, whose part leads.
 const lint = createLint($("lint"), { editor, files, send, changes });
+// The static check, live as the author types, and the hovers it feeds.
+const check = createCheck({ editor, files, send });
 const versions = createHistory({ send, files, changes });
 const proposals = createProposals({
   editor, files, send, changes, history: versions, bar: $("proposals"), list: $("review-tab"),

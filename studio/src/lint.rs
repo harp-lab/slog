@@ -326,7 +326,7 @@ impl Linter {
     }
 
     async fn run(&self, job: Job) {
-        {
+        let view = {
             let mut state = self.state.lock().expect("lint lock");
             state.running = true;
             state.last = Some(job.clone());
@@ -334,7 +334,9 @@ impl Linter {
             state.view.tier = 0;
             state.view.error = None;
             state.view.analysis = self.config.analysis.current().display().to_string();
-        }
+            state.view.clone()
+        };
+        (self.publish)(view);
         let started = Instant::now();
         let mut ms = Vec::new();
         let reified = self.reify(&job, None).await;

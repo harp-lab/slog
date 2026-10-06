@@ -10,7 +10,8 @@
 //   `why`, on the analysis lane); "related" draws its relation's
 //   dependencies in the change-graph panel.
 // - A hover part for the relation under the cursor, after the check's
-//   (Monaco merges the providers' parts in the order they registered),
+//   (Monaco shows the latest registered provider's part first, so main.js
+//   creates this before the check),
 //   answered from the last view alone: who writes and reads it, whether it
 //   is recursive, negated or a demand, whether it can hold a row, and its
 //   rows in the last Run.
