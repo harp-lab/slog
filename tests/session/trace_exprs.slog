@@ -1,0 +1,20 @@
+;; Execution-trace fixture (docs/pausing.md §15): a union of three-column
+;; constructors, nested three deep.  The first run creates these types in
+;; its prepared boundary, where each constructor's storage is a fresh
+;; version still holding its identity-default ordering (0 1 2) beside the
+;; program's own id-leading one -- and nothing writes the former.  The
+;; trace renders the nested instances at every iteration barrier, so the
+;; struct lookup must find them in the ordering that IS maintained.
+union (expr (num int)
+      (add expr expr)
+      (mul expr expr)
+      (var str))
+
+table (input expr)
+table (subexpr expr expr)
+
+rule (input (add (num 1) (mul (var "x") (num 2))))
+
+rule (input E) --> (subexpr E E)
+rule (subexpr Root (add A B)) --> (subexpr Root A) (subexpr Root B)
+rule (subexpr Root (mul A B)) --> (subexpr Root A) (subexpr Root B)

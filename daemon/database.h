@@ -7378,21 +7378,37 @@ public:
   // One struct instance's storage-order row (id at column 0): from the
   // lookup index, or -- at an iteration barrier -- from the delta or the
   // tombstones (Relation::unindexedStructRow).
+  //
+  // The lookup index is whichever id-leading ordering getLookupIndex met
+  // first, and mid-run that may be one nothing writes: a version born with
+  // the identity default (ensureDefaultIndex) keeps (0 1 .. n-1) registered
+  // beside the program's own id-leading join ordering, and only a boundary
+  // sweep drops it.  A barrier render (the execution trace, a peek) then
+  // misses an instance the maintained ordering holds, so a miss probes the
+  // other id-leading orderings before giving up.
   static bool structRowById(Relation* rel, u64 v, std::vector<u64>& row)
   {
-    const std::vector<u16>& ord = rel->getLookupIndex();
-    // The lookup index leads with the id column (ord[0]==0): the bucket is
-    // the id's, and the id is unique within it.
-    bool found = false;
-    rel->getIndex(ord, false)[buckethash(v)]->forEach([&](const u64* t)
+    // An id-leading ordering's bucket is the id's, and the id is unique
+    // within it.
+    const auto probe = [&](const std::vector<u16>& ord)
     {
-      if (t[0] != v) return;
-      found = true;
-      row.assign(ord.size(), 0);
-      for (u16 i = 0; i < ord.size(); ++i)
-        row[ord[i]] = t[i];
-    });
-    return found || rel->unindexedStructRow(v, row);
+      bool found = false;
+      rel->getIndex(ord, false)[buckethash(v)]->forEach([&](const u64* t)
+      {
+        if (t[0] != v) return;
+        found = true;
+        row.assign(ord.size(), 0);
+        for (u16 i = 0; i < ord.size(); ++i)
+          row[ord[i]] = t[i];
+      });
+      return found;
+    };
+    const std::vector<u16>& lookup = rel->getLookupIndex();
+    if (probe(lookup)) return true;
+    for (const std::vector<u16>& ord : rel->fullOrders())
+      if (!ord.empty() && ord[0] == 0 && ord != lookup && probe(ord))
+        return true;
+    return rel->unindexedStructRow(v, row);
   }
 
   std::string writeStructCSV(u64 v, u32 cdepth = 0)

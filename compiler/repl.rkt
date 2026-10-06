@@ -6387,6 +6387,27 @@
                       (positive? (hash-ref r 'sample-omitted))))))
     (check-equal? (hops-trace #f) single))
 
+  ;; A first run's nested constructors render at every barrier.  Its types
+  ;; are born in the prepared boundary with an unwritten identity-default
+  ;; ordering beside their maintained id-leading one; a lookup through the
+  ;; former missed `mul` and the daemon died with the run ("daemon EOF
+  ;; mid-stratum").
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment])
+    (define state (make-server-state))
+    (define (run! line) (dispatch-command state line))
+    (void (run! "trace on rules"))
+    (define change (hash-ref (run! "run tests/session/trace_exprs.slog") 'change))
+    (define root "(add (num 1) (mul (var ...) (num ...)))")
+    (check-equal? (traced-iterations change "normal" "subexpr")
+                  `((1 0 (,(format "~a ~a" root root) "+" "none"))
+                    (2 0 (,(format "~a (mul (var \"x\") (num 2))" root) "+" "none")
+                         (,(format "~a (num 1)" root) "+" "none"))
+                    (2 0 (,(format "~a (num 2)" root) "+" "none")
+                         (,(format "~a (var \"x\")" root) "+" "none"))
+                    ()))
+    (void (run! ":quit")))
+
   ;; T5 slice (c3): stepping the held read (contract §3, repl-ux §9.3).
   ;; From the gate a step REPLAYS the completed read and stops at the first
   ;; matching interpreter port -- walking the very read that produced the
