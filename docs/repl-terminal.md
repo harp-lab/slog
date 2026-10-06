@@ -140,7 +140,10 @@ request immediately, drops the kill-on-drop Racket child, and closes the pipes
 owned by any attached daemon.  Since 2026-09-07 that exit is GUARDED while
 a command is in flight: the first Ctrl-C warns, and only a second press
 within 2s takes the interrupting exit (the hatch a hung server still
-needs) — one reflexive press cannot kill a long fixpoint.  The full
+needs) — one reflexive press cannot kill a long fixpoint.  At an idle
+prompt, which may stand at a paused run, the first Ctrl-C or Ctrl-D
+likewise only warns, and a second within 2s quits: no single press
+discards a held run or a session's unsaved changes.  The full
 "Ctrl-C means pause, never kill" doctrine is repl-ux.md §9.2, and its
 stage 2 shipped 2026-09-08: a run in flight now PAUSES on the first Ctrl-C
 (the client opens a second, control-only connection and sends `interrupt`;
