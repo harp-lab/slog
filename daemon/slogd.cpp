@@ -69,6 +69,11 @@
 #include <unistd.h>
 #include <poll.h>
 #include <cerrno>
+#include <climits>
+#include <cstdlib>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 // Constants
 namespace {
@@ -4520,8 +4525,39 @@ static int run_tcp(u32 num_threads, int port)
     return 0;
 }
 
+#ifdef __APPLE__
+// Run without libmalloc's nano zone (MallocNanoZone=0, read only at process
+// start, hence the one re-exec).  With it, multi-threaded interpreted reads
+// on macOS corrupt the small-object heap: the interpreter builds and tears
+// down a BoundExecution -- a Machine and a dozen cloned cursors -- per task
+// and per parked slice, from every worker at once, and under that churn the
+// nano zone's free lists end up handing out live blocks.  The daemon aborts
+// ("pointer being freed was not allocated", usually in a cursor destructor)
+// or a parked continuation's execution is found already freed.  Neither
+// AddressSanitizer, ThreadSanitizer nor canaries on the executions found a
+// double free or race in slogd itself, and the same build with the nano
+// zone off ran clean (tests/interp-alloc-stress.sh).  SLOG_NANO_ZONE=1
+// keeps the zone, for measuring.
+static void reexec_without_nano_zone(char* argv[])
+{
+    const char* zone = std::getenv("MallocNanoZone");
+    if ((zone != nullptr && std::strcmp(zone, "0") == 0)
+        || std::getenv("SLOG_NANO_ZONE") != nullptr)
+        return;
+    char path[PATH_MAX];
+    uint32_t size = sizeof path;
+    if (_NSGetExecutablePath(path, &size) != 0) return;
+    setenv("MallocNanoZone", "0", 1);
+    execv(path, argv);
+    // exec failed: carry on with the nano zone
+}
+#endif
+
 int main(int argc, char* argv[])
 {
+#ifdef __APPLE__
+    reexec_without_nano_zone(argv);
+#endif
     u32 num_threads = default_num_threads();
     int port = -1;
 

@@ -63,6 +63,7 @@ run_harness() {
     tier-profile) bash tests/tier-profile.sh ;;
     tier-promotion) bash tests/tier-promotion.sh ;;
     tier-arbiter) bash tests/tier-arbiter.sh ;;
+    interp-alloc-stress) bash tests/interp-alloc-stress.sh ;;
     identity-keys) bash tests/identity-keys.sh ;;
     t6-restart) bash tests/t6-restart.sh ;;
     activation-live) bash tests/activation-live.sh ;;
@@ -101,6 +102,10 @@ ALL=(unit diag stats platform arena seq counts wcoj3 interp structid golden plan
 # likewise named but OUTSIDE ALL: it wipes build/ and config/cache between
 # its runs.  Run it before every planner/emission slice ships, and NEVER
 # alongside any other compile (see HYGIENE above).
+# `interp-alloc-stress` (the multi-threaded interpreter at 1 ms slices over
+# a long demand fixture, a dozen runs) is named but OUTSIDE ALL: minutes of
+# CPU.  Run it after any change to interpreter executions, parking, or the
+# daemon's allocator setup.
 # `plan-goldens` (RF1 slice 4: the plan sets of record for four program
 # classes, plus per-program recompile-twice stability) IS in ALL: plan-layer
 # identity is the golden format of record, and this is its per-change gate

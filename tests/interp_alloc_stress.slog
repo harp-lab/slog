@@ -1,0 +1,308 @@
+;; Interpreter allocation stress fixture (tests/interp-alloc-stress.sh): a
+;; demand-driven Martin-Löf type checker.  Its main stratum runs hundreds of
+;; iterations of small interpreted tasks over list contexts and nested
+;; constructors, so every worker builds and frees executions continuously.
+
+union (expr (num int)
+      	    (add expr expr)
+		    (mul expr expr)
+		    (var str))
+			
+
+table (input expr)
+table (subexpr expr expr)
+
+rule (input (add (num 1) (mul (var "x") (num 2))))
+
+rule (input E) --> (subexpr E E)
+rule (subexpr Root (add A B)) --> (subexpr Root A) (subexpr Root B)
+rule (subexpr Root (mul A B)) --> (subexpr Root A) (subexpr Root B)
+
+;; =====================================================================
+;; Intuitionistic (Martin-Löf) type theory, formalized demand-driven.
+;;
+;; Terms use de Bruijn indices; a context is a list of types with the
+;; most recent binder at the head.  Judgments are demand relations:
+;; failure is absence -- an ill-typed term simply has no type.
+;;
+;;   infer   : Γ ⊢ t ⇒ A          (type synthesis)
+;;   nf      : t ⇓ v              (full β-normal form, for conversion)
+;;   shift   : ↑^d_c t            (de Bruijn shifting)
+;;   subst   : t[k := s]          (capture-avoiding substitution)
+;;
+;; Conversion A ≡ B is decided by comparing normal forms; interning makes
+;; that a single shared variable.
+;; =====================================================================
+
+union (tm (ix int)              ;; de Bruijn variable
+          (uni int)             ;; universe U_i
+          (pi tm tm)            ;; Π (x:A). B        -- B under one binder
+          (lam tm tm)           ;; λ (x:A). b        -- b under one binder
+          (app tm tm)           ;; f a
+          (sigma tm tm)         ;; Σ (x:A). B
+          (pair tm tm tm)       ;; (a, b) at Σ-type S
+          (fst tm)
+          (snd tm)
+          (nat)
+          (zero)
+          (suc tm)
+          (natrec tm tm tm tm)  ;; natrec P z s n : P n
+          (id tm tm tm)         ;; Id_A a b
+          (refl tm)             ;; refl a : Id_A a a
+          (j tm tm tm tm tm)    ;; J C d a b p : C a b p
+          (unit)
+          (star)
+          (empty)
+          (absurd tm tm))       ;; absurd A e : A, for e : ⊥
+
+;; ---- de Bruijn shifting: (shift t d c) adds d to every index >= c ----
+
+demand (shift tm int int) tm
+rule (shift (ix i) d c (ix (+ i d))) <-- (>= i c)
+rule (shift (ix i) d c (ix i))       <-- (< i c)
+rule (shift (uni l) d c (uni l))
+rule (shift (pi a b) d c (pi (shift a d c) (shift b d (+ c 1))))
+rule (shift (lam a b) d c (lam (shift a d c) (shift b d (+ c 1))))
+rule (shift (app f x) d c (app (shift f d c) (shift x d c)))
+rule (shift (sigma a b) d c (sigma (shift a d c) (shift b d (+ c 1))))
+rule (shift (pair s x y) d c (pair (shift s d c) (shift x d c) (shift y d c)))
+rule (shift (fst p) d c (fst (shift p d c)))
+rule (shift (snd p) d c (snd (shift p d c)))
+rule (shift (nat) d c (nat))
+rule (shift (zero) d c (zero))
+rule (shift (suc n) d c (suc (shift n d c)))
+rule (shift (natrec p z s n) d c
+            (natrec (shift p d c) (shift z d c) (shift s d c) (shift n d c)))
+rule (shift (id a x y) d c (id (shift a d c) (shift x d c) (shift y d c)))
+rule (shift (refl x) d c (refl (shift x d c)))
+rule (shift (j cm dd x y p) d c
+            (j (shift cm d c) (shift dd d c) (shift x d c) (shift y d c) (shift p d c)))
+rule (shift (unit) d c (unit))
+rule (shift (star) d c (star))
+rule (shift (empty) d c (empty))
+rule (shift (absurd a e) d c (absurd (shift a d c) (shift e d c)))
+
+;; ---- substitution: (subst t k s) = t[k := s], indices above k drop by one ----
+
+demand (subst tm int tm) tm
+rule (subst (ix k) k s s)
+rule (subst (ix i) k s (ix (- i 1))) <-- (> i k)
+rule (subst (ix i) k s (ix i))       <-- (< i k)
+rule (subst (uni l) k s (uni l))
+rule (subst (pi a b) k s (pi (subst a k s) (subst b (+ k 1) (shift s 1 0))))
+rule (subst (lam a b) k s (lam (subst a k s) (subst b (+ k 1) (shift s 1 0))))
+rule (subst (app f x) k s (app (subst f k s) (subst x k s)))
+rule (subst (sigma a b) k s (sigma (subst a k s) (subst b (+ k 1) (shift s 1 0))))
+rule (subst (pair st x y) k s (pair (subst st k s) (subst x k s) (subst y k s)))
+rule (subst (fst p) k s (fst (subst p k s)))
+rule (subst (snd p) k s (snd (subst p k s)))
+rule (subst (nat) k s (nat))
+rule (subst (zero) k s (zero))
+rule (subst (suc n) k s (suc (subst n k s)))
+rule (subst (natrec p z st n) k s
+            (natrec (subst p k s) (subst z k s) (subst st k s) (subst n k s)))
+rule (subst (id a x y) k s (id (subst a k s) (subst x k s) (subst y k s)))
+rule (subst (refl x) k s (refl (subst x k s)))
+rule (subst (j cm dd x y p) k s
+            (j (subst cm k s) (subst dd k s) (subst x k s) (subst y k s) (subst p k s)))
+rule (subst (unit) k s (unit))
+rule (subst (star) k s (star))
+rule (subst (empty) k s (empty))
+rule (subst (absurd a e) k s (absurd (subst a k s) (subst e k s)))
+
+;; ---- β-normalization (ι for natrec / J / projections) ----
+;; Only ever asked of types of well-typed terms, so it terminates.
+
+demand (nf tm) tm
+rule (nf (ix i) (ix i))
+rule (nf (uni l) (uni l))
+rule (nf (pi a b) (pi (nf a) (nf b)))
+rule (nf (lam a b) (lam (nf a) (nf b)))
+rule (nf (sigma a b) (sigma (nf a) (nf b)))
+rule (nf (pair s x y) (pair (nf s) (nf x) (nf y)))
+rule (nf (nat) (nat))
+rule (nf (zero) (zero))
+rule (nf (suc n) (suc (nf n)))
+rule (nf (id a x y) (id (nf a) (nf x) (nf y)))
+rule (nf (refl x) (refl (nf x)))
+rule (nf (unit) (unit))
+rule (nf (star) (star))
+rule (nf (empty) (empty))
+rule (nf (absurd a e) (absurd (nf a) (nf e)))
+
+;; application: β-reduce when the head normalizes to a λ
+rule (nf (app f x) (nf (subst b 0 vx)))
+ <-- (nf f (lam a b)) (nf x vx)
+rule (nf (app f x) (app vf vx))
+ <-- (nf f vf) (nf x vx) (neutral vf)
+
+;; projections
+rule (nf (fst p) vx)      <-- (nf p (pair s vx vy))
+rule (nf (snd p) vy)      <-- (nf p (pair s vx vy))
+rule (nf (fst p) (fst vp)) <-- (nf p vp) (neutral vp)
+rule (nf (snd p) (snd vp)) <-- (nf p vp) (neutral vp)
+
+;; natrec P z s n
+rule (nf (natrec p z s n) (nf z)) <-- (nf n (zero))
+rule (nf (natrec p z s n) (nf (app (app s m) (natrec p z s m)))) <-- (nf n (suc m))
+rule (nf (natrec p z s n) (natrec (nf p) (nf z) (nf s) vn)) <-- (nf n vn) (neutral vn)
+
+;; J C d a b p   -- J C d a a (refl a) ⇝ d a
+rule (nf (j cm d a b p) (nf (app d x))) <-- (nf p (refl x))
+rule (nf (j cm d a b p) (j (nf cm) (nf d) (nf a) (nf b) vp)) <-- (nf p vp) (neutral vp)
+
+;; a normal form that is stuck (not a canonical introduction form)
+table (neutral tm)
+rule (nf_ans d (ix i)) --> (neutral (ix i))
+rule (nf_ans d (app f x)) --> (neutral (app f x))
+rule (nf_ans d (fst p)) --> (neutral (fst p))
+rule (nf_ans d (snd p)) --> (neutral (snd p))
+rule (nf_ans d (natrec p z s n)) --> (neutral (natrec p z s n))
+rule (nf_ans d (j c dd a b p)) --> (neutral (j c dd a b p))
+rule (nf_ans d (absurd a e)) --> (neutral (absurd a e))
+
+;; ---- contexts: the type of variable i, shifted past the i+1 binders above it ----
+
+demand (lookup_ctx list int) tm
+rule (lookup_ctx [a rest ...] 0 (shift a 1 0))
+rule (lookup_ctx [a rest ...] i (shift (lookup_ctx rest (- i 1)) 1 0)) <-- (> i 0)
+
+;; ---- the typing judgment  Γ ⊢ t ⇒ A ----
+
+demand (infer list tm) tm
+
+;; variables and universes
+rule (infer g (ix i) (lookup_ctx g i))
+rule (infer g (uni l) (uni (+ l 1)))
+
+;; Π-formation / λ-introduction / application
+rule (infer g (pi a b) (uni (max i k)))
+ <-- (infer g a ta) (nf ta (uni i))
+     (infer [a g ...] b tb) (nf tb (uni k))
+rule (infer g (lam a b) (pi a (infer [a g ...] b)))
+ <-- (infer g a ta) (nf ta (uni i))
+rule (infer g (app f x) (subst b 0 x))
+ <-- (infer g f tf) (nf tf (pi a b))
+     (infer g x tx) (nf tx va) (nf a va)
+
+;; Σ-formation / pairing / projections
+rule (infer g (sigma a b) (uni (max i k)))
+ <-- (infer g a ta) (nf ta (uni i))
+     (infer [a g ...] b tb) (nf tb (uni k))
+rule (infer g (pair s x y) s)
+ <-- (infer g s ts) (nf ts (uni i)) (nf s (sigma a b))
+     (infer g x tx) (nf tx va) (nf a va)
+     (infer g y ty) (nf ty vb) (nf (subst b 0 x) vb)
+rule (infer g (fst p) a) <-- (infer g p tp) (nf tp (sigma a b))
+rule (infer g (snd p) (subst b 0 (fst p))) <-- (infer g p tp) (nf tp (sigma a b))
+
+;; natural numbers
+rule (infer g (nat) (uni 0))
+rule (infer g (zero) (nat))
+rule (infer g (suc n) (nat)) <-- (infer g n tn) (nf tn (nat))
+;; natrec P z s n : P n   with  P : ℕ → U_i,  z : P 0,
+;;   s : Π (m:ℕ). P m → P (suc m)
+rule (infer g (natrec p z s n) (app p n))
+ <-- (infer g p tp) (nf tp (pi (nat) (uni i)))
+     (infer g z tz) (nf tz vz) (nf (app p (zero)) vz)
+     (infer g s ts) (nf ts vs)
+     (nf (pi (nat) (pi (app (shift p 1 0) (ix 0))
+                       (app (shift p 2 0) (suc (ix 1))))) vs)
+     (infer g n tn) (nf tn (nat))
+
+;; identity types:  Id_A a b : U_i,  refl a : Id_A a a
+rule (infer g (id a x y) (uni i))
+ <-- (infer g a ta) (nf ta (uni i))
+     (infer g x tx) (nf tx va) (nf a va)
+     (infer g y ty) (nf ty va)
+rule (infer g (refl x) (id (infer g x) x x))
+;; J C d a b p : C a b p   with
+;;   C : Π (x:A). Π (y:A). Id_A x y → U_i
+;;   d : Π (x:A). C x x (refl x)
+;;   p : Id_A a b
+rule (infer g (j cm d a b p) (app (app (app cm a) b) p))
+ <-- (infer g p tp) (nf tp (id a2 va vb))
+     (infer g a ta) (nf ta va2) (nf a2 va2)   ;; a2 ≡ type of a
+     (nf a va) (nf b vb)
+     (nf (shift a2 1 0) va2s1) (nf (shift a2 2 0) va2s2)
+     (infer g cm tc)
+     (nf tc (pi va2 (pi va2s1 (pi (id va2s2 (ix 1) (ix 0)) (uni i)))))
+     (infer g d td) (nf td vd)
+     (nf (pi a2 (app (app (app (shift cm 1 0) (ix 0)) (ix 0)) (refl (ix 0)))) vd)
+
+;; unit and empty
+rule (infer g (unit) (uni 0))
+rule (infer g (star) (unit))
+rule (infer g (empty) (uni 0))
+rule (infer g (absurd a e) a)
+ <-- (infer g a ta) (nf ta (uni i))
+     (infer g e te) (nf te (empty))
+
+;; ---- checking against a given type: Γ ⊢ t ⇐ A iff nf(infer t) = nf(A) ----
+
+demand (check list tm tm) tm
+rule (check g t a va) <-- (infer g t ta) (nf ta va) (nf a va)
+
+;; =====================================================================
+;; Examples.  (program name term)  →  (typed name type) / (normal name nf)
+;; =====================================================================
+
+table (program str tm)
+table (typed str tm)
+table (normal str tm)
+table (ill_typed str)
+
+rule (program n t) (infer [] t ty) --> (typed n ty)
+rule (program n t) (typed n ty) --> (normal n (nf t))
+table (has_type str)
+rule (typed n ty) --> (has_type n)
+rule (program n t) ~(has_type n) --> (ill_typed n)
+
+;; polymorphic identity  λ (A:U0). λ (x:A). x   :  Π (A:U0). A → A
+rule (program "poly_id" (lam (uni 0) (lam (ix 0) (ix 0))))
+
+;; applying it at ℕ to zero
+rule (program "id_nat_zero"
+              (app (app (lam (uni 0) (lam (ix 0) (ix 0))) (nat)) (zero)))
+
+;; addition by recursion on the first argument:
+;;   plus = λm. λn. natrec (λ_. ℕ) n (λ_. λacc. suc acc) m
+rule (program "plus"
+   (lam (nat) (lam (nat)
+      (natrec (lam (nat) (nat))
+              (ix 0)
+              (lam (nat) (lam (nat) (suc (ix 0))))
+              (ix 1)))))
+
+;; 2 + 1 computes to 3
+rule (program "two_plus_one"
+   (app (app (lam (nat) (lam (nat)
+                 (natrec (lam (nat) (nat))
+                         (ix 0)
+                         (lam (nat) (lam (nat) (suc (ix 0))))
+                         (ix 1))))
+             (suc (suc (zero))))
+        (suc (zero))))
+
+;; a dependent pair in Σ (n:ℕ). Id_ℕ n 0, namely (0, refl 0)
+rule (program "sigma_witness"
+   (pair (sigma (nat) (id (nat) (ix 0) (zero))) (zero) (refl (zero))))
+
+;; symmetry of identity, via J with motive C x y p = Id_A y x:
+;;   λ (A:U0). λ (x:A). λ (y:A). λ (p: Id_A x y).
+;;     J (λx.λy.λp. Id_A y x) (λx. refl x) x y p
+rule (program "sym"
+   (lam (uni 0) (lam (ix 0) (lam (ix 1) (lam (id (ix 2) (ix 1) (ix 0))
+      (j (lam (ix 3) (lam (ix 4) (lam (id (ix 5) (ix 1) (ix 0)) (id (ix 6) (ix 1) (ix 2)))))
+         (lam (ix 3) (refl (ix 0)))
+         (ix 2) (ix 1) (ix 0)))))))
+
+;; ex falso: λ (A:U0). λ (e:⊥). absurd A e  :  Π (A:U0). ⊥ → A
+rule (program "ex_falso" (lam (uni 0) (lam (empty) (absurd (ix 1) (ix 0)))))
+
+;; ill-typed: applying zero as a function
+rule (program "bad_app" (app (zero) (zero)))
+
+;; ill-typed: refl 0 claimed at Id_ℕ 0 1 via a pair
+rule (program "bad_pair"
+   (pair (sigma (nat) (id (nat) (ix 0) (suc (zero)))) (zero) (refl (zero))))
