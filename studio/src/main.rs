@@ -18,15 +18,16 @@ mod web;
 use accounts::Accounts;
 use auth::Gate;
 use lane::Mode;
-use registry::{LOCAL_USER, Registry};
+use registry::{LOCAL_USER, Limits, Registry};
 use slog_repl::server::{private_token, project_root};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FILE]
        slog studio scenario [--json] FILE.scenario.toml...
-       slog-studio serve --data DIR [--bind ADDRESS]
+       slog-studio serve --data DIR [--bind ADDRESS] [--max-lanes N] [--idle-minutes N]
        slog-studio user add NAME --data DIR
 
 Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
@@ -41,7 +42,8 @@ it exits non-zero if any fails. --json prints the reports as JSON.
 Each logs in as a user added by `user add` and has their own projects under
 DIR/users/; a page's ?project=NAME picks one. With TRUST_PROXY_AUTH=1 a
 reverse proxy logs users in instead and names them in the Remote-User
-header.";
+header. Each user runs at most --max-lanes session servers (default 4),
+and a server unused for --idle-minutes (default 30) stops.";
 
 struct Options {
     file: Option<PathBuf>,
@@ -206,8 +208,8 @@ async fn serve_local(args: impl Iterator<Item = String>) -> Result<(), String> {
     // The interpreter skips the C++ toolchain, which is what an edit-evaluate
     // loop wants; it is also what breakpoints and stepping need.
     let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
-    // One user, whose default project is FILE.
-    let registry = Arc::new(Registry::new(project_root()?, home.clone(), mode, Some(file)));
+    // One user, no limits, and FILE as the default project.
+    let registry = Arc::new(Registry::new(project_root()?, home.clone(), mode, Some(file), None));
     // Start the session server now so the first evaluation does not wait.
     web::warm(registry.open(LOCAL_USER, "")?);
 
@@ -227,6 +229,7 @@ async fn serve_local(args: impl Iterator<Item = String>) -> Result<(), String> {
 struct ServeOptions {
     bind: String,
     data: PathBuf,
+    limits: Limits,
 }
 
 /// `Ok(None)` asks for the usage text.
@@ -234,12 +237,26 @@ fn serve_options(args: impl IntoIterator<Item = String>) -> Result<Option<ServeO
     let mut options = ServeOptions {
         bind: "127.0.0.1:7200".to_owned(),
         data: PathBuf::new(),
+        limits: Limits {
+            lanes: 4,
+            idle: Duration::from_secs(30 * 60),
+        },
+    };
+    let count = |flag: &str, value: Option<String>| {
+        value
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .ok_or(format!("{flag} needs a positive number"))
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bind" => options.bind = args.next().ok_or("--bind needs an address")?,
             "--data" => options.data = args.next().ok_or("--data needs a directory")?.into(),
+            "--max-lanes" => options.limits.lanes = count(&arg, args.next())? as usize,
+            "--idle-minutes" => {
+                options.limits.idle = Duration::from_secs(60 * count(&arg, args.next())?);
+            }
             "-h" | "--help" => return Ok(None),
             _ => return Err(format!("unexpected {arg}\n{USAGE}")),
         }
@@ -283,7 +300,9 @@ async fn serve_shared(args: impl Iterator<Item = String>) -> Result<(), String> 
         }
         Gate::Login(Arc::new(accounts))
     };
-    let registry = Arc::new(Registry::new(project_root()?, data, Mode::Fast, None));
+    let limits = Some(options.limits);
+    let registry = Arc::new(Registry::new(project_root()?, data, Mode::Fast, None, limits));
+    registry.stop_idle_lanes();
     println!("Slog Studio: http://{address}/");
     run(listener, registry, gate).await
 }

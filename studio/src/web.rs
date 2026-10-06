@@ -83,6 +83,21 @@ enum Request {
     RunScenario { name: String },
 }
 
+impl Request {
+    /// Whether the request puts the lane to work, starting a server if none
+    /// runs. (A scenario runs on a lane of its own.)
+    fn uses_lane(&self) -> bool {
+        matches!(
+            self,
+            Request::Evaluate
+                | Request::Debug
+                | Request::Command { .. }
+                | Request::Restart
+                | Request::Mode { .. }
+        )
+    }
+}
+
 /// Messages meant for one tab only; everything else is a broadcast `Event`.
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
@@ -114,7 +129,7 @@ async fn socket(
         Err(message) => return (StatusCode::NOT_FOUND, message).into_response(),
     };
     let connection = web.next_connection.fetch_add(1, Ordering::SeqCst);
-    upgrade.on_upgrade(move |socket| serve(socket, studio, connection))
+    upgrade.on_upgrade(move |socket| serve(socket, web, studio, connection))
 }
 
 /// The value of `key` in `a=1&b=2`, a query or a form's body, decoded.
@@ -140,7 +155,7 @@ fn decode(text: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-async fn serve(mut socket: WebSocket, studio: Arc<Studio>, connection: u64) {
+async fn serve(mut socket: WebSocket, web: Arc<Web>, studio: Arc<Studio>, connection: u64) {
     let mut events = studio.subscribe();
     let (direct, mut replies) = mpsc::unbounded_channel::<String>();
     if send_init(&mut socket, &studio).await.is_err() {
@@ -150,7 +165,7 @@ async fn serve(mut socket: WebSocket, studio: Arc<Studio>, connection: u64) {
         let outgoing = tokio::select! {
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    handle(&studio, connection, &text, &direct);
+                    handle(&web.registry, &studio, connection, &text, &direct);
                     continue;
                 }
                 Some(Ok(_)) => continue,
@@ -186,7 +201,13 @@ async fn send_init(socket: &mut WebSocket, studio: &Studio) -> Result<(), axum::
 
 /// Edits are answered at once; everything that talks to the session server
 /// runs as its own task so this tab can still interrupt it.
-fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::UnboundedSender<String>) {
+fn handle(
+    registry: &Registry,
+    studio: &Arc<Studio>,
+    connection: u64,
+    text: &str,
+    direct: &mpsc::UnboundedSender<String>,
+) {
     let request = match serde_json::from_str::<Request>(text) {
         Ok(request) => request,
         Err(error) => {
@@ -195,6 +216,10 @@ fn handle(studio: &Arc<Studio>, connection: u64, text: &str, direct: &mpsc::Unbo
             return;
         }
     };
+    // A server about to start counts against its user's lanes.
+    if request.uses_lane() {
+        registry.admit(studio);
+    }
     let studio = studio.clone();
     match request {
         Request::Edit { base, text } => {
