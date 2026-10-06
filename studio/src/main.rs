@@ -25,7 +25,7 @@ const USAGE: &str = "usage: slog studio [--port N] [--no-open] [--compiled] [FIL
 Edit and evaluate FILE (default ~/.slog-studio/scratch.slog) in the browser.
 --port N     listen on 127.0.0.1:N (default: any free port)
 --no-open    print the address without opening a browser
---compiled   evaluate with native compilation instead of the interpreter
+--compiled   evaluate with native code (-O2) from the start
 
 `scenario` runs scenario files headless and reports each check and step;
 it exits non-zero if any fails. --json prints the reports as JSON.";
@@ -194,8 +194,6 @@ async fn serve(args: impl Iterator<Item = String>) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(format!("cannot read {}: {error}", file.display())),
     };
-    // The interpreter skips the C++ toolchain, which is what an edit-evaluate
-    // loop wants; it is also what breakpoints and stepping need.
     let mode = if options.compiled { Mode::Compiled } else { Mode::Fast };
     // Admits this launch's agent runs to /mcp; they get it in a 0600 file.
     let mcp_token = private_token().map_err(|error| format!("cannot create a token: {error}"))?;
