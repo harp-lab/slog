@@ -173,6 +173,13 @@ pub enum Event {
     },
     /// The program summary and analyzer findings changed.
     Summary(summary::View),
+    /// A debug action cannot stop because the run already reached its
+    /// fixpoint: where to go back to (rewind.rs).
+    Rewind {
+        message: String,
+        default: Option<u64>,
+        choices: Vec<crate::rewind::Choice>,
+    },
     /// The analysis of the working files moved on (lint.rs).
     Lint(lint::View),
     /// The run in flight got further: its strata from `from` on, and the
@@ -358,6 +365,12 @@ pub struct Studio {
     /// The session's states, and the lane exploring a past one (states.rs).
     pub(crate) states: std::sync::Mutex<States>,
     pub(crate) pasts: Mutex<crate::states::Pasts>,
+    /// The state the next Run derives from when it is a rerun going back
+    /// before an earlier one (rewind.rs); none for the current state.
+    pub(crate) branch_from: std::sync::Mutex<Option<u64>>,
+    /// The `run` line of the run held now: the Run its commit makes is
+    /// named for it, not for the `continue` that committed it.
+    pub(crate) held_run: std::sync::Mutex<Option<String>>,
     /// The result sets' record as last kept, so it is written on change.
     kept_sets: std::sync::Mutex<String>,
     /// The session's last unfiltered `tables` answer.
@@ -436,6 +449,8 @@ impl Studio {
             summary: OnceLock::new(),
             states: std::sync::Mutex::new(states),
             pasts: Default::default(),
+            branch_from: Default::default(),
+            held_run: Default::default(),
             kept_sets: Default::default(),
             tables: Default::default(),
             checker,
@@ -1189,10 +1204,43 @@ impl Studio {
     /// Evaluate with a break armed at each breakpoint line first, so the
     /// run stops in the first marked rule it reaches.
     pub async fn debug(&self) {
-        self.evaluate_with(true).await;
+        // The program as it would run: saved first, so the version is the
+        // one the Run would evaluate.
+        if let Err(message) = self.save("debug") {
+            return self.trouble(&message);
+        }
+        match self.rewind(self.program().0) {
+            crate::rewind::Rewind::Run => {
+                self.evaluate_with(true).await;
+            }
+            crate::rewind::Rewind::Rerun(pred) => self.debug_rerun(pred).await,
+            crate::rewind::Rewind::Ask => self.ask_rewind(
+                "The run already reached its fixpoint, and the database changed since: nothing will execute again, so the breakpoints can't stop. To see them fire, go back to a point before the run.".to_owned(),
+            ),
+        }
     }
 
-    async fn evaluate_with(&self, debug: bool) {
+    /// Debug the program from scratch as a branch from state `pred`: the
+    /// Run it records derives from there.
+    pub(crate) async fn debug_rerun(&self, pred: u64) {
+        let label = self.states().label(pred);
+        *self.branch_from.lock().expect("branch lock") = Some(pred);
+        self.publish(Event::Log {
+            line: format!("Debug reruns the program from scratch, as a branch from {label}: the last run had reached its fixpoint"),
+        });
+        // a held run makes its state when it commits; one that failed
+        // before making a state leaves no branch behind
+        if self.evaluate_with(true).await != Evaluated::Held {
+            self.branch_from.lock().expect("branch lock").take();
+        }
+    }
+
+    /// The session's view, unless a command holds it.
+    pub(crate) fn session_view(&self) -> crate::session::SessionView {
+        self.session.try_lock().map(|session| session.view().clone()).unwrap_or_default()
+    }
+
+    async fn evaluate_with(&self, debug: bool) -> Evaluated {
         let started = Instant::now();
         // Debug always has debug semantics: compiled strata have no ports,
         // so a breakpoint there would be silently passed.  (Fast mode runs
@@ -1296,6 +1344,7 @@ impl Studio {
             held: evaluated == Evaluated::Held,
             ms: started.elapsed().as_millis() as u64,
         });
+        evaluated
     }
 
     /// The scenario files beside the program: `*.scenario.toml` in the

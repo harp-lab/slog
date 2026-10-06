@@ -205,3 +205,27 @@
 .inspect-pop-label { margin-top: 6px; color: var(--muted); font: 600 10.5px var(--sans); text-transform: uppercase; letter-spacing: 0.03em; }
 .inspect-pop-row { display: flex; gap: 6px; align-items: baseline; }
 #prompt.held::placeholder { color: var(--orange); }
+
+/* ---- After the fixpoint: where to go back to (rewind.js) ----------------- */
+
+.rewind-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: rgba(7, 54, 66, 0.18); }
+.rewind {
+  width: min(520px, 92vw);
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(7, 54, 66, 0.22);
+  font: 13px/1.5 var(--sans);
+  color: var(--text);
+}
+.rewind h3 { margin: 0 0 6px; font-size: 15px; color: var(--strong); }
+.rewind p { margin: 0 0 12px; }
+.rewind-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rewind-states { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.rewind-states .hint { margin: 0 0 6px; font-size: 12px; }
+.rewind-state { display: flex; align-items: baseline; gap: 10px; height: auto; padding: 4px 8px; border: none; border-radius: 4px; background: none; text-align: left; cursor: pointer; }
+.rewind-state:hover { background: var(--chrome); }
+.rewind-label { color: var(--blue); font: 600 12px var(--mono); min-width: 2.5em; }
+.rewind-line { flex: 1; color: var(--strong); font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rewind-note { color: var(--muted); font-size: 11px; }

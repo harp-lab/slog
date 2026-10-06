@@ -24,6 +24,7 @@ mod projects;
 mod registry;
 mod review;
 mod results;
+mod rewind;
 mod scenario;
 mod session;
 mod states;

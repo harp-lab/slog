@@ -25,6 +25,7 @@ import { initAssist } from "./assist.js";
 import { createBreakpoints, glyphClass, describe, stopOf } from "./breakpoints.js";
 import { initCalls } from "./calls.js";
 import { initTimeline } from "./timeline.js";
+import { createRewind } from "./rewind.js";
 import { createCheck } from "./check.js";
 import { createInspector } from "./inspect.js";
 import { installStamps, noteSet, stateName } from "./stamp.js";
@@ -165,6 +166,9 @@ const trace = initTrace({
 // The session's states, by logical timestamp, at the prompt and in each
 // entry's gutter; a click explores a past one (timeline.js).
 const timeline = initTimeline({ at: $("stamp"), panel: $("state-tree"), send });
+// Where to go back to when a breakpoint cannot stop (rewind.js); the tree
+// opens to show the branch the rerun makes.
+const rewind = createRewind({ send, onBranch: () => timeline.show() });
 installStamps({ send }); // every stamp's card, and its rename
 
 // An error's place as the files panel names it: a compiler message that
@@ -238,6 +242,9 @@ const receive = {
   files() {
     check.changed();
     lint.changed();
+  },
+  rewind(choice) {
+    rewind.open(choice);
   },
   states(view) {
     timeline.states(view);

@@ -377,21 +377,34 @@ impl Studio {
             let current = states.current;
             match (origin, &outcome.result) {
                 (Origin::Evaluate, Some(result)) if outcome.line.starts_with("run ") && !outcome.session.held => {
-                    states.derive(Kind::Run, &outcome.line, version, Some(result));
+                    let pred = self.branch_from.lock().expect("branch lock").take().unwrap_or(current);
+                    states.derive_from(pred, Kind::Run, &outcome.line, version, Some(result));
                     states.timed(outcome.ms);
+                }
+                (Origin::Evaluate, Some(_)) if outcome.line.starts_with("run ") => {
+                    *self.held_run.lock().expect("held lock") = Some(outcome.line.clone());
+                    return;
                 }
                 (Origin::Evaluate, Some(result)) if outcome.line == "tables" => states.name(current, result),
                 (Origin::Evaluate, _) => return,
                 // a held run that commits is its Run's state
                 (Origin::Repl, Some(result)) if committed(result) && before.held => {
-                    states.derive(Kind::Run, &outcome.line, version, Some(result));
+                    let pred = self.branch_from.lock().expect("branch lock").take().unwrap_or(current);
+                    let line = self.held_run.lock().expect("held lock").take().unwrap_or_else(|| outcome.line.clone());
+                    states.derive_from(pred, Kind::Run, &line, version, Some(result));
                     states.timed(outcome.ms);
                 }
                 (Origin::Repl, Some(result)) if committed(result) => {
                     states.derive(Kind::Change, &outcome.line, None, Some(result));
                     states.timed(outcome.ms);
                 }
-                (Origin::Repl, _) => states.ask(current, &outcome.line, outcome.ok()),
+                (Origin::Repl, _) => {
+                    // a held rerun discarded leaves no branch to make
+                    if before.held && !outcome.session.held {
+                        self.branch_from.lock().expect("branch lock").take();
+                    }
+                    states.ask(current, &outcome.line, outcome.ok());
+                }
             }
         }
         self.publish_states();
@@ -636,13 +649,24 @@ impl Studio {
     /// Continue from state `id`: re-derive it in a fresh session on the main
     /// lane, as a new state whose predecessor is `id`.
     pub async fn branch_state(&self, id: u64) {
+        self.branch_state_with(id, &[]).await;
+    }
+
+    /// Branch from state `id`, sending `prepare` (breaks to arm) before its
+    /// steps: the outcomes of the `break` lines among them.
+    pub(crate) async fn branch_state_with(&self, id: u64, prepare: &[String]) -> Vec<Outcome> {
+        let mut armed = Vec::new();
         if self.states().get(id).is_none() {
-            return self.trouble_states(&format!("no state t{id}"));
+            self.trouble_states(&format!("no state t{id}"));
+            return armed;
         }
         let label = self.states().label(id);
         let steps = match self.replay_lines(id) {
             Ok(steps) => steps,
-            Err(why) => return self.trouble_states(&format!("cannot branch from {label}: {why}")),
+            Err(why) => {
+                self.trouble_states(&format!("cannot branch from {label}: {why}"));
+                return armed;
+            }
         };
         let mut session = self.session_lock().await;
         let started = Instant::now();
@@ -665,7 +689,7 @@ impl Studio {
             session.view().current.is_some().then(|| "discard session".to_owned()),
         ];
         let mut ok = true;
-        let mut lines = fresh.into_iter().flatten().chain(steps).chain(["tables".to_owned()]);
+        let mut lines = fresh.into_iter().flatten().chain(prepare.iter().cloned()).chain(steps).chain(["tables".to_owned()]);
         while let Some(line) = lines.next() {
             // A replayed step that holds the run leaves it held: the session
             // reads nothing while a run is parked, so nothing more is sent.
@@ -674,6 +698,12 @@ impl Studio {
             }
             let before = session.view().clone();
             let outcome = session.execute(&self.lane, &line).await;
+            if line.starts_with("break ") {
+                armed.push(outcome.clone());
+                // a breakpoint that does not read is reported, not fatal
+                self.publish_outcome(Origin::Evaluate, &before, &outcome, None);
+                continue;
+            }
             if let Some(result) = &outcome.result {
                 self.results().learn(result);
                 let mut states = self.states();
@@ -695,6 +725,7 @@ impl Studio {
         self.publish_states();
         let held = ok && session.view().held;
         self.publish(Event::Evaluation { phase: Phase::Done, ok, held, ms });
+        armed
     }
 
     /// The lines that re-derive state `id` in a fresh session: its Run's

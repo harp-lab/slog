@@ -227,7 +227,15 @@ export function initTimeline({ at, panel, send }) {
     node.prepend(mark);
   }
 
-  return { states, entry };
+  return {
+    states,
+    entry,
+    // open the tree
+    show() {
+      panel.hidden = false;
+      render();
+    },
+  };
 }
 
 function element(tag, className, text) {

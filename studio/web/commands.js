@@ -81,6 +81,7 @@ export const INVENTORY = [
   [["schema"], [""], "the daemon's raw live schema"],
   [["pipeline"], [""], "the daemon's raw versioned pipeline"],
   [["run"], ["PATH"], "compile and run a .slog program"],
+  [["rerun"], [""], "the program last run, from scratch, with the breaks armed"],
   [["check"], ["PATH"], "check a program statically, without running it"],
   [["scratch"], [""], "the scratch layer's accumulated program"],
   [["keep"], ["scratch as FILE.slog"], "export the scratch layer to a file and promote it"],

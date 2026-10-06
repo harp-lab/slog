@@ -98,6 +98,7 @@ fn asset(name: &str) -> Response {
         "hints.css" => (include_str!("../web/hints.css"), "text/css; charset=utf-8"),
         "palette.js" => (include_str!("../web/palette.js"), "text/javascript; charset=utf-8"),
         "inspect.js" => (include_str!("../web/inspect.js"), "text/javascript; charset=utf-8"),
+        "rewind.js" => (include_str!("../web/rewind.js"), "text/javascript; charset=utf-8"),
         "assist.js" => (include_str!("../web/assist.js"), "text/javascript; charset=utf-8"),
         "assist.css" => (include_str!("../web/assist.css"), "text/css; charset=utf-8"),
         "breakpoints.js" => (include_str!("../web/breakpoints.js"), "text/javascript; charset=utf-8"),
@@ -187,6 +188,9 @@ enum Request {
     Explore { id: Option<u64> },
     /// Continue from session state `id`, re-derived as a new state.
     BranchState { id: u64 },
+    /// Debug from a point before the fixpoint: none reruns from scratch,
+    /// a state branches from it (rewind.rs).
+    DebugFrom { from: Option<u64> },
     /// Name session state `id`; an empty name removes it.
     NameState { id: u64, name: String },
     /// Run a result set's query again at the current state.
@@ -228,6 +232,7 @@ impl Request {
                 | Request::Preview { .. }
                 | Request::Explore { .. }
                 | Request::BranchState { .. }
+                | Request::DebugFrom { .. }
                 | Request::ShowNow { .. }
                 | Request::Peek { .. }
         )
@@ -449,6 +454,9 @@ fn handle(
         }
         Request::Explore { id } => {
             tokio::spawn(async move { studio.explore(id).await });
+        }
+        Request::DebugFrom { from } => {
+            tokio::spawn(async move { studio.debug_from(from).await });
         }
         Request::BranchState { id } => {
             tokio::spawn(async move { studio.branch_state(id).await });

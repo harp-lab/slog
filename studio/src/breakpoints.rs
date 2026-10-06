@@ -157,10 +157,15 @@ impl Studio {
     /// shown to every tab. Answers whether the session has breaks to
     /// reconcile with them (`reconcile`, in the background).
     pub fn set_breakpoints(&self, file: String, points: Vec<Breakpoint>) -> bool {
+        let known: Vec<String> = self.open_breakpoints().1.get(&file).into_iter().flatten().map(|p| p.id.clone()).collect();
         if !self.keep_breakpoints(&file, &points) {
             return false;
         }
-        self.publish(Event::Breakpoints { file, points });
+        let added = points.iter().find(|point| point.enabled && !known.contains(&point.id)).map(|point| point.at.map_or(point.line, |(line, _)| line));
+        self.publish(Event::Breakpoints { file: file.clone(), points });
+        if let Some(line) = added {
+            self.breakpoint_added(&file, line);
+        }
         self.armed.lock().expect("armed lock").debugging
     }
 
