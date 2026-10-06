@@ -168,6 +168,34 @@
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
 
+;; A module's source tokens, as one digest for the job hash.  The tokens are
+;; the whole source text, whitespace and comments included, with a position
+;; each, and `print`ing them spelled the file path out in every token: the
+;; bulk of the job-hash key, ~4MB and ~0.35s to print for a thousand
+;; reified facts.  This serializes each lexer token compactly (the path
+;; once per run of tokens sharing it) and digests that: injective over the
+;; same data, so the key still changes exactly when a token does.  A token
+;; of any other shape is written whole.
+(define (module-tokens-digest tokens)
+  (define o (open-output-bytes))
+  (define last-file #f)
+  (for ([t (in-list tokens)])
+    (match t
+      [`(token ,(? symbol? tag)
+               (pos ,file ,(? exact-integer? l0) ,(? exact-integer? c0)
+                    ,(? exact-integer? l1) ,(? exact-integer? c1))
+               ,(? string? text))
+       (unless (eq? file last-file)
+         (write-string "F" o) (write file o) (newline o)
+         (set! last-file file))
+       (write-string "T" o) (write tag o)
+       (for ([n (in-list (list l0 c0 l1 c1))])
+         (write-char #\space o)
+         (write-string (number->string n) o))
+       (write-char #\space o) (write text o) (newline o)]
+      [_ (write-string "X" o) (write t o) (newline o)]))
+  `(tokens ,(bytes->hex-string (sha256 (get-output-bytes o #t)))))
+
 ;; program->jobs returns
 ;;   (list jobs facts-stratum? frozen final-type-env full-program-model).
 ;; The trailing RF2 analysis values are additive: existing execution callers
@@ -217,7 +245,7 @@
   ;; named record.
   (define (module-cache-datum m)
     `(module ,(module-ir-path m)
-             ,(module-ir-tokens m)
+             ,(module-tokens-digest (module-ir-tokens m))
              ,(module-ir-rules m)))
   (define info2
     (sort (map module-cache-datum (set->list mods))
@@ -228,9 +256,16 @@
   ;; targets) without necessarily changing the rels env (a user decl toggling
   ;; the synthesis off), so it keys the cache too
   (define info4 (sort (hash->list decomps) symbol<? #:key car))
-  (define progstr
-    (with-output-to-string
-     (lambda () (print (list info0 info1 info2 info3 info4
+  ;; The program's printed cache key is large -- every module's tokens and
+  ;; rules, provenance included; ~5MB for a thousand reified facts -- so it
+  ;; is printed and digested ONCE, straight to bytes, and each stratum's
+  ;; job hash is a digest of that digest and its level.  Hashing the
+  ;; printed program per stratum cost a full copy-and-hash of it for every
+  ;; stratum (the same lesson as the source fingerprints, tools.rkt).
+  (define program-digest
+    (let ([o (open-output-bytes)])
+     (parameterize ([current-output-port o])
+      (print (list info0 info1 info2 info3 info4
                              daemon-headers-fingerprint
                              compiler-sources-fingerprint
                              ;; codegen-affecting settings: a toggle must
@@ -274,7 +309,8 @@
                              ;; the facts split changes stratum rule sets, so
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)
-                             split-facts?)))))
+                             split-facts?)))
+     (bytes->hex-string (sha256 (get-output-bytes o #t)))))
   ;; RF1 slice-0 audit instrument: dump the job-hash inputs component by
   ;; component so two runs of the same tree can be diffed to find which
   ;; input churns (docs/rf1-contract.md, determinism doctrine).  Gated off
@@ -297,7 +333,8 @@
             (pretty-write v o))))))
   (define (job-hash level)
     (substring (bytes->hex-string
-                (sha256 (string->bytes/utf-8 (format "~a:stratum ~a" progstr level))))
+                (sha256 (string->bytes/utf-8
+                         (format "~a:stratum ~a" program-digest level))))
                0
                (if debug-mode 8 32)))
 
@@ -1647,7 +1684,7 @@
     name))
 
 ;; T3b slice 1: resolve the selective-compilation policy ONCE, before any job
-;; hash is computed -- the policy folds into progstr, so it must be settled
+;; hash is computed -- the policy folds into the job hash, so it must be settled
 ;; before program->jobs runs, and it must be the same value the emitter sees.
 (define (compile-strata path dbmanifest
                         #:split-facts? [split-facts? #f]
