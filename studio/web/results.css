@@ -82,6 +82,7 @@
 .rs-loading { color: var(--yellow); }
 .rs-loading::before { content: "⟳ "; }
 .rs-note { color: var(--muted); }
+.rs-relation { font-family: var(--mono); color: var(--blue); }
 .rs-caution { color: var(--yellow); }
 .rs-error { color: var(--red); }
 

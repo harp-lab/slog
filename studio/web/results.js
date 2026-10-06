@@ -229,6 +229,12 @@ export function createResults({ tabs, panel, transcript, send, run }) {
     const busy = view.loading ?? (set.pending ? `loading rows ${number(set.pending.start + 1)}–${number(set.pending.end)}…` : null);
     if (busy) status.append(element("span", "rs-loading", busy));
     if (view.total_note) status.append(element("span", "rs-note", view.total_note));
+    if (view.relation) {
+      const kept = status.appendChild(element("span", "rs-relation", `relation ${view.relation}`));
+      kept.title = `The answers are kept as ${view.relation}; later queries can read it, as ?(${view.relation} …)`;
+    } else if (view.unkept) {
+      status.append(element("span", "rs-note", `not kept as a relation: ${view.unkept}`));
+    }
     if (view.duplicates) {
       status.append(element("span", "rs-caution",
         "rows can repeat: the projection hides variables, and keeps one row per binding (audit Q-02)"));

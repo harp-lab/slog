@@ -20,6 +20,8 @@ export function renderEntry(entry, { inProject, onSpan, onSet }) {
   if (entry.error) {
     node.append(renderError(entry.error, inProject, onSpan));
   } else if (entry.set) {
+    // An existence question keeps its answer; rows live in the set.
+    if (entry.result["query-mode"] !== "rows") node.append(...renderResult(entry.result));
     node.append(renderSetLink(entry.set, entry.result, onSet));
   } else if (entry.result) {
     node.append(...renderResult(entry.result));
@@ -29,12 +31,13 @@ export function renderEntry(entry, { inProject, onSpan, onSet }) {
 
 // A query's rows live in its result set; the transcript links to it.
 function renderSetLink(set, result, onSet) {
-  const shown = result["query-shown"];
-  const rows = result["query-status"] === "complete" ? `${shown} row${shown === 1 ? "" : "s"}` : `${shown}+ rows`;
   const node = element("div", "note");
   const link = node.appendChild(element("a", "set", set));
   link.addEventListener("click", () => onSet(set));
-  node.append(` · ${rows}`);
+  if (result["query-mode"] === "rows") {
+    const shown = result["query-shown"];
+    node.append(` · ${result["query-status"] === "complete" ? `${shown} row${shown === 1 ? "" : "s"}` : `${shown}+ rows`}`);
+  }
   return node;
 }
 

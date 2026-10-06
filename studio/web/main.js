@@ -104,6 +104,7 @@ const receive = {
     agent.snapshot(snapshot);
     summary.show(snapshot.summary);
     results.init(snapshot.results);
+    snapshot.results.forEach(offerRelation);
     history.load();
     renderStatus();
   },
@@ -162,7 +163,10 @@ const receive = {
   databases({ names }) {
     structure.setDatabases(names);
   },
-  "result-set": (view) => results.update(view),
+  "result-set": (view) => {
+    results.update(view);
+    offerRelation(view);
+  },
   rows: (reply) => results.rows(reply),
   scenarios({ names }) {
     const known = state.scenarios;
@@ -182,6 +186,17 @@ const receive = {
 // (a link from another launch's token) and a stopped server look the same
 // from here, so after a few the status says which to check.
 let failedAttempts = 0;
+
+// Completion offers a query's kept relation, as `?(r1 …`, while the session
+// that holds it lasts.
+function offerRelation(view) {
+  if (!view.relation || view.stale) return;
+  structure.addRelation({
+    name: view.relation,
+    arity: view.columns.length,
+    detail: view.columns.map((column) => column.type ?? ""),
+  });
+}
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";

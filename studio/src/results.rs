@@ -11,6 +11,13 @@
 //! ahead. A set's total comes from a `?count` of the same query, sent just
 //! before the query opens its cursor, so counting never costs the cursor.
 //!
+//! A query's answers are also kept as a relation of the session, named
+//! after the set (r1, r2, ...): a scratch definition `table (rN T...) rule
+//! (rN V...) <-- BODY` joins the session's scratch layer, computed over the
+//! live database without running the program again, and the set reads that
+//! relation back. Later queries and refinements can name it, and its rows
+//! are a set, not the query's bag (audit Q-02).
+//!
 //! This module is the bookkeeping, with no I/O: it reads the server's
 //! answers and says which command to send next. `Studio` sends them.
 
@@ -165,6 +172,38 @@ pub struct View {
     /// What the server is doing for this set, while it does it.
     pub loading: Option<String>,
     pub parent: Option<Lineage>,
+    /// The session relation holding the set's rows.
+    pub relation: Option<String>,
+    /// Why the answers are not kept as a relation, when they are not.
+    pub unkept: Option<String>,
+}
+
+/// A query's answers kept as a relation: its name, and its columns as the
+/// set shows them, each naming its variable in `read`.
+#[derive(Clone, Debug)]
+pub struct Kept {
+    pub relation: String,
+    pub columns: Vec<Column>,
+}
+
+/// How to keep a query's answers: the scratch definition to send, the
+/// query that reads the relation back, and what is then kept.
+#[derive(Clone, Debug)]
+pub struct Keep {
+    pub definition: String,
+    pub read: String,
+    pub kept: Kept,
+}
+
+/// What a set opens with besides its first page.
+pub struct Opening {
+    /// The query as typed: shown, and edited.
+    pub query: String,
+    /// The `?` line whose pages the set shows: a kept relation read back,
+    /// or the query itself.
+    pub read: String,
+    pub kept: Result<Kept, String>,
+    pub parent: Option<Lineage>,
 }
 
 /// What to do to serve a range of rows.
@@ -192,6 +231,8 @@ pub struct Results {
 
 struct Set {
     query: String,
+    read: String,
+    /// `read`, as clauses.
     parsed: Option<Query>,
     columns: Vec<Column>,
     duplicates: bool,
@@ -207,6 +248,7 @@ struct Set {
     epoch: u64,
     loading: Option<String>,
     parent: Option<Lineage>,
+    kept: Result<String, String>,
 }
 
 struct Page {
@@ -267,29 +309,48 @@ impl Results {
         self.catalog.clear();
     }
 
-    /// Open a set for a `?` query's first page; other answers open none,
-    /// `more` typed at the prompt included.
-    pub fn open(&mut self, line: &str, result: &Value, parent: Option<Lineage>) -> Result<Option<SetId>, String> {
-        if result["query-mode"] != "rows" || !line.trim_start().starts_with('?') {
+    /// The id the next set opens with, and so the relation its answers
+    /// are kept in.
+    fn next_id(&self) -> SetId {
+        SetId(self.next)
+    }
+
+    /// Open a set on the first page of its `read` query; an answer that is
+    /// not a rows page opens none.
+    pub fn open(&mut self, opening: Opening, result: &Value) -> Result<Option<SetId>, String> {
+        let Opening { query, read, kept, parent } = opening;
+        if result["query-mode"] != "rows" || !read.trim_start().starts_with('?') {
             return Ok(None);
         }
-        let parsed = Query::parse(line);
-        let title = result["title"].as_str().unwrap_or("");
-        let projected = projection_of(title);
-        let columns = parsed.as_ref().map_or_else(Vec::new, |query| match &projected {
-            Some(vars) => query.projected_columns(vars, &self.catalog),
-            None => query.atom_columns(&self.catalog),
-        });
-        let duplicates = match (&parsed, &projected) {
-            (Some(query), Some(vars)) => query.hides_variables(vars),
-            _ => false,
+        let parsed = Query::parse(&read);
+        let (columns, duplicates, kept) = match kept {
+            Ok(Kept { relation, columns }) => {
+                debug_assert_eq!(relation, self.next_id().to_string());
+                // later queries over it are typed, and kept, like any other
+                let types = columns.iter().map(|column| column.kind.clone().unwrap_or_default()).collect();
+                self.catalog.insert(relation.clone(), types);
+                (columns, false, Ok(relation))
+            }
+            Err(why) => {
+                let projected = projection_of(result["title"].as_str().unwrap_or(""));
+                let columns = parsed.as_ref().map_or_else(Vec::new, |query| match &projected {
+                    Some(vars) => query.projected_columns(vars, &self.catalog),
+                    None => query.atom_columns(&self.catalog),
+                });
+                let duplicates = match (&parsed, &projected) {
+                    (Some(query), Some(vars)) => query.hides_variables(vars),
+                    _ => false,
+                };
+                (columns, duplicates, Err(why))
+            }
         };
         let id = SetId(self.next);
         self.next += 1;
         self.sets.insert(
             id,
             Set {
-                query: line.to_owned(),
+                query,
+                read,
                 parsed,
                 columns,
                 duplicates,
@@ -303,6 +364,7 @@ impl Results {
                 epoch: self.epoch,
                 loading: None,
                 parent,
+                kept,
             },
         );
         while self.sets.len() > MAX_SETS {
@@ -414,7 +476,7 @@ impl Results {
         if set.cursor == Cursor::Live && missing >= set.at {
             Plan::More
         } else {
-            Plan::Rerun(set.query.clone())
+            Plan::Rerun(set.read.clone())
         }
     }
 
@@ -488,6 +550,77 @@ impl Results {
         Ok((line, Lineage { parent: id, refinement: label }))
     }
 
+    /// How to keep the answers of the rows query `read` as the relation
+    /// the next set is named for. `page` is its first page, whose title
+    /// names its projection; a query without variables has none, and keeps
+    /// the facts it names.
+    pub fn keep(&self, read: &str, page: Option<&Value>) -> Result<Keep, String> {
+        let query = Query::parse(read).ok_or("the query does not read as clauses")?;
+        let projected = page.map(|page| projection_of(page["title"].as_str().unwrap_or("")));
+        let (columns, head) = match projected {
+            Some(Some(vars)) => (query.projected_columns(&vars, &self.catalog), vars),
+            // a one-atom query's facts, or a ground query's
+            Some(None) | None => {
+                let head: Vec<String> = query
+                    .atoms()
+                    .iter()
+                    .flat_map(|(_, terms)| terms.iter().map(|term| (*term).to_owned()))
+                    .collect();
+                if head.iter().any(|term| term == "_") {
+                    return Err("`_` matches without naming a value to keep".to_owned());
+                }
+                (query.atom_columns(&self.catalog), head)
+            }
+        };
+        let types = columns
+            .iter()
+            .map(|column| {
+                column
+                    .kind
+                    .clone()
+                    .ok_or_else(|| format!("the type of {} is not known", column.name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // Read back by variable: the head's own, or a fresh one for a
+        // constant or a repeat.
+        let mut vars: Vec<String> = Vec::new();
+        for (i, term) in head.iter().enumerate() {
+            let mut var = if is_variable(term) { term.clone() } else { format!("C{}", i + 1) };
+            while vars.contains(&var) || (!is_variable(term) && head.contains(&var)) {
+                var.push('_');
+            }
+            vars.push(var);
+        }
+        // `~ (rel …)` is a query's spelling of `~(rel …)`
+        let mut body: Vec<String> = Vec::new();
+        let mut absent = false;
+        for clause in &query.clauses {
+            if clause == "~" {
+                absent = true;
+            } else {
+                body.push(if std::mem::take(&mut absent) { format!("~{clause}") } else { clause.clone() });
+            }
+        }
+        let relation = self.next_id().to_string();
+        Ok(Keep {
+            definition: format!(
+                "table ({relation} {}) rule ({relation} {}) <-- {}",
+                types.join(" "),
+                head.join(" "),
+                body.join(" ")
+            ),
+            read: format!("?({relation} {})", vars.join(" ")),
+            kept: Kept {
+                relation,
+                columns: columns
+                    .into_iter()
+                    .zip(vars)
+                    .map(|(column, var)| Column { var: Some(var), ..column })
+                    .collect(),
+            },
+        })
+    }
+
     pub fn view(&self, id: SetId) -> Option<View> {
         let set = self.sets.get(&id)?;
         Some(View {
@@ -503,6 +636,8 @@ impl Results {
             stale: set.epoch != self.epoch,
             loading: set.loading.clone(),
             parent: set.parent.clone(),
+            relation: set.kept.as_ref().ok().cloned(),
+            unkept: set.kept.as_ref().err().filter(|why| !why.is_empty()).cloned(),
         })
     }
 
@@ -739,19 +874,17 @@ impl Query {
         atoms
     }
 
-    /// The columns of a one-atom query's facts: `rel.1`, `rel.2`, ….
+    /// The columns of the facts the atoms name: `rel.1`, `rel.2`, … for a
+    /// one-atom query's rows, and each atom's in turn for a ground query.
     fn atom_columns(&self, catalog: &HashMap<String, Vec<String>>) -> Vec<Column> {
-        let atoms = self.atoms();
-        let Some((relation, terms)) = atoms.first() else {
-            return Vec::new();
-        };
-        terms
-            .iter()
-            .enumerate()
-            .map(|(i, term)| Column {
-                name: format!("{relation}.{}", i + 1),
-                var: is_variable(term).then(|| (*term).to_owned()),
-                kind: declared(catalog, relation, i),
+        self.atoms()
+            .into_iter()
+            .flat_map(|(relation, terms)| {
+                terms.into_iter().enumerate().map(move |(i, term)| Column {
+                    name: format!("{relation}.{}", i + 1),
+                    var: is_variable(term).then(|| term.to_owned()),
+                    kind: declared(catalog, relation, i),
+                })
             })
             .collect()
     }
@@ -781,6 +914,19 @@ impl Query {
     }
 }
 
+/// The rows form of a `?` or `?exists` line, which a set reads: `?exists
+/// BODY` asks whether `? BODY` has rows. None for `?count` and other lines.
+pub fn rows_line(line: &str) -> Option<String> {
+    let body = line.trim().strip_prefix('?')?;
+    if let Some(rest) = body
+        .strip_prefix("exists")
+        .filter(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()))
+    {
+        return Some(format!("? {}", rest.trim()));
+    }
+    Query::parse(line).map(|_| line.trim().to_owned())
+}
+
 /// The `?count` of a rows query, which totals the set it opens; None for
 /// any other line.
 pub fn count_line(line: &str) -> Option<String> {
@@ -804,7 +950,7 @@ fn is_variable(term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CACHE_ROWS, Cursor, Plan, Refinement, Results, Row, SetId, Total, row};
+    use super::{CACHE_ROWS, Cursor, Opening, Plan, Refinement, Results, Row, SetId, Total, row};
     use serde_json::{Value, json};
 
     /// A rows page as compiler/repl.rkt's render-query-page prints it.
@@ -814,6 +960,16 @@ mod tests {
         lines.extend(tuples.iter().enumerate().map(|(i, t)| format!("{}  {t}", start + i as u64 + 1)));
         json!({"kind": "query", "title": title, "lines": lines, "query-mode": "rows",
                "query-status": status, "query-matched": shown, "query-shown": shown})
+    }
+
+    /// A set reading `line` itself, its answers not kept as a relation.
+    fn as_typed(line: &str) -> Opening {
+        Opening {
+            query: line.to_owned(),
+            read: line.to_owned(),
+            kept: Err(String::new()),
+            parent: None,
+        }
     }
 
     fn texts(rows: &[Row]) -> Vec<Vec<&str>> {
@@ -835,7 +991,7 @@ mod tests {
         let mut results = Results::default();
         results.learn(&tables);
 
-        let id = results.open("?(path 1 Y)", &fact, None).unwrap().unwrap();
+        let id = results.open(as_typed("?(path 1 Y)"), &fact).unwrap().unwrap();
         let view = results.view(id).unwrap();
         let columns: Vec<_> = view.columns.iter().map(|c| (c.name.as_str(), c.var.as_deref(), c.kind.as_deref())).collect();
         assert_eq!(columns, [("path.1", None, Some("int")), ("path.2", Some("Y"), Some("int"))]);
@@ -843,7 +999,7 @@ mod tests {
         let Plan::Serve(rows) = results.plan(id, 0, 10) else { panic!("the page is cached") };
         assert_eq!(texts(&rows), [["1", "2"], ["1", "3"], ["1", "4"]]);
 
-        let id = results.open("? (edge X Y) (edge Y Z) -> (X Z)", &join, None).unwrap().unwrap();
+        let id = results.open(as_typed("? (edge X Y) (edge Y Z) -> (X Z)"), &join).unwrap().unwrap();
         let view = results.view(id).unwrap();
         let columns: Vec<_> = view.columns.iter().map(|c| (c.name.as_str(), c.kind.as_deref())).collect();
         assert_eq!(columns, [("X", Some("int")), ("Z", Some("int"))]);
@@ -878,7 +1034,7 @@ mod tests {
 
         let tuples = |range: std::ops::Range<u64>| range.map(|i| format!("({i})")).collect::<Vec<_>>();
         let mut results = Results::default();
-        let id = results.open("?(n X)", &page("Query · (X)", 0, &tuples(0..50), "open"), None).unwrap().unwrap();
+        let id = results.open(as_typed("?(n X)"), &page("Query · (X)", 0, &tuples(0..50), "open")).unwrap().unwrap();
         assert_eq!(results.view(id).unwrap().total, Total::Unknown);
         results.counted(id, Ok(Total::AtLeast(70)));
         assert_eq!(results.view(id).unwrap().total, Total::AtLeast(70));
@@ -896,9 +1052,9 @@ mod tests {
         let fact = page("Query", 0, &["(path 1 2)".to_owned()], "complete");
         let join = page("Query · (X Z)", 0, &["(1 3)".to_owned()], "complete");
         let mut results = Results::default();
-        let sugar = results.open("?(path 1 Y)", &fact, None).unwrap().unwrap();
+        let sugar = results.open(as_typed("?(path 1 Y)"), &fact).unwrap().unwrap();
         let projected = results
-            .open("? (path X Y) ~(edge X Y) (edge Y Z) -> (X Z)", &join, None)
+            .open(as_typed("? (path X Y) ~(edge X Y) (edge Y Z) -> (X Z)"), &join)
             .unwrap()
             .unwrap();
         let refine = |id: SetId, refinement: Refinement| {
@@ -923,13 +1079,55 @@ mod tests {
         assert!(refine(sugar, edit("tables")).is_err());
     }
 
+    /// The scratch definition that keeps a query's answers: declared with the
+    /// types of the relation columns its values come from, headed by what
+    /// the set shows, its body the query's clauses, and read back by
+    /// variable.
+    #[test]
+    fn answers_are_kept_by_a_definition_over_the_query_body() {
+        let mut results = Results::default();
+        results.learn(&json!({"kind": "tables", "relations": [
+            {"name": "edge", "detail": ["int", "int"]}, {"name": "at", "detail": ["int", "pt"]}]}));
+        let keep = |results: &Results, read: &str, page: Option<Value>| {
+            results.keep(read, page.as_ref()).map(|keep| (keep.definition, keep.read))
+        };
+        let facts = Some(page("Query", 0, &[], "complete"));
+        let projected = |vars: &str| Some(page(&format!("Query · ({vars})"), 0, &[], "complete"));
+
+        assert_eq!(
+            keep(&results, "?(edge 1 Y)", facts.clone()).unwrap(),
+            ("table (r1 int int) rule (r1 1 Y) <-- (edge 1 Y)".to_owned(), "?(r1 C1 Y)".to_owned())
+        );
+        // a repeated variable reads back as two
+        assert_eq!(keep(&results, "?(edge X X)", facts).unwrap().1, "?(r1 X X_)");
+        assert_eq!(
+            keep(&results, "? (edge X Y) ~ (edge Y X) (at Y P) (< X 3) -> (P X)", projected("P X")).unwrap(),
+            (
+                "table (r1 pt int) rule (r1 P X) <-- (edge X Y) ~(edge Y X) (at Y P) (< X 3)".to_owned(),
+                "?(r1 P X)".to_owned()
+            )
+        );
+        // a ground query keeps the facts it names, if they hold
+        assert_eq!(
+            keep(&results, "? (edge 1 2) (edge 2 3)", None).unwrap(),
+            (
+                "table (r1 int int int int) rule (r1 1 2 2 3) <-- (edge 1 2) (edge 2 3)".to_owned(),
+                "?(r1 C1 C2 C3 C4)".to_owned()
+            )
+        );
+        assert!(keep(&results, "?(edge 1 _)", None).unwrap_err().contains("`_`"));
+        // a computed value's type is not a relation column's
+        let computed = keep(&results, "? (edge X Y) (= Z (+ X Y)) -> (Z)", projected("Z"));
+        assert!(computed.unwrap_err().contains("type of Z"));
+    }
+
     /// Pages beyond the cache's bound are dropped least recently used
     /// first; a dropped row is read again by running the query.
     #[test]
     fn the_cache_is_bounded_and_dropped_rows_are_read_again() {
         let tuples = |start: u64| (start..start + 50).map(|i| format!("({i})")).collect::<Vec<_>>();
         let mut results = Results::default();
-        let id = results.open("?(n X)", &page("Query · (X)", 0, &tuples(0), "open"), None).unwrap().unwrap();
+        let id = results.open(as_typed("?(n X)"), &page("Query · (X)", 0, &tuples(0), "open")).unwrap().unwrap();
         let mut at = 50;
         while at < CACHE_ROWS as u64 + 100 {
             assert_eq!(results.plan(id, at, at + 50), Plan::More);
@@ -992,6 +1190,19 @@ mod served {
         async fn query(&self, line: &str) -> SetId {
             self.studio.command(line).await;
             self.views().await.last().expect("the query opened a set").id
+        }
+
+        /// Run a REPL line; the answer its transcript entry shows, and the
+        /// set it opened.
+        async fn entry(&self, line: &str) -> (serde_json::Value, Option<SetId>) {
+            let mut events = self.studio.subscribe();
+            self.studio.command(line).await;
+            std::iter::from_fn(|| events.try_recv().ok())
+                .find_map(|event| match event {
+                    Event::Entry { set, outcome, .. } => Some((outcome.result.expect("an answer"), set)),
+                    _ => None,
+                })
+                .expect("an entry")
         }
 
         async fn views(&self) -> Vec<View> {
@@ -1116,13 +1327,53 @@ mod served {
         let read = pairs(&fixture.all_rows(filtered.id).await);
         assert_eq!(read.into_iter().collect::<BTreeSet<_>>(), expected);
 
-        // projection keeps one row per hidden binding (audit Q-02)
+        // a `?` projection keeps one row per hidden binding (audit Q-02);
+        // the relation it is kept as holds each row once
         let dropped = refine(Refinement::Drop { column: 1 }).await;
-        assert!(dropped.duplicates);
-        let rows = fixture.all_rows(dropped.id).await;
-        assert_eq!(rows.len(), closure().len());
-        let firsts = rows.iter().filter(|row| row[0].text == "1").count() as u64;
-        assert_eq!(firsts, N - 1);
+        assert_eq!(dropped.query, "? (r1 X Y) -> (X)");
+        assert!(!dropped.duplicates);
+        let firsts: Vec<u64> = fixture.all_rows(dropped.id).await.iter().map(|row| row[0].text.parse().unwrap()).collect();
+        assert_eq!(firsts.into_iter().collect::<BTreeSet<_>>(), (1..N).collect());
+        assert_eq!(dropped.total, Total::Exact(N - 1));
+        fixture.finish().await;
+    }
+
+    /// A query's answers become a relation named for its set, which later
+    /// queries read; an existence question still answers yes or no, and
+    /// shows the rows; answers that cannot be kept are read as typed.
+    #[tokio::test]
+    async fn answers_are_kept_as_relations_named_for_their_sets() {
+        let fixture = Fixture::new("kept").await;
+        let path = fixture.query("?(path X Y)").await;
+        let view = fixture.view(path).await;
+        assert_eq!((view.relation.as_deref(), view.unkept), (Some("r1"), None));
+        // the relation is a relation like any other
+        let next = fixture.query("? (r1 X Y) (edge Y Z) -> (X Z)").await;
+        let expected: BTreeSet<(u64, u64)> = closure().into_iter().filter(|&(_, y)| y < N).map(|(x, y)| (x, y + 1)).collect();
+        assert_eq!(pairs(&fixture.all_rows(next).await).into_iter().collect::<BTreeSet<_>>(), expected);
+        assert_eq!(fixture.view(next).await.relation.as_deref(), Some("r2"));
+
+        let (answer, set) = fixture.entry("?(edge 1 2)").await;
+        assert_eq!(answer["lines"][0], "yes — at least one row matches");
+        let rows = fixture.studio.rows(set.expect("a set"), 0, 10).await.unwrap();
+        assert_eq!(pairs(&rows), [(1, 2)]);
+        let (answer, set) = fixture.entry("?(edge 2 1)").await;
+        assert_eq!(answer["lines"][0], "no rows match");
+        assert_eq!(fixture.view(set.expect("a set")).await.total, Total::Exact(0));
+        let (answer, set) = fixture.entry("?exists (path 3 Y)").await;
+        assert_eq!(answer["query-mode"], "exists");
+        let rows = fixture.studio.rows(set.expect("a set"), 0, 100).await.unwrap();
+        let from_3: BTreeSet<(u64, u64)> = closure().into_iter().filter(|&(x, _)| x == 3).collect();
+        assert_eq!(pairs(&rows).into_iter().collect::<BTreeSet<_>>(), from_3);
+
+        // a handle splices into a query, never into a rule
+        let at = fixture.query("?(at X P)").await;
+        let handle = fixture.studio.rows(at, 0, 1).await.unwrap()[0][1].handle.clone().expect("a handle");
+        let unkept = fixture.query(&format!("? (at X P) (= P {handle})")).await;
+        let view = fixture.view(unkept).await;
+        assert_eq!(view.relation, None);
+        assert!(view.unkept.is_some());
+        assert_eq!(fixture.studio.rows(unkept, 0, 10).await.unwrap().len(), 1);
         fixture.finish().await;
     }
 }

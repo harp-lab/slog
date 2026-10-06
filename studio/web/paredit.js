@@ -117,6 +117,13 @@ export function setDatabases(names) {
   live.databases = names;
 }
 
+// A relation the session gained since its last `tables`: a query's answers
+// kept as r1, r2, … ({ name, arity, detail }). The next Run's catalog
+// replaces it, as it replaces the session.
+export function addRelation(relation) {
+  live.catalog = [...live.catalog.filter((known) => known.name !== relation.name), relation];
+}
+
 // The `break FILE:LINE` locations of the program's rules.
 function locations({ file, text }) {
   const base = file.split("/").pop();

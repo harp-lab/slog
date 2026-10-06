@@ -11,7 +11,9 @@
 use crate::agent::{Agent, AgentEvent};
 use crate::lane::{Lane, LaneStatus, Mode};
 use crate::projects::{Project, Projects, valid_file};
-use crate::results::{self, Lineage, MAX_REQUEST_ROWS, Plan, Refinement, Results, Row, SetId, Total};
+use crate::results::{
+    self, Lineage, MAX_REQUEST_ROWS, Opening, Plan, Refinement, Results, Row, SetId, Total,
+};
 use crate::review::{Review, ReviewView};
 use crate::scenario::{self, Report};
 use crate::session::{Outcome, Session, SessionView, run_argument};
@@ -671,14 +673,74 @@ impl Studio {
         self.run(line, None).await;
     }
 
-    /// Run a REPL line. A `?` query's rows open a result set, refining
-    /// `lineage`'s set when given. The set's total is a `?count` of the
-    /// same query, sent first: once the query holds the cursor, any other
-    /// command would discard it (audit Q-10).
+    /// Run a REPL line. A `?` or `?exists` query's answers open a result
+    /// set, refining `lineage`'s set when given.
     pub async fn run(&self, line: &str, lineage: Option<Lineage>) {
         let mut session = self.session.lock().await;
         let before = session.view().clone();
-        let total = match results::count_line(line) {
+        let started = Instant::now();
+        let outcome = session.execute(&self.lane, line).await;
+        let touched = {
+            let mut results = self.results();
+            // Any command may have discarded the cursor (audit Q-10).
+            let mut touched: Vec<SetId> = results.park().into_iter().collect();
+            if changes_database(&before, &outcome) {
+                touched = results.changed();
+            }
+            if let Some(result) = &outcome.result {
+                results.learn(result);
+            }
+            touched
+        };
+        self.publish_sets(touched);
+        let query = outcome.result.as_ref().and_then(|result| result["query-mode"].as_str());
+        let (mut shown, set) = match (query, results::rows_line(line)) {
+            (Some("rows" | "exists"), Some(read)) => {
+                self.open_set(&mut session, line, &read, &outcome, lineage).await
+            }
+            _ => (outcome, None),
+        };
+        shown.ms = started.elapsed().as_millis() as u64;
+        self.publish_sets(set);
+        self.publish_outcome(Origin::Repl, &before, &shown, set);
+    }
+
+    /// Open the set a query's answers make. They are kept as the relation
+    /// the set is named for and read back from it; if they cannot be kept,
+    /// the set reads the query itself, and says why. `read` is the query's
+    /// rows form and `answered` its answer as typed. Returns the entry to
+    /// show for the query, and the set.
+    async fn open_set(
+        &self,
+        session: &mut Session,
+        line: &str,
+        read: &str,
+        answered: &Outcome,
+        lineage: Option<Lineage>,
+    ) -> (Outcome, Option<SetId>) {
+        let rows = answered.result.as_ref().is_some_and(|result| result["query-mode"] == "rows");
+        // A rows page's title names the projection. An existence answer has
+        // none: ask for the rows, which a query without variables also
+        // answers with an existence.
+        let page = if rows {
+            answered.result.clone()
+        } else {
+            match session.execute(&self.lane, read).await.result {
+                Some(result) => Some(result).filter(|result| result["query-mode"] == "rows"),
+                None => return (answered.clone(), None),
+            }
+        };
+        let keep = self.results().keep(read, page.as_ref());
+        let (read, kept) = match keep {
+            Ok(keep) => match session.execute(&self.lane, &keep.definition).await.error {
+                None => (keep.read, Ok(keep.kept)),
+                Some(error) => (read.to_owned(), Err(error.message)),
+            },
+            Err(why) => (read.to_owned(), Err(why)),
+        };
+        // Counted before the cursor opens: once it does, any other command
+        // would discard it (audit Q-10).
+        let total = match results::count_line(&read) {
             Some(count) => {
                 let counted = session.execute(&self.lane, &count).await;
                 match (&counted.result, counted.error) {
@@ -690,25 +752,23 @@ impl Studio {
             }
             None => Ok(Total::Unknown),
         };
-        let outcome = session.execute(&self.lane, line).await;
-        let (touched, opened) = {
-            let mut results = self.results();
-            // Any command may have discarded the cursor (audit Q-10).
-            let mut touched: Vec<SetId> = results.park().into_iter().collect();
-            if changes_database(&before, &outcome) {
-                touched = results.changed();
-            }
-            let opened = match &outcome.result {
-                Some(result) => {
-                    results.learn(result);
-                    results.open(line, result, lineage)
+        let outcome = session.execute(&self.lane, &read).await;
+        let opened = match &outcome.result {
+            Some(result) => {
+                let opening = Opening {
+                    query: line.to_owned(),
+                    read,
+                    kept,
+                    parent: lineage,
+                };
+                let mut results = self.results();
+                let opened = results.open(opening, result);
+                if let Ok(Some(id)) = opened {
+                    results.counted(id, total);
                 }
-                None => Ok(None),
-            };
-            if let Ok(Some(id)) = opened {
-                results.counted(id, total);
+                opened
             }
-            (touched, opened)
+            None => Ok(None),
         };
         let set = opened.unwrap_or_else(|why| {
             self.publish(Event::Log {
@@ -716,8 +776,17 @@ impl Studio {
             });
             None
         });
-        self.publish_sets(touched.into_iter().chain(set));
-        self.publish_outcome(Origin::Repl, &before, &outcome, set);
+        // A rows query shows the rows it opened; an existence answer stays
+        // the answer, with its set beside it.
+        let shown = if rows && set.is_some() {
+            Outcome {
+                line: line.to_owned(),
+                ..outcome
+            }
+        } else {
+            answered.clone()
+        };
+        (shown, set)
     }
 
     /// The query a gesture on a result set runs, and its lineage.
