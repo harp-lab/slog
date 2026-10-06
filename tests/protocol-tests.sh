@@ -225,7 +225,7 @@ expect_rx "break-needs-filter" '\(refused parse [0-9]+ \(verb break\) \(detail "
 expect_rx "break-needs-id"    '\(refused parse [0-9]+ \(verb break\) \(detail "requires \(id .*b1.*\)"\)\)' out/proto-break.log
 expect_rx "break-position-rule" '\(refused parse [0-9]+ \(verb break\) \(detail "a body position belongs to a rule; give \(rule N\) or \(source .*FILE:LINE.*\) too"\)\)' out/proto-break.log
 expect    "break-rule-position" '(break-added (id "b4") (breaks 2))' out/proto-break.log
-expect    "breaks-listed"     '(break (id "b1") (relation "edge") (rule #f) (source "") (position #f) (pattern "") (hits 0) (when "") (judgment #f) (ignore 0) (log #f) (enabled #t))' out/proto-break.log
+expect    "breaks-listed"     '(break (id "b1") (relation "edge") (rule #f) (source "") (position #f) (match "") (pattern "") (hits 0) (when "") (judgment #f) (ignore 0) (log #f) (enabled #t))' out/proto-break.log
 expect    "breaks-end"        '(breaks-end 2)' out/proto-break.log
 expect_rx "unbreak-unknown"   '\(refused break-binding [0-9]+ \(verb unbreak\) \(detail "no break with id b9"\)\)' out/proto-break.log
 expect    "break-removed"     '(break-removed (id "b1") (breaks 1))' out/proto-break.log
@@ -243,6 +243,7 @@ racket tests/api/drive.rkt \
   '(break (id "d5") (relation "p") (when (~ (var "X") (integer "1"))))' \
   '(break (id "d6") (relation "p") (judgment #t))' \
   '(break (id "d7") (relation "p") (pattern (seq-open (string "a")) (integer "-3")))' \
+  '(break (id "d8") (source "a.slog:3") (match "edge") (pattern (integer "1") _))' \
   '(breaks)' \
   '(break-enable (id "d1") (enabled #f))' \
   '(break-enable (id "d9") (enabled #t))' \
@@ -254,9 +255,10 @@ expect    "break-uses-glob"   '(break-added (id "d3") (breaks 3))' out/proto-bre
 expect_rx "break-ctor-name"   '\(refused parse [0-9]+ \(verb break\) \(detail "ctor takes a name and its field terms"\)\)' out/proto-break2.log
 expect_rx "break-guard-op"    '\(refused parse [0-9]+ \(verb break\) \(detail "a guard is \(OP TERM TERM\), OP one of = /= < <= > >="\)\)' out/proto-break2.log
 expect_rx "break-judgment-pattern" '\(refused parse [0-9]+ \(verb break\) \(detail "judgment reads a pattern; give \(pattern TERM ...\)"\)\)' out/proto-break2.log
-expect    "breaks-structured" '(break (id "d1") (relation "infer") (rule #f) (source "") (position #f) (pattern "_ (app F _)") (hits 0) (when "(/= F (zero))") (judgment #f) (ignore 2) (log #f) (enabled #t))' out/proto-break2.log
+expect    "breaks-structured" '(break (id "d1") (relation "infer") (rule #f) (source "") (position #f) (match "") (pattern "_ (app F _)") (hits 0) (when "(/= F (zero))") (judgment #f) (ignore 2) (log #f) (enabled #t))' out/proto-break2.log
 expect    "breaks-logpoint"   '(pattern "T T") (hits 0) (when "") (judgment #t) (ignore 0) (log #t) (enabled #t))' out/proto-break2.log
 expect    "breaks-relations"  '(relation "$sup* infer")' out/proto-break2.log
+expect    "breaks-match"      '(break (id "d8") (relation "") (rule #f) (source "a.slog:3") (position #f) (match "edge") (pattern "1 _")' out/proto-break2.log
 expect    "breaks-seq"        '(pattern "[\"a\" ...] -3")' out/proto-break2.log
 expect    "break-disabled"    '(break-enabled (id "d1") (enabled #f))' out/proto-break2.log
 expect_rx "break-enable-unknown" '\(refused break-binding [0-9]+ \(verb break-enable\) \(detail "no break with id d9"\)\)' out/proto-break2.log

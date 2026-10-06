@@ -3505,6 +3505,10 @@ public:
     // single rule across a program.
     std::string source;
     u16 position = 0xffff;       // cursor slot, or the sentinel for any
+    // A body atom's relation: stop where the rule matches a row of it (its
+    // drive port, or the probe of that atom), the pattern read against
+    // that row.  Planner order cannot move this the way it moves a slot.
+    std::string premise;
     std::vector<BreakTerm> pattern;  // head pattern, empty for any
     // The row read as the judgment it answers: its first column's
     // constructor fields, then the rest (`(nf T V)` against nf_ans's
@@ -3560,7 +3564,9 @@ private:
     for (const BreakSpec& b : break_specs)
     {
       if (!b.enabled) continue;
-      if (b.position != 0xffff)
+      if (!b.premise.empty())
+        break_event_mask |= (u64{1} << 0) | (u64{1} << 1); // driver, probe_match
+      else if (b.position != 0xffff)
         break_event_mask |= u64{1} << 1;          // EventK::probe_match
       else if (!b.relations.empty() || !b.pattern.empty())
         break_event_mask |= u64{1} << 7;          // EventK::emit

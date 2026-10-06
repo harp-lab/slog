@@ -1480,6 +1480,7 @@ struct ProofSchema
   {
     std::string relation;
     std::vector<u16> order;   // physical position -> nominal column; empty = nominal
+    bool struct_ = false;     // a struct's row: nominal 0 is its id
   };
   Row driver;
   std::vector<std::vector<Row>> levels;  // per cursor slot, in premise order
@@ -1698,6 +1699,36 @@ struct StepSink final : public DebugSink
     return out;
   }
 
+  // At the drive port or a match, the row of `relation` this port just
+  // matched, in nominal order -- a struct's without its id, as the source
+  // writes the atom: "the rule has matched this body atom".
+  bool matched_row(const Event& e, const DebugView& view, u16 slot,
+                   const std::string& relation, std::vector<u64>& row) const
+  {
+    if (e.kind == EventK::driver)
+    {
+      if (schema->driver.relation != relation) return false;
+      row = ProofSchema::nominalize(schema->driver.order, view.driver.data(),
+                                    view.driver.size());
+      if (schema->driver.struct_ && !row.empty()) row.erase(row.begin());
+      return true;
+    }
+    if (e.kind != EventK::probe_match || slot >= schema->levels.size()
+        || slot >= view.cursors.size())
+      return false;
+    const PrefixCursor& cursor = *view.cursors[slot];
+    const std::vector<ProofSchema::Row>& rows = schema->levels[slot];
+    for (u16 i = 0; i < cursor.premise_count() && i < rows.size(); ++i)
+      if (rows[i].relation == relation)
+      {
+        const TupleView r = cursor.premise(i);
+        row = ProofSchema::nominalize(rows[i].order, r.begin(), r.size());
+        if (rows[i].struct_ && !row.empty()) row.erase(row.begin());
+        return true;
+      }
+    return false;
+  }
+
   // Did the body use a value one of these terms matches: is one in the
   // driving row or a premise row?
   bool uses_any(const std::vector<Database::BreakTerm>& terms,
@@ -1751,7 +1782,12 @@ struct StepSink final : public DebugSink
       if (b.rule_id != UINT32_MAX && e.rule_id != b.rule_id) continue;
       if (!b.source.empty() && !(rule_loc && at_source(*rule_loc, b.source)))
         continue;
-      if (b.position != 0xffff)
+      std::vector<u64> matched;
+      if (!b.premise.empty())
+      {
+        if (!matched_row(e, view, slot, b.premise, matched)) continue;
+      }
+      else if (b.position != 0xffff)
       {
         if (e.kind != EventK::probe_match || slot != b.position) continue;
       }
@@ -1764,7 +1800,9 @@ struct StepSink final : public DebugSink
       }
       else if (e.kind != EventK::instantiation) continue;
       Database::BreakBindings bound;
-      if (!b.pattern.empty() && !db->matchBreakRow(b, row, bound)) continue;
+      if (!b.pattern.empty()
+          && !db->matchBreakRow(b, b.premise.empty() ? row : matched, bound))
+        continue;
       if (!b.uses.empty() && !uses_any(b.uses, view)) continue;
       if (!b.guards.empty() || b.log)
       {
@@ -2580,23 +2618,32 @@ public:
       return slot < frame.size() && frame[slot] != nullptr
         ? frame[slot]->getName() : std::string();
     };
+    const auto slot_struct = [&](u16 slot) {
+      return slot < frame.size() && frame[slot] != nullptr
+        && frame[slot]->getStructId() > 0;
+    };
     if (sealed.driver.kind == DriverK::scan_delta
         || sealed.driver.kind == DriverK::probe_delta)
       proof_schema.driver = {slot_name(sealed.driver.relation),
-                             sealed.driver.order};
+                             sealed.driver.order,
+                             slot_struct(sealed.driver.relation)};
     proof_schema.levels.reserve(sealed.cursors.size());
     for (const CursorPlan& cursor : sealed.cursors)
     {
       std::vector<ProofSchema::Row> rows;
       if (const auto* probe = std::get_if<ProbePlan>(&cursor))
-        rows.push_back({slot_name(probe->relation), probe->order});
+        rows.push_back({slot_name(probe->relation), probe->order,
+                        slot_struct(probe->relation)});
       else if (const auto* filter = std::get_if<FilterPlan>(&cursor))
-        rows.push_back({slot_name(filter->relation), filter->order});
+        rows.push_back({slot_name(filter->relation), filter->order,
+                        slot_struct(filter->relation)});
       else
       {
         const Join3Plan& join3 = std::get<Join3Plan>(cursor);
-        rows.push_back({slot_name(join3.left.relation), join3.left.order});
-        rows.push_back({slot_name(join3.right.relation), join3.right.order});
+        rows.push_back({slot_name(join3.left.relation), join3.left.order,
+                        slot_struct(join3.left.relation)});
+        rows.push_back({slot_name(join3.right.relation), join3.right.order,
+                        slot_struct(join3.right.relation)});
       }
       proof_schema.levels.push_back(std::move(rows));
     }
