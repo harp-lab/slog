@@ -47,7 +47,7 @@ impl Studio {
         let context = format!(
             "(Slog Studio: the program file is {file}, in {directory}; your working directory is the Slog repository, {root}.)\n"
         );
-        tokio::spawn(agent::run(self.clone(), thread, message, context));
+        tokio::spawn(agent::run(self.clone(), agent::Kind::Ask, thread, message, context));
         Ok(thread)
     }
 

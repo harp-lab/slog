@@ -123,6 +123,17 @@ enum Request {
     /// Ask the agent, following up in `thread` or starting a new one.
     Ask { thread: Option<u32>, message: String },
     StopThread { thread: u32 },
+    /// Ask the REPL's assistant, following up in `thread` or starting a new
+    /// thread, with what the prompt knows of the session.
+    Assist {
+        thread: Option<u32>,
+        message: String,
+        #[serde(default)]
+        context: crate::assist::Context,
+    },
+    /// The total and first rows of the query being typed, apart from the
+    /// transcript; `seq` names the answer.
+    Preview { line: String, seq: u64 },
     Accept { op: u32 },
     Reject { op: u32 },
     AcceptChangeset { changeset: u32 },
@@ -158,6 +169,8 @@ impl Request {
                 | Request::Mode { .. }
                 | Request::Rows { .. }
                 | Request::Refine { .. }
+                | Request::Assist { .. }
+                | Request::Preview { .. }
         )
     }
 }
@@ -180,6 +193,21 @@ enum Reply<'a> {
     Databases { names: Vec<String> },
     /// The thread an ask went to (new threads get an id here).
     Asked { thread: u32 },
+    /// The thread the REPL's assistant answers `message` in, or why it
+    /// cannot.
+    Assisted {
+        thread: Option<u32>,
+        message: &'a str,
+        error: Option<String>,
+    },
+    /// A preview's answer; `busy` when another command held the lane.
+    Preview {
+        seq: u64,
+        #[serde(flatten)]
+        read: Option<crate::assist::Read>,
+        error: Option<String>,
+        busy: bool,
+    },
     Notice { message: &'a str },
     /// The rows asked for, as many as exist; or why they cannot be had.
     Rows {
@@ -369,6 +397,27 @@ fn handle(
         },
         Request::StopThread { thread } => {
             studio.stop_thread(thread);
+        }
+        Request::Assist { thread, message, context } => {
+            let (thread, error) = match studio.assist(thread, message.clone(), context) {
+                Ok(thread) => (Some(thread), None),
+                Err(error) => (None, Some(error)),
+            };
+            let _ = direct.send(json(&Reply::Assisted { thread, message: &message, error }));
+        }
+        Request::Preview { line, seq } => {
+            let direct = direct.clone();
+            tokio::spawn(async move {
+                // Never queued behind the author's own commands.
+                let (read, error, busy) = match studio.read(&line, std::time::Duration::ZERO).await {
+                    Ok(read) => (Some(read), None, false),
+                    Err(why) => {
+                        let busy = why == crate::assist::BUSY;
+                        (None, (!busy).then_some(why), busy)
+                    }
+                };
+                let _ = direct.send(json(&Reply::Preview { seq, read, error, busy }));
+            });
         }
         Request::Accept { op } => {
             if let Err(message) = studio.accept(op) {

@@ -83,10 +83,21 @@ is, what a design choice rests on; get_notes reads them back in later turns.
 const TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,Task,Agent";
 /// Refused even if a setting would allow them.
 const DENIED: &str = "Bash,Write,Edit,NotebookEdit,Skill";
+/// Which agent a run is: the Ask drawer's, which proposes changes to the
+/// program, or the REPL's assistant (assist.rs), which answers at the prompt
+/// with commands to run and only reads the author's session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Kind {
+    Ask,
+    Repl,
+}
+
 /// Tools whose calls make the turn's plan rather than transcript entries.
 const PLAN_TOOLS: [&str; 5] = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
 /// Claude Code's own plumbing, never shown.
 const HIDDEN_TOOLS: [&str; 1] = ["ToolSearch"];
+/// The steps an Ask turn may take.
+const MAX_TURNS: u32 = 40;
 /// How much of a tool's input string or result a transcript keeps.
 const CLIP: usize = 4000;
 
@@ -96,6 +107,9 @@ pub struct Agent {
     pub mcp_token: String,
     model: Option<String>,
     effort: String,
+    /// The REPL assistant's, which answers while the author waits.
+    repl_model: Option<String>,
+    repl_effort: String,
     /// The claude process of every run in flight, by thread.
     running: Mutex<HashMap<u32, Child>>,
     /// Threads whose run the author stopped, so its end is no failure.
@@ -125,6 +139,8 @@ impl Agent {
             // The CLI's own default model unless the operator picks one.
             model: std::env::var("STUDIO_AGENT_MODEL").ok().filter(|model| !model.is_empty()),
             effort: std::env::var("STUDIO_AGENT_EFFORT").unwrap_or_else(|_| "high".to_owned()),
+            repl_model: std::env::var("STUDIO_ASSIST_MODEL").ok().filter(|model| !model.is_empty()),
+            repl_effort: std::env::var("STUDIO_ASSIST_EFFORT").unwrap_or_else(|_| "low".to_owned()),
             running: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
         }
@@ -235,8 +251,9 @@ impl Transcript<'_> {
 
 /// One turn of `thread`: run claude until it finishes, streaming its
 /// progress, then close the turn's changeset. `context` (the program's
-/// name, say) leads the message, not the system prompt, which stays fixed.
-pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: String) {
+/// name, say) leads the message, not the system prompt, which stays fixed
+/// for each kind of agent.
+pub async fn run(studio: Arc<Studio>, kind: Kind, thread: u32, message: String, context: String) {
     let transcript = Transcript { studio: &studio, thread };
     let agent = &studio.agent;
     let config = match agent.write_config(studio.port(), thread) {
@@ -253,22 +270,27 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
     let root = studio.lane.root().to_path_buf();
     let project = studio.main_file().0.parent().map(Path::to_path_buf);
     let mut resume = studio.thread_session(thread);
+    // The reference leads both system prompts, so every run shares its cache.
+    let (system, tools, effort, model, turns) = match kind {
+        Kind::Ask => (format!("{PERSONA}\n\n{RESEARCH}"), TOOLS, &agent.effort, &agent.model, MAX_TURNS),
+        Kind::Repl => (crate::assist::PERSONA.to_owned(), "", &agent.repl_effort, &agent.repl_model, crate::assist::MAX_TURNS),
+    };
     loop {
         let mut args: Vec<String> = vec![
             "-p".into(), format!("{context}\n{message}"),
             "--output-format".into(), "stream-json".into(), "--verbose".into(),
             // Partial events show "thinking…" / "calling query…" while a turn runs.
             "--include-partial-messages".into(),
-            "--effort".into(), agent.effort.clone(),
+            "--effort".into(), effort.clone(),
             "--disable-slash-commands".into(),
             // Only the operator's own settings: none of the repository's.
             "--setting-sources".into(), "user".into(),
             "--mcp-config".into(), config.to_string_lossy().into_owned(), "--strict-mcp-config".into(),
-            "--tools".into(), TOOLS.into(),
-            "--allowedTools".into(), format!("mcp__slog,{TOOLS}"),
+            "--tools".into(), tools.into(),
+            "--allowedTools".into(), if tools.is_empty() { "mcp__slog".to_owned() } else { format!("mcp__slog,{tools}") },
             "--disallowedTools".into(), DENIED.into(),
-            "--max-turns".into(), "40".into(),
-            "--append-system-prompt".into(), format!("{}\n\n{PERSONA}\n\n{RESEARCH}", knowledge::REFERENCE),
+            "--max-turns".into(), turns.to_string(),
+            "--append-system-prompt".into(), format!("{}\n\n{system}", knowledge::REFERENCE),
             // Keep the machine's details (cwd, date, ...) out of the system
             // prompt too, for the same cache.
             "--exclude-dynamic-system-prompt-sections".into(),
@@ -276,7 +298,7 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
         if let Some(project) = project.as_ref().filter(|project| !project.starts_with(&root)) {
             args.extend(["--add-dir".to_owned(), project.to_string_lossy().into_owned()]);
         }
-        if let Some(model) = &agent.model {
+        if let Some(model) = model {
             args.extend(["--model".to_owned(), model.clone()]);
         }
         if let Some(session) = &resume {
@@ -308,7 +330,7 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
         });
 
         let mut lines = BufReader::new(stdout).lines();
-        let mut stream = Stream { effort: agent.effort.clone(), ..Stream::default() };
+        let mut stream = Stream { effort: effort.clone(), turns, ..Stream::default() };
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(event) = serde_json::from_str::<Value>(&line) {
                 stream.read(&event, &transcript);
@@ -357,6 +379,8 @@ pub async fn run(studio: Arc<Studio>, thread: u32, message: String, context: Str
 #[derive(Default)]
 struct Stream {
     effort: String,
+    /// The steps the turn may take.
+    turns: u32,
     model: String,
     /// The thought being streamed: its block's index, when it began, its
     /// text, and the tokens it is estimated to have used.
@@ -581,11 +605,11 @@ impl Stream {
         let text = event["result"].as_str().unwrap_or("").trim();
         if event["is_error"].as_bool().unwrap_or(false) {
             let message = match (text, event["subtype"].as_str()) {
-                ("", Some("error_max_turns")) => "stopped at the limit of 40 steps; ask it to go on",
-                ("", subtype) => subtype.unwrap_or("error"),
-                (text, _) => text,
+                ("", Some("error_max_turns")) => format!("stopped at the limit of {} steps; ask it to go on", self.turns),
+                ("", subtype) => subtype.unwrap_or("error").to_owned(),
+                (text, _) => text.to_owned(),
             };
-            out.push("error", message, Value::Null);
+            out.push("error", &message, Value::Null);
         } else if !text.is_empty() && text != self.last_text {
             out.push("assistant", text, Value::Null);
         }

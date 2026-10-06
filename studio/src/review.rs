@@ -105,6 +105,10 @@ pub struct Thread {
     pub notes: Vec<Note>,
     #[serde(default)]
     pub running: bool,
+    /// Asked at the REPL prompt: the REPL assistant's (assist.rs), which
+    /// reads the author's session and proposes nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repl: bool,
 }
 
 /// What the author and the agents see of an op.
@@ -176,6 +180,7 @@ impl Review {
             messages: Vec::new(),
             notes: Vec::new(),
             running: false,
+            repl: false,
         });
         id
     }

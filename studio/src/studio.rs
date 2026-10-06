@@ -1084,6 +1084,23 @@ impl Studio {
         }
     }
 
+    // ---- The REPL assistant's reads (assist.rs) --------------------------
+
+    /// The main lane's session, for reads that make no entry and open no
+    /// result set: the REPL assistant's, and the prompt's live preview. The
+    /// live set's cursor is parked first, since any command discards it
+    /// (audit Q-10). None if another command holds the lane past `patience`.
+    pub(crate) async fn aside(&self, patience: Duration) -> Option<tokio::sync::MutexGuard<'_, Session>> {
+        let session = tokio::time::timeout(patience, self.session.lock()).await.ok()?;
+        let parked = self.results().park();
+        self.publish_sets(parked);
+        Some(session)
+    }
+
+    pub(crate) fn result_views(&self) -> Vec<results::View> {
+        self.results().views()
+    }
+
     fn results(&self) -> std::sync::MutexGuard<'_, Results> {
         self.results.lock().expect("results lock")
     }

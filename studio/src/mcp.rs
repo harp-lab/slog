@@ -41,7 +41,11 @@ pub async fn handle(registry: &Registry, headers: HeaderMap, body: String) -> Re
             "serverInfo": { "name": "slog-studio", "version": env!("CARGO_PKG_VERSION") },
         }),
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": tools() }),
+        // The REPL assistant's threads have tools of their own (assist.rs).
+        "tools/list" => match thread.filter(|thread| studio.is_repl_thread(*thread)) {
+            Some(_) => json!({ "tools": crate::assist::tools() }),
+            None => json!({ "tools": tools() }),
+        },
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
             let arguments = &request["params"]["arguments"];
@@ -86,6 +90,9 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Response {
 
 async fn call(studio: &Arc<Studio>, thread: Option<u32>, name: &str, arguments: &Value) -> Result<Value, String> {
     let thread = thread.ok_or("this MCP session names no thread; the studio's agent runs set one")?;
+    if studio.is_repl_thread(thread) {
+        return studio.assist_tool(name, arguments).await;
+    }
     let text = |key: &str| {
         arguments[key]
             .as_str()

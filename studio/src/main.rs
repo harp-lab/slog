@@ -9,6 +9,7 @@
 mod accounts;
 mod agent;
 mod ask;
+mod assist;
 mod auth;
 mod forms;
 mod hash;
