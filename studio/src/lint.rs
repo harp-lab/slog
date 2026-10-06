@@ -247,7 +247,12 @@ pub struct Linter {
 impl Linter {
     /// Start the worker; `publish` sees every change to the view.
     pub fn start(config: Config, publish: impl Fn(View) + Send + Sync + 'static) -> Arc<Self> {
-        let lane = Lane::with_env(config.root.clone(), Mode::Fast, vec![("SLOG_PROOF_RECORDS", PROOF_RECORDS)]);
+        // The interpreter, on one thread: a tier runs for a second, which
+        // native code (fast mode's tiering) never pays back, its compiles
+        // only taking the author's cores; and one thread keeps it clear of
+        // the multi-threaded interpreter's heap corruption (1458a53).
+        let env = vec![("SLOG_OPT", "interp"), ("SLOG_THREADS", "1"), ("SLOG_PROOF_RECORDS", PROOF_RECORDS)];
+        let lane = Lane::with_env(config.root.clone(), Mode::Fast, env);
         let linter = Arc::new(Self {
             session: Mutex::new(Session::new(&lane)),
             lane,
