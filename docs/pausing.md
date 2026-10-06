@@ -595,3 +595,42 @@ Records, each with a daemon-lifetime sequence number:
 `trace on [sample K] [focus REL ...] [rules]` attaches the result to each
 change record as `trace`, beside the `strata` its fixpoint lines always
 give.
+
+## 16. Live progress
+
+The trace is read after the fact; a client watching a long run needs to
+see it while it goes.  Armed, every run the client drives reports its
+running stratum as it goes, unsolicited, between the records the run
+already sends:
+
+```
+(progress (every MS))  → (progress-state (every MS))
+(progress (off))       → (progress-state (every 0))
+
+(progress (scc 1) (stratum "5e626003") (iteration 37) (ms 2014.512) (tuples 412)
+          (final #f) (sizes ("infer" 30) ("nf" 41)) (reads "input" "subexpr"))
+```
+
+- **When.**  As each stratum starts (iteration 0); at the first
+  end-of-iteration barrier (`EndIterCompletion`) at least `MS` after the
+  stratum started or last reported, however many budgeted continues that
+  takes; and once more with `(final #t)` just before each `(fixpoint …)`
+  line.  A single iteration that runs long reports at its end.
+- **What.**  `iteration` and `ms` so far; `tuples`, the growth across every
+  relation since the stratum started (signed, as a deletion shrinks it);
+  `sizes`, the current size of each relation the stratum writes; `reads`,
+  the relations its rules read, which is what lets a client draw relations
+  flowing from stratum to stratum.  Compiler temporaries are left out.
+- **Only driven runs report.**  The interval rides on the continue the client
+  sent (`RunBudget::progress_ms`); the internal strata a command runs to
+  answer itself (reloads, disk strata) never interleave a record with its
+  reply.  A driver that does not know the record echoes it as any other
+  line it does not act on (`drive-to-fixpoint!`).
+- **Cost.**  Off, nothing: the barrier tests one field.  On, a clock read
+  per iteration, and per report one pass over the relation registry for the
+  tuple count (as a pause record's `progress` does).  Measured as CPU time
+  (a loaded machine makes wall time useless) over five interleaved runs of a
+  26 s single-threaded demand-heavy program: the daemon's median was 26.1 s
+  off and 25.0 s at 100 ms, inside the ±4% the runs vary by, and the REPL
+  server's own CPU rose 30 ms (0.1%) with Studio-style polling at 10 Hz.
+  Reporting at every iteration cost the daemon about 2%.

@@ -3146,6 +3146,11 @@ struct RunBudget {
   // existing positional RunBudget{ms} / RunBudget{ms,slice,mem} brace-inits in
   // actions.rkt stay correct.
   bool stop_at_boundary = false;
+  // Live progress (docs/pausing.md §16): report the running stratum at the
+  // first iteration barrier at least this many ms after the last report;
+  // 0 = never.  Only a client-driven continue sets it (Daemon::continueRun),
+  // so internal strata run inside a command never interleave a record.
+  u64 progress_ms = 0;
 };
 
 // Default total-RSS soft cap for a budgeted run (docs/pausing.md §5): a large,
@@ -3217,6 +3222,9 @@ struct RunState {
   u32 iteration_count = 0;
   double ms_total = 0.0;
   u64 start_tuples = 0;                        // total tuples at stratum start
+  // This call's start, and when the stratum's next live-progress report is
+  // due.
+  std::chrono::steady_clock::time_point call_start, progress_next;
   std::string last_message;                    // cached fixpoint msg (§5)
 
   // Set by ReadCompletion / EndIterCompletion, read by runLoop after barriers.
@@ -6045,6 +6053,51 @@ public:
     }
   }
 
+  // ---- Live progress (docs/pausing.md §16) ---------------------------------
+  //
+  // While a client drives a run, a record of each stratum as it starts, of
+  // the running stratum at most every RunBudget::progress_ms -- written from
+  // the end-of-iteration barrier, where every worker is parked -- and one at
+  // each fixpoint:
+  //   (progress (scc N) (stratum "H") (iteration I) (ms X) (tuples T)
+  //             (final #t|#f) (sizes ("R" N) ...) (reads "R" ...))
+  // T is the growth across every relation since the stratum started (signed:
+  // a deletion shrinks it), the sizes those of the relations the stratum
+  // writes, the reads the relations its rules read -- what lets a client
+  // draw how relations flow from stratum to stratum.  Compiler temporaries
+  // are left out of both.  The Daemon sets the sink; null, nothing is
+  // reported.
+  std::function<void(const std::string&)> progress_out;
+
+  void reportProgress(const Stratum* s, u32 iteration, double ms, s64 tuples,
+                      bool final)
+  {
+    if (!progress_out || s == nullptr) return;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), ") (ms %.3f) (tuples %lld) (final %s)",
+                  ms, (long long)tuples, final ? "#t" : "#f");
+    std::string line = "(progress (scc " + std::to_string(s->scc_id)
+      + ") (stratum " + protocol::quoteString(s->name) + ") (iteration "
+      + std::to_string(iteration) + buf + " (sizes";
+    for (u64 vid : s->write_version_ids)
+    {
+      Relation* rel = getRelationByVersionId(vid);
+      if (rel == nullptr || rel->getArity() == 0 || traceInternal(rel))
+        continue;
+      line += " (" + protocol::quoteString(rel->getName()) + " "
+        + std::to_string(rel->tupleCount()) + ")";
+    }
+    line += ") (reads";
+    for (const auto& [name, vid] : s->read_versions)
+    {
+      Relation* rel = getRelationByVersionId(vid);
+      if (rel == nullptr || rel->getArity() == 0 || traceInternal(rel))
+        continue;
+      line += " " + protocol::quoteString(name);
+    }
+    progress_out(line + "))");
+  }
+
   // ---- Execution trace (docs/pausing.md §15; trace.h) ----------------------
   //
   // Recorded at the barriers the run loop already has: a stratum's start
@@ -7615,6 +7668,14 @@ public:
     // convention below, or huge) never trips.
     const auto t0 = std::chrono::steady_clock::now();
     rs.budget = b;
+    rs.call_start = t0;
+    // A stratum reports as it starts, and next an interval into it, however
+    // many budgeted calls it takes to get there.
+    if (starting && b.progress_ms != 0 && tofixpoint)
+    {
+      reportProgress(s, 0, 0.0, 0, false);
+      rs.progress_next = t0 + std::chrono::milliseconds(b.progress_ms);
+    }
     rs.slice_ms = b.slice_ms ? b.slice_ms : 500;
     // mem_bytes is a TOTAL RSS cap (docs/pausing.md §5), checked against actual
     // RSS in sendBatch / at each iteration boundary.  0 => DEFAULT_MEM_CAP;
@@ -10956,6 +11017,18 @@ inline void EndIterCompletion::operator()() noexcept
   // every worker is parked, and the iteration's growth is already known.
   db->evaluateWatchesAtBarrier();
   if (db->trace.armed()) db->traceIteration();
+  if (rs.budget.progress_ms != 0)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= rs.progress_next)
+    {
+      rs.progress_next = now + std::chrono::milliseconds(rs.budget.progress_ms);
+      db->reportProgress(rs.stratum, rs.iteration_count,
+        rs.ms_total + std::chrono::duration_cast<std::chrono::microseconds>(
+                        now - rs.call_start).count() / 1000.0,
+        (s64)db->totalTuples() - (s64)rs.start_tuples, false);
+    }
+  }
   if (readRSSbytes() >= rs.mem_cap)
   {
     rs.mem_tripped.store(true, std::memory_order_relaxed);
