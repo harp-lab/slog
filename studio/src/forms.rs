@@ -458,11 +458,14 @@ mod tests {
             "the repository's programs are part of the corpus"
         );
 
+        // By its file URL, so its own imports (lexer.js) resolve; and only
+        // the fields both sides have (its offsets count UTF-16 units).
         let script = "import { readFileSync } from 'node:fs';\n\
-            const source = readFileSync(process.argv[1], 'utf8');\n\
-            const { forms } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));\n\
+            import { pathToFileURL } from 'node:url';\n\
+            const { forms } = await import(pathToFileURL(process.argv[1]));\n\
             const inputs = JSON.parse(readFileSync(0, 'utf8'));\n\
-            process.stdout.write(JSON.stringify(inputs.map(forms)));";
+            const shared = ({ keyword, line, column, endLine }) => ({ keyword, line, column, endLine });\n\
+            process.stdout.write(JSON.stringify(inputs.map((text) => forms(text).map(shared))));";
         let forms_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/forms.js");
         let child = Command::new("node")
             .args(["--input-type=module", "-e", script])
