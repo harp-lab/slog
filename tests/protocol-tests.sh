@@ -243,10 +243,10 @@ N3_PREPARE_1="(prepare-boundary (generation 1) (boundary \"n3.b1\") (program \"n
 N3_PREPARE_2="(prepare-boundary (generation 1) (boundary \"n3.b2\") (program \"n3.p2\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.2\") (predecessor \"n3.edge.0\") (type-key #f))))"
 N3_BAD="(prepare-boundary (generation 1) (boundary \"n3.bad\") (program \"n3.bad\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"n3.edge.bad\") (predecessor \"wrong\") (type-key #f))))"
 N3_DUPLICATE="(prepare-boundary (generation 1) (boundary \"n3.b0\") (program \"n3.retry\") (declarations $N3_DECL) (memberships) (actions (retain (qname \"edge\") (version-key \"n3.edge.0\") (predecessor #f) (type-key #f))))"
-QUERY_ROWS_SO=$(racket -e \
+QUERY_ROWS_LINE=$(racket -e \
   '(require (file "compiler/actions.rkt"))
    (displayln
-    (action-so
+    (action-line
      (quote (add-batch edge -1
                        ((1 2) (2 2) (3 4) (4 2) (5 7) (6 2))))))')
 racket tests/api/drive.rkt \
@@ -257,7 +257,7 @@ racket tests/api/drive.rkt \
   '(catalog boundaries)' \
   '(catalog boundary "n3.b0")' \
   "$N3_PREPARE_1" \
-  "$QUERY_ROWS_SO" \
+  "$QUERY_ROWS_LINE" \
   '(catalog types)' \
   '(abort-boundary (generation 1) (boundary "n3.b1"))' \
   '(catalog)' \
@@ -267,7 +267,7 @@ racket tests/api/drive.rkt \
   '(catalog boundary "missing")' \
   '(catalog)' \
   "$N3_PREPARE_2" \
-  "$QUERY_ROWS_SO" \
+  "$QUERY_ROWS_LINE" \
   '(commit-boundary (generation 1) (boundary "n3.b2"))' \
   '(catalog)' \
   '(catalog boundaries)' \
@@ -315,12 +315,12 @@ N3C_ABORT_DECL='(declare (qname "abort_const") (kind struct) (arity 2) (type-key
 N3C_ABORT="(prepare-boundary (generation 3) (boundary \"n3c.abort\") (program \"n3c.abort.p\") (declarations $N3C_FRESH_DECL $N3C_ABORT_DECL) (memberships) (actions (retain (qname \"fresh_const\") (version-key \"n3c.fresh.v0\") (predecessor #f) (type-key \"type:n3c:fresh\")) (create (qname \"abort_const\") (version-key \"n3c.abort.v0\") (predecessor #f) (type-key \"type:n3c:abort\"))))"
 N3C_FINAL_DECL='(declare (qname "final_const") (kind struct) (arity 2) (type-key "type:n3c:final") (lat-spec #f) (shape "(declaration final_const struct int)"))'
 N3C_FINAL="(prepare-boundary (generation 3) (boundary \"n3c.final\") (program \"n3c.final.p\") (declarations $N3C_FRESH_DECL $N3C_FINAL_DECL) (memberships) (actions (retain (qname \"fresh_const\") (version-key \"n3c.fresh.v0\") (predecessor #f) (type-key \"type:n3c:fresh\")) (create (qname \"final_const\") (version-key \"n3c.final.v0\") (predecessor #f) (type-key \"type:n3c:final\"))))"
-N3C_RENAME_SO=$(racket -e \
+N3C_RENAME_LINE=$(racket -e \
   '(require (file "compiler/actions.rkt"))
-   (displayln (action-so (quote (rename-rel old_const renamed_const))))')
-N3C_DROP_SO=$(racket -e \
+   (displayln (action-line (quote (rename-rel old_const renamed_const))))')
+N3C_DROP_LINE=$(racket -e \
   '(require (file "compiler/actions.rkt"))
-   (displayln (action-so (quote (drop-rel renamed_const))))')
+   (displayln (action-line (quote (drop-rel renamed_const))))')
 racket tests/api/drive.rkt \
   "$N3C_OLD_0" \
   '(commit-boundary (generation 0) (boundary "n3c.old.0"))' \
@@ -328,9 +328,9 @@ racket tests/api/drive.rkt \
   "$N3C_OLD_1" \
   '(commit-boundary (generation 1) (boundary "n3c.old.1"))' \
   '(catalog types)' \
-  "$N3C_RENAME_SO" \
+  "$N3C_RENAME_LINE" \
   '(catalog types)' \
-  "$N3C_DROP_SO" \
+  "$N3C_DROP_LINE" \
   '(catalog types)' \
   "$N3C_FRESH" \
   '(commit-boundary (generation 2) (boundary "n3c.fresh"))' \
@@ -427,10 +427,10 @@ fi
 NDQ_DECL="(declare (qname \"x\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"x\" \"pt\") (kind struct) (arity 2) (type-key \"type:ndq:pt\") (lat-spec #f) (shape \"s\"))"
 NDQ_DECL_Y="(declare (qname \"y\" \"edge\") (kind table) (arity 2) (type-key #f) (lat-spec #f) (shape \"s\")) (declare (qname \"y\" \"pt\") (kind struct) (arity 2) (type-key \"type:ndq:pt\") (lat-spec #f) (shape \"s\"))"
 NDQ_PREPARE="(prepare-boundary (generation 0) (boundary \"ndq.b0\") (program \"ndq.p0\") (declarations $NDQ_DECL) (memberships) (actions (create (qname \"x\" \"edge\") (version-key \"ndq.v.edge\") (predecessor #f) (type-key #f)) (create (qname \"x\" \"pt\") (version-key \"ndq.v.pt\") (predecessor #f) (type-key \"type:ndq:pt\"))))"
-NDQ_ROWS_SO=$(racket -e \
+NDQ_ROWS_LINE=$(racket -e \
   '(require (file "compiler/actions.rkt"))
    (displayln
-    (action-so
+    (action-line
      (quote (add-batch x.edge -1
                        ((1 2) (2 2) (3 4) (4 2) (5 7) (6 2))))))')
 NDQ_LEASE="(prepare-boundary (generation 1) (boundary \"ndq.freed\") (program \"ndq.lp\") (declarations $NDQ_DECL) (memberships) (actions (retain (qname \"x\" \"edge\") (version-key \"ndq.v.edge\") (predecessor #f) (type-key #f)) (retain (qname \"x\" \"pt\") (version-key \"ndq.v.pt\") (predecessor #f) (type-key \"type:ndq:pt\"))))"
@@ -440,7 +440,7 @@ NDQ_OLD_PLAN='(query-plan (abi 1) (at (boundary "ndq.b0") (generation 2)) (relat
 NDQ_STALE_NAME_PLAN='(query-plan (abi 1) (at (boundary "ndq.freed") (generation 2)) (relations (rel 0 (binding "x.edge" "ndq.v.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode count))'
 racket tests/api/drive.rkt \
   "$NDQ_PREPARE" \
-  "$NDQ_ROWS_SO" \
+  "$NDQ_ROWS_LINE" \
   '(commit-boundary (generation 0) (boundary "ndq.b0"))' \
   "$NDQ_LEASE" \
   '(abort-boundary (generation 1) (boundary "ndq.freed"))' \
@@ -550,7 +550,7 @@ expect_rx "nd-refuse-under-lease" \
 QUERY_PREPARE="(prepare-boundary (generation 0) (boundary \"query.boundary\") (program \"query.program\") (declarations $N3_DECL) (memberships) (actions (create (qname \"edge\") (version-key \"protocol.edge\") (predecessor #f) (type-key #f))))"
 QUERY_SETUP=(
   "$QUERY_PREPARE"
-  "$QUERY_ROWS_SO"
+  "$QUERY_ROWS_LINE"
   '(commit-boundary (generation 0) (boundary "query.boundary"))'
 )
 QUERY_ROWS_PLAN='(query-plan (abi 1) (at (boundary "query.boundary") (generation 1)) (relations (rel 0 (binding "edge" "protocol.edge" 6) (relation 2 (0 1)))) (registers 3) (preloads) (literals (literal (r 1) integer "2")) (pre) (driver (scan-full (rel 0) (0 1) (r 0) (r 2))) (body (eq (r 2) (r 1))) (project (r 0)) (mode rows))'
@@ -574,7 +574,8 @@ if racket tests/api/drive.rkt "${QUERY_SETUP[@]}" "${QUERY_BUILDER[@]}" \
   "(query q2 $QUERY_ROWS_PLAN (page 1))" \
   "(query q3 $QUERY_ROWS_PLAN (page 1))" \
   '(continue)' \
-  "$QUERY_ROWS_SO" \
+  'build/no-such-stratum.so' \
+  "$QUERY_ROWS_LINE" \
   '(catalog)' \
   '(query-cancel q2)' \
   '(query-page q2 (page 1))' \
@@ -642,6 +643,9 @@ expect_rx "query-blocks-continue-mutation" \
 expect_rx "query-blocks-path-mutation" \
   '\(refused query-admission 1 \(verb plugin-path\) \(active q2\)\)' \
   out/proto-query.log
+expect_rx "query-blocks-action-mutation" \
+  '\(refused query-admission 1 \(verb add-batch\) \(active q2\)\)' \
+  out/proto-query.log
 expect_rx "query-blocks-command-interleave" \
   '\(refused query-admission 1 \(verb catalog\) \(active q2\)\)' \
   out/proto-query.log
@@ -694,9 +698,12 @@ racket tests/api/drive.rkt "(continue)" > out/proto-idle.log 2>&1
 expect "continue-idle-bytes" "(idle)" out/proto-idle.log
 racket tests/api/drive.rkt "(continue-boundary)" > out/proto-idleb.log 2>&1
 expect "continue-boundary-idle-bytes" "(idle)" out/proto-idleb.log
-# an argful literal is command-grammar, not a plugin path (budgeted continues
-# still ride the compiled action in T0)
-racket tests/api/drive.rkt "(continue 5)" > out/proto-contarg.log 2>&1
+# budgeted continues take MS [MEM]; any other argument shape refuses
+racket tests/api/drive.rkt "(continue 5)" "(continue 5 1000000)" "(protocol-mode)" \
+  "(continue soon)" > out/proto-contarg.log 2>&1
+if [ "$(grep -c '^(idle)$' out/proto-contarg.log)" -eq 2 ]; then
+  ok "continue-budget-idle-bytes"; else bad "continue-budget-idle-bytes"; fi
+expect "continue-budget-mode-neutral" "(protocol-mode path)" out/proto-contarg.log
 expect_rx "continue-args-refused" '\(refused parse [0-9]+ \(verb continue\)' out/proto-contarg.log
 
 # --- 5. protocol-mode seam ----------------------------------------------------
@@ -738,6 +745,40 @@ if [ "$(grep -c '(found e 1)' out/proto-lookup.log)" -eq 2 ] \
    && [ "$(grep -c '(found e 0)' out/proto-lookup.log)" -eq 1 ]; then
   ok "data-verb-values-encode"; else bad "data-verb-values-encode"; fi
 expect_rx "data-verb-malformed" '\(refused parse [0-9]+ \(verb lookup\)' out/proto-lookup.log
+# Every client action, written by compiler/actions.rkt, parses on the command
+# layer and answers as its plugin did (tests/api/action-verbs.rkt sends the
+# whole vocabulary to one daemon).
+rm -rf data/proto_av data/proto_av_sub data/proto_av_rel data/proto_av_c \
+       data/proto_av_ck out/proto-av-csv
+printf '30 31\n32 33\n' > out/proto-av.ints
+racket tests/api/action-verbs.rkt build/proto-frozen > out/proto-actions.log 2>&1
+expect_not "actions-all-parse" "(refused" out/proto-actions.log
+for reply in '(imported)' '(sizes-end 1)' '(schema-end)' '(found-at e 1 1)' \
+             '(dumpdone 2)' '(tupledone 2)' '(cellsdone 2)' '(idsdone 2 0)' \
+             '(sig-end)' '(checkpointed proto_av_ck)' '(refreshed e 0)' \
+             '(tombstones-reconstructed 0)' '(overlay-set e 2)' \
+             '(added e 2)' '(inputstate-done 2)' '(overlay-set e 3)' \
+             '(overlay-positive e 0 1)' '(overlay-negative-dred e 0 1)' \
+             '(transitions-staged -1 1)' '(view-transitions-staged 1 1)' \
+             '(lattice-replacements-staged -1 1)' '(journal-signs (e 0 0))' \
+             '(dred-reseeded 0 0)' '(update-committed 1 counts-valid)' \
+             '(update-aborted)' '(counts-cleared)' '(count-test-max 3)' \
+             '(vcountdone 0)' '(countdone e -1)' \
+             '(rankdone e -1)' '(marked-counted)' '(count-epoch-aborted)' \
+             '(refreshed-version e 0 0)' \
+             '(renamed e e2 1)' '(dropped e2 1)' '(transient-armed)' \
+             '(maintenance-armed)'; do
+  expect "action-reply $reply" "$reply" out/proto-actions.log
+done
+# replies whose counts depend on the positions the earlier actions took
+expect_rx "action-reply (inputledger-done N)" '^\(inputledger-done [1-9][0-9]*\)$' out/proto-actions.log
+expect_rx "action-reply (segment P 1)" '^\(segment [0-9]+ 1\)$' out/proto-actions.log
+expect_rx "action-reply (injected e P V)" '^\(injected e [0-9]+ [0-9]+\)$' out/proto-actions.log
+for db in proto_av proto_av_sub proto_av_rel proto_av_c; do
+  if [ -d "data/$db" ]; then ok "action-wrote $db"; else bad "action-wrote $db"; fi
+done
+rm -rf data/proto_av data/proto_av_sub data/proto_av_rel data/proto_av_c \
+       data/proto_av_ck out/proto-av-csv
 
 # --- 5b. T0(d) uniform command-stack pause record ----------------------------
 # The pure wire formatter has one checked-in transcript corpus covering budget,
@@ -881,8 +922,8 @@ rm -rf data/protocoldb
 # paths from this log (the run-replay-setup flake, diagnosed 2026-07-28).
 if SLOG_OPT=0 timeout 600 racket compiler/run.rkt --no-banner --out-db protocoldb \
      tests/api/structdb.slog > out/proto-fixture.log 2>&1; then
-  OPEN_SO=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-so (list (quote open) "protocoldb")))' 2>/dev/null)
-  racket tests/api/drive.rkt "$OPEN_SO" "(catalog)" "(catalog types)" \
+  OPEN_LINE=$(racket -e '(require (file "'"$PWD"'/compiler/actions.rkt")) (displayln (action-line (list (quote open) "protocoldb")))' 2>/dev/null)
+  racket tests/api/drive.rkt "$OPEN_LINE" "(catalog)" "(catalog types)" \
     > out/proto-catalog.log 2>&1
   if racket tests/api/catalog-check.rkt rel=mk,struct,3 rel=keep,table,1 \
        rel=seed,table,1 type=mk rels'>='3 types'>='1 < out/proto-catalog.log; then

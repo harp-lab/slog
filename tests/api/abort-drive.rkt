@@ -32,9 +32,9 @@
 (require "../../compiler/tools.rkt")
 
 (define (run csv-dir tokens)
-  (define continue-so (action-so '(continue)))
-  (define csv-so (action-so `(write-csv ,csv-dir)))
-  (define transient-so (action-so '(transient-stratum)))
+  (define continue-line (action-line '(continue)))
+  (define csv-line (action-line `(write-csv ,csv-dir)))
+  (define transient-line (action-line '(transient-stratum)))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
   (define (send p) (display (string-append p "\n") in) (flush-output in))
@@ -50,7 +50,7 @@
       (cond
         [(eof-object? l) (error "unexpected eof")]
         [(regexp-match? #px"^\\(fixpoint " l) (displayln l)]
-        [(regexp-match? #px"^\\(paused " l) (displayln l) (send continue-so) (loop)]
+        [(regexp-match? #px"^\\(paused " l) (displayln l) (send continue-line) (loop)]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop)])))
 
@@ -74,16 +74,16 @@
             (unless (regexp-match? #px"^\\(read-aborted \\(generation [0-9]+\\)\\)" reply)
               (error (format "abort-read did not abort: ~a" reply)))
             (displayln "ABORTED")
-            (send continue-so)
+            (send continue-line)
             (loop #t)]
-           [else (send continue-so) (loop aborted?)])]
+           [else (send continue-line) (loop aborted?)])]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop aborted?)])))
 
   ;; a transient (count-flavored) round must REFUSE the abort at its parks
   ;; and then complete normally -- §12.13's restart clause.
   (define (drive-abort-refused so)
-    (send transient-so)
+    (send transient-line)
     (let arm ()
       (define l (rd))
       (cond [(eof-object? l) (error "unexpected eof arming transient")]
@@ -105,9 +105,9 @@
             (unless (regexp-match? #px"^\\(refused read-abort-flavor " reply)
               (error (format "expected a flavor refusal: ~a" reply)))
             (displayln "REFUSED")
-            (send continue-so)
+            (send continue-line)
             (loop #t)]
-           [else (send continue-so) (loop refused?)])]
+           [else (send continue-line) (loop refused?)])]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop refused?)])))
 
@@ -135,7 +135,7 @@
             (send to)
             (displayln "SWAPPED")
             (loop #t)]
-           [else (send continue-so) (loop swapped?)])]
+           [else (send continue-line) (loop swapped?)])]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop swapped?)])))
 
@@ -162,11 +162,11 @@
             (displayln reply)
             (cond
               [(regexp-match? #px"^\\(read-aborted " reply)
-               (send continue-so) (loop (add1 aborts))]
+               (send continue-line) (loop (add1 aborts))]
               [(regexp-match? #px"^\\(refused read-abort-admission .*external" reply)
-               (send continue-so) (loop aborts)]
+               (send continue-line) (loop aborts)]
               [else (error (format "unexpected abort-read reply: ~a" reply))])]
-           [else (send continue-so) (loop aborts)])]
+           [else (send continue-line) (loop aborts)])]
         [(regexp-match? #px"^\\(error " l) (error l)]
         [else (displayln l) (loop aborts)])))
 
@@ -187,7 +187,7 @@
     ;; than pass vacuously
     (displayln "NO-TARGET-EVENT"))
 
-  (send csv-so)
+  (send csv-line)
   (close-output-port in)
   (let loop () (define s (rd)) (unless (eof-object? s) (displayln s) (loop)))
   (thread-wait et)

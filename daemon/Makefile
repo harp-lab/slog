@@ -18,8 +18,8 @@ NATIVE_LINK = $(call native-argv,$(LDFLAGS) $(NATIVE_LDFLAGS))
 plan-flavored-tasks.o: plan-flavored-tasks.cpp $(HEADERS) .toolchain
 	$(NATIVE_COMPILE) $(call native-argv,$(CXXFLAGS) $(OMPFLAGS)) -c plan-flavored-tasks.cpp -o plan-flavored-tasks.o
 
-slogd: slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(HEADERS) .toolchain
-	$(NATIVE_COMPILE) $(call native-argv,$(CXXFLAGS) $(OMPFLAGS)) $(NATIVE_LINK) $(call native-argv,$(EXPORT_LDFLAGS)) -o slogd slogd.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(call native-argv,$(LDLIBS))
+slogd: slogd.cpp actions.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(HEADERS) .toolchain
+	$(NATIVE_COMPILE) $(call native-argv,$(CXXFLAGS) $(OMPFLAGS)) $(NATIVE_LINK) $(call native-argv,$(EXPORT_LDFLAGS)) -o slogd slogd.cpp actions.cpp plan.cpp plan-count.cpp program-image.cpp query.cpp sexp.cpp runtime.cpp plan-flavored-tasks.o $(call native-argv,$(LDLIBS))
 
 # The freezer: a fact stream on stdin -> a static .bin database (freeze.cpp).
 # Links the same headers as slogd so every value encodes through the one

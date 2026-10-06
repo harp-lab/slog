@@ -1008,7 +1008,7 @@ unification are worth the change, not before shipping compression.
 | Content-dedup fresh structs on recompute | `InternStructTask` + `seedInternAllocators` | operators.h:481, database.h:650 |
 | Deferred reload = iteration-0 delta | `reloadInsertBatches`, `needs_reload`/`beginStratum` | database.h:2525, daemon.h:144 |
 | Run strata to fixpoint in bounded units | `continueStratum`/`continueRun`, pausing | database.h:1360, daemon.h:214 |
-| Client verbs as cached plugins | `action-body`/`action-so` (open/import/write-db/sizes/lookup…) | actions.rkt:28, 112 |
+| Client verbs as command lines | `action-line` → `slog::actions::dispatch` (open/import/write-db/sizes/lookup…) | actions.rkt, daemon/actions.cpp |
 | Drive compile+run, stream plugins | `slog-run-file`, `drive-stratum!` | runslog.rkt:110, 151 |
 | Reconstruct a db's relation schema | `db-manifest-from-name`, `parseRelationDirName` | runslog.rkt:65, database.h:1705 |
 | Resolve include/run program tree | `load-program-list`, `program-merge-run` | modules.rkt:37, 59 |
