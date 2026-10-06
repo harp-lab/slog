@@ -61,16 +61,27 @@
                                 (file-exists? (build-path dir f))))
            (file->string (build-path dir f)))))
 
+;; The fingerprints below are SHA-256 hex digests of the concatenated
+;; sources, not the sources themselves: they are folded into cache keys that
+;; are built on every compile and every action (the job-hash string, action
+;; and freeze keys), and carrying ~3MB of source text through each of those
+;; dominated a small program's compile time.
+(define (text-digest s)
+  (bytes->hex-string (sha256 (string->bytes/utf-8 s))))
+
 ;; Fingerprint of the daemon headers.  Generated .so's #include daemon
 ;; headers and inline Database's layout and methods, so any header change
 ;; must invalidate cached .so's (otherwise a stale .so reads members at the
 ;; wrong offsets).  Folded into every .so cache key.
 (define daemon-headers-fingerprint
-  (string-append native-toolchain-fingerprint (fingerprint-dir daemon-dir #rx"\\.h$")))
+  (text-digest
+   (string-append native-toolchain-fingerprint
+                  (fingerprint-dir daemon-dir #rx"\\.h$"))))
 
 ;; Fingerprint of the compiler itself, so editing a pass invalidates cached
 ;; .so's (previously a stale .so could silently mask a codegen change).
-(define compiler-sources-fingerprint (fingerprint-dir compiler-dir #rx"\\.rkt$"))
+(define compiler-sources-fingerprint
+  (text-digest (fingerprint-dir compiler-dir #rx"\\.rkt$")))
 
 (define (delete-folder path)
   (define-values (sp out in err) (subprocess #f #f #f "/bin/rm" "-rf" path))
@@ -925,10 +936,7 @@
 ;; and -g, and the fingerprint invalidates it when a daemon header changes.
 
 (define pch-build-lock (make-semaphore 1))
-(define daemon-fp8
-  (substring (bytes->hex-string
-              (sha256 (string->bytes/utf-8 daemon-headers-fingerprint)))
-             0 8))
+(define daemon-fp8 (substring daemon-headers-fingerprint 0 8))
 (define (pch-path opt)
   (fullpath (format "build/slog-~a-~a~a.pch"
                     daemon-fp8 (substring opt 1) (if (debug-build?) "g" ""))))
