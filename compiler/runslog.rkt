@@ -13,6 +13,7 @@
 ;; Compilation runs ahead in a future while the daemon executes.
 
 (provide slog-run-file
+         memory-pause?               ; is a pause line a memory-budget pause
          slog-verify-replay
          slog-db-freeze              ; `slog db freeze` backend (incremental E3)
          db-manifest-from-name
@@ -31,6 +32,23 @@
 (require "catalog.rkt")  ; N4-A bundle projection for the freeze carry-forward
 (require "dbtool.rkt")
 (require "parser.rkt")   ; current-source-capture (P1.1)
+
+;; Whether a pause line is a memory-budget pause (docs/pausing.md §5), read
+;; as the record it is: the keyed record's (cause (budget memory)), or the
+;; legacy positional record's trailing reason `memory`.  A pattern over the
+;; text matched one spelling only -- `memory)` at the end -- and the session
+;; driver silently stopped matching when its keyed record (ending
+;; `memory)))`) arrived, so a memory pause was continued, one slice at a
+;; time, past the cap it reports.  Both drivers (this one and session.rkt's)
+;; ask here.
+(define (memory-pause? line)
+  (match (with-handlers ([exn:fail? (lambda (_) #f)])
+           (read (open-input-string line)))
+    [`(paused ,fields ...)
+     #:when (andmap pair? fields)
+     (equal? (assq 'cause fields) '(cause (budget memory)))]
+    [`(paused ,_scc ,_name ,_iter ,_phase ,_progress ,_ms ,_total memory) #t]
+    [_ #f]))
 
 ;; When set (during a replay layer), a memory pause checkpoints the partial db
 ;; to this name instead of a bare abort (docs/db-compression.md §P2.3).
@@ -249,9 +267,10 @@
                  '("0" "2" "interp"))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
-  (define (send-plugin path)
-    (display (string-append path "\n"))
-    (display (string-append path "\n") in)
+  ;; One protocol line -- a command, or a stratum artifact path -- echoed.
+  (define (send-line line)
+    (display (string-append line "\n"))
+    (display (string-append line "\n") in)
     (flush-output in))
   ;; Drain the daemon's stderr continuously in the background, so a chatty
   ;; stderr can never fill its pipe and wedge the stdout handshake below.
@@ -260,13 +279,11 @@
               (let loop ()
                 (define s (read-line err))
                 (unless (eof-object? s) (displayln s) (loop))))))
-  ;; Action .so's for polling (docs/pausing.md §5), built lazily and memoized:
-  ;; (continue) uses the default budget; (continue-boundary) drives to the next
-  ;; clean iteration boundary (the only hot-swap-safe stop point).  A program
-  ;; whose strata each fixpoint within one budget never pauses, so these stay
-  ;; off the critical path entirely.
-  (define continue-so (delay (action-so `(continue))))
-  (define continue-boundary-so (delay (action-so `(continue-boundary))))
+  ;; Polling actions (docs/pausing.md §5): (continue) uses the default
+  ;; budget; (continue-boundary) drives to the next clean iteration boundary
+  ;; (the only hot-swap-safe stop point).
+  (define continue-line (action-line `(continue)))
+  (define continue-boundary-line (action-line `(continue-boundary)))
   ;; Error-fact watch (docs/type-errors.md): the default run policy is to drive
   ;; every stratum to fixpoint (hard-stopping only on the memory cap, below), but
   ;; to WARN on stdout as runtime-error facts surface.  We dump the reserved
@@ -274,7 +291,7 @@
   ;; before -- `error` is cumulative and reloaded across strata, so dedup by
   ;; content avoids re-warning.  The dump action is a read-only, single-round
   ;; query (safe against even a suspended snapshot).
-  (define dump-errors-so (delay (action-so `(dump-rel error))))
+  (define dump-errors-line (action-line `(dump-rel error)))
   (define warned-errors (make-hash))
   ;; Total fixpoint wall-time of this run, summed from the daemon's (fixpoint
   ;; ... ms) replies -- the recompute cost that feeds auto-per (§13.1).
@@ -318,7 +335,7 @@
     (define leading-open?
       (and (not recipe-chain?)
            (pair? load-steps) (eq? (car (first load-steps)) 'open)))
-    (when leading-open? (send-plugin (action-so (first load-steps))))
+    (when leading-open? (send-line (action-line (first load-steps))))
     (define rest-load-steps (if leading-open? (rest load-steps) load-steps))
 
     ;; Plan every stratum and kick off its build(s) on the parallel pool: tiered
@@ -354,7 +371,7 @@
     ;; send + read-until-sentinel; the dump action never calls continueRun, so it
     ;; emits no (paused|fixpoint) and its lines arrive before anything else.
     (define (check-errors! where)
-      (send-plugin (force dump-errors-so))
+      (send-line dump-errors-line)
       (let drain ()
         (define l (read-line out))
         (cond
@@ -428,14 +445,14 @@
              ;; default continue-to-fixpoint mode we can only climb toward the
              ;; hard cgroup cap by continuing, so abort GRACEFULLY instead of
              ;; OOM-crashing (docs/pausing.md §5).
-             [(regexp-match? #px"memory\\)\\s*$" line)
+             [(memory-pause? line)
               (cond
                 ;; During a replay, checkpoint the partial db before aborting so
                 ;; the (possibly huge) progress is not lost (§P2.3); wait for the
                 ;; serial write to finish before we tear the daemon down.
                 [(current-checkpoint)
                  => (lambda (ckpt)
-                      (send-plugin (action-so `(checkpoint ,ckpt)))
+                      (send-line (action-line `(checkpoint ,ckpt)))
                       (let wait ()
                         (define l (read-line out))
                         (unless (or (eof-object? l) (regexp-match? #px"^\\(checkpointed " l))
@@ -463,12 +480,12 @@
                  (match-define (list mix n-o2 total) (upgrade loaded))
                  (cond
                    [mix
-                    (send-plugin mix)
+                    (send-line mix)
                     (eprintf "  [upgraded ~a: ~a/~a clusters -O2]\n" (sbuild-hash sb) n-o2 total)
                     (poll n-o2)]
-                   [else (send-plugin (force continue-so)) (poll loaded)])]
-                [else (send-plugin (force continue-boundary-so)) (poll loaded)])]
-             [else (send-plugin (force continue-so)) (poll loaded)])]
+                   [else (send-line continue-line) (poll loaded)])]
+                [else (send-line continue-boundary-line) (poll loaded)])]
+             [else (send-line continue-line) (poll loaded)])]
           [(regexp-match? #px"^\\(error " line)
            (displayln line)
            (error (format "Daemon reported an error: ~a" line))]
@@ -498,7 +515,7 @@
       (define plan (read-prog-sexpr (string-append "data/" lname)))
       (define (apply-own!)
         (for ([st (in-list own-steps)])
-          (send-plugin (action-so st))))
+          (send-line (action-line st))))
       (cond
         [plan
          (match-define (cons r-entry r-sources) plan)
@@ -514,7 +531,7 @@
          ;; predecessors', as Phase 1's per-version input bit requires.
          (let ([ws (segment-write-set r-strata '())])
            (when (pair? ws)
-             (send-plugin (action-so `(begin-segment ,@ws)))))
+             (send-line (action-line `(begin-segment ,@ws)))))
          (apply-own!)
          ;; a memory pause during this layer's replay checkpoints to
          ;; data/<lname>.checkpoint/ rather than aborting outright (§P2.3)
@@ -522,7 +539,7 @@
            (for ([sb (in-list r-strata)])
              (pool-boost! (sbuild-hash sb))   ; T3b slice 4: current stratum first
              (match-define (cons so tag) ((sbuild-runnable sb)))
-             (send-plugin so)
+             (send-line so)
              (unless (drive-stratum! sb tag)
                (error "daemon output ended (EOF) mid-stratum during replay -- the daemon died or went silent"))))]
         [else (apply-own!)]))
@@ -548,7 +565,7 @@
          (match step
            [`(replay ,lname ,own) (replay-layer! lname own)]
            [`(batch ,_ ...) (error "a stored batch edit step needs the session loader (compiler/session.rkt)")]
-           [_ (send-plugin (action-so step))]))])
+           [_ (send-line (action-line step))]))])
 
     ;; Version boundaries, one per program segment (docs/incremental.md §0.4
     ;; B0, per-segment since E0c): announce each program's write-set so the
@@ -565,9 +582,12 @@
       (when (or db-name (not first?))
         (let ([ws (segment-write-set g-strata g-frozen)])
           (when (pair? ws)
-            (send-plugin (action-so `(begin-segment ,@ws))))))
+            (send-line (action-line `(begin-segment ,@ws))))))
       (for ([dir (in-list g-frozen)])
-        (send-plugin (action-so `(import-path ,dir)))))
+        (send-line (action-line `(import-path ,dir)))
+        (define reply (read-line out))
+        (unless (equal? reply "(imported)")
+          (error (format "importing ~a failed: ~a" dir reply)))))
 
     ;; Verify the loaded db reproduced its stored content signature (P1.5): drift
     ;; is a compiler change, nondeterminism, or a compression bug.  An EDITED
@@ -594,13 +614,13 @@
             [(not (db-chain-has-edits? db-name))
              (define stored-sig (read-signature-file ddir))
              (when stored-sig
-               (send-plugin (action-so `(signature ,@idb)))
+               (send-line (action-line `(signature ,@idb)))
                (report-drift db-name stored-sig (read-signature!) meta strict?
                              #:label label))]
             [else
              (define digest (db-chain-edits-digest db-name))
              (define baseline (read-edited-signature-file ddir))
-             (send-plugin (action-so `(signature ,@idb)))
+             (send-line (action-line `(signature ,@idb)))
              (define live (read-signature!))
              (cond
                [(and baseline (equal? (car baseline) digest))
@@ -621,14 +641,14 @@
     ;; With no facts stratum (edb-boundary 0) and no chained input, snapshot the
     ;; (possibly empty) root right after the open, before any stratum runs.
     (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
-      (send-plugin (action-so `(write-db ,(string-append compressed ".edb")))))
+      (send-line (action-line `(write-db ,(string-append compressed ".edb")))))
     ;; Capture the EDB struct heap at the boundary so the layer write dedups
     ;; against the root's structs (§4.2 `closure \ input_heap`).  Only when the
     ;; root is a fresh pure-EDB snapshot loaded VERBATIM on replay -- a chained
     ;; input is REPLAYED (fresh struct ids), so its heap can't be dedup'd
     ;; against by id; those layers stay closure-complete.
     (when (and linked-compressed? (= edb-boundary 0) (not chained-input))
-      (send-plugin (action-so `(capture-edb-heap))))
+      (send-line (action-line `(capture-edb-heap))))
 
     (let run-groups ([gs groups] [remaining strata] [i 0])
       (match gs
@@ -643,7 +663,7 @@
            ;; O0 job (if any) jumps to the queue's front before we block on it
            (pool-boost! (sbuild-hash sb))
            (match-define (cons so tag) ((sbuild-runnable sb)))  ; blocks until built
-           (send-plugin so)
+           (send-line so)
            ;; EOF here means the daemon died or went silent BEFORE this stratum's
            ;; fixpoint: erroring (rather than sailing on to the terminal actions)
            ;; is what keeps a half-run from masquerading as a successful one
@@ -664,10 +684,10 @@
            ;; silent write-db emits no line, so it cannot desync the next stratum's
            ;; handshake; the daemon processes it in stdin order before that stratum.
            (when (and linked-compressed? (> edb-boundary 0) (= (add1 gi) edb-boundary))
-             (send-plugin (action-so `(write-db ,(string-append compressed ".edb"))))
+             (send-line (action-line `(write-db ,(string-append compressed ".edb"))))
              ;; dedup only against a verbatim from-scratch root, not a replayed input
              (when (not chained-input)
-               (send-plugin (action-so `(capture-edb-heap))))))
+               (send-line (action-line `(capture-edb-heap))))))
          (run-groups more (drop remaining n) (+ i n))]))
 
     ;; T3b slice 4: §5.4's measured metric -- one line per run on stderr, so
@@ -687,7 +707,7 @@
               (db-partition-pinned-rels partition)))
     (define captured-sig #f)
     (when (and linked-compressed? (not (null? signed-rels)))
-      (send-plugin (action-so `(signature ,@signed-rels)))
+      (send-line (action-line `(signature ,@signed-rels)))
       (set! captured-sig (read-signature!)))
 
     ;; Resolve the retention target now that the run's total recompute cost is
@@ -701,7 +721,7 @@
     (cond
       ;; --out-db-compressed --flatten: one self-contained root (§7.3).
       [(and compressed flatten?)
-       (send-plugin (action-so `(write-db ,compressed)))]
+       (send-line (action-line `(write-db ,compressed)))]
       ;; --out-db-compressed (linked): the IDB layer; the root was snapshotted
       ;; above.  per*<1.0 samples the IDB tuples (dropped ones recomputed by
       ;; replay on load); per*=1.0 stores them whole.  An empty IDB writes no
@@ -722,8 +742,8 @@
        ;; accelerator seeds (§4.4 v2) ride every sampled save: the daemon's
        ;; recording kill-switch (SLOG_ACCEL=0) and its per-stratum
        ;; min-rounds gate decide whether accel/ actually materialises
-       (send-plugin
-        (action-so (if (< per* 1.0)
+       (send-line
+        (action-line (if (< per* 1.0)
                        `(save-compressed ,compressed ,per* ,compressed-rng-seed ,boost
                                          (boosted ,@boosted)
                                          (pinned ,@pinned)
@@ -732,11 +752,11 @@
                        `(write-db-subset ,compressed ,@signed-rels))))]
       [else (void)])
     (when out-db
-      (send-plugin (action-so `(write-db ,out-db))))
+      (send-line (action-line `(write-db ,out-db))))
     (when debug-out-path
-      (send-plugin (action-so `(write-csv ,debug-out-path))))
+      (send-line (action-line `(write-csv ,debug-out-path))))
     (when report-sizes?
-      (send-plugin (action-so `(sizes))))
+      (send-line (action-line `(sizes))))
     (close-output-port in)
     (let loop () ;; echo any remaining output from daemon (terminal actions)
       (define s (read-line out))

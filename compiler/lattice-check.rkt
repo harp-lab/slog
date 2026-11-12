@@ -154,8 +154,8 @@
 (define (check-rule rule rel-env spec-of dynamic-rels)
   (match-define `(syn ,_ rule ,bodys ... --> ,heads ...) rule)
   (define (die fmt . args)
-    (error 'lattice-check "~a\n  in rule: ~a"
-           (apply format fmt args) (strip-prov rule)))
+    (error 'lattice-check "~a\n  in rule at ~a: ~a"
+           (apply format fmt args) (rule-location-string rule) (syn-source rule)))
 
   ;; constants: var -> literal (for the *-by-nonneg-literal transfer and
   ;; classifying ground guard operands)

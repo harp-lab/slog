@@ -36,6 +36,10 @@
          "dbtool.rkt"
          "names.rkt"
          "params.rkt"
+         (only-in "parser.rkt" parse-errors-raise?
+                  exn:fail:slog-parse? exn:fail:slog-parse-file
+                  exn:fail:slog-parse-line exn:fail:slog-parse-col)
+         "demand-debug.rkt" ; the demand call tree and break patterns
          "query-front.rkt" ; the R2 `?` register grammar
          "query-plan.rkt"  ; Q1 catalog planner + ABI-1 wire emission
          "session.rkt"
@@ -185,6 +189,18 @@
           'ok #f
           'error (hasheq 'kind kind 'message message)))
 
+;; A failed command.  A syntax error also carries its source position, so a
+;; client can mark the offending token instead of parsing the message.
+(define (command-failure id e)
+  (define response (failure id "command" (exn-message e)))
+  (if (exn:fail:slog-parse? e)
+      (hash-set response 'error
+                (hash-set (hash-ref response 'error) 'span
+                          (hasheq 'file (~a (exn:fail:slog-parse-file e))
+                                  'line (exn:fail:slog-parse-line e)
+                                  'col (exn:fail:slog-parse-col e))))
+      response))
+
 (define (capture-session-events state thunk)
   (define sink (box '()))
   (dynamic-wind
@@ -316,7 +332,24 @@
    "                      position with nothing to match (the frontier)"
    "  break REL | rN[@k]  stop the run AT a port: when a rule writes REL,"
    "   [when (REL t|_ ...)]  when rule N fires, or at its body position k"
+   "  break FILE:LINE[@k]  stop when the rule at that line fires (rule ids"
+   "                      restart per stratum; a location names one rule)"
+   "  break demand (f t ...) | answer (f t ... a ...)  stop when a demand"
+   "                      call matching the pattern is asked, or answered"
+   "   ... when (OP a b) ... ignore N  log   conditions over the pattern's and"
+   "                      the rule's variables; skip N hits; record, don't stop"
    "  breaks | unbreak bN list the standing breaks, or remove one"
+   "  p | print VAR       at a held stop, a variable of the stopped rule (a bare"
+   "                      VAR no command claims prints it too); ?queries there"
+   "                      read the run's working state, the rule's variables"
+   "                      standing for their values"
+   "  enable|disable bN   keep a break, with its hits, in or out of the run"
+   "  logs [bN]           what the logpoints recorded"
+   "  calls on|off        record each run's demand calls (the call tree)"
+   "  calls [#N | (f t ...) [depth D] | stack | failed]  the calls no rule"
+   "                      asked, one call's subtree, the stack, the failures"
+   "  step into|over|out  at a demand stop: into the call, to its answer,"
+   "                      or to the answer of the call the run is inside"
    "  commit|replay|abort resolve a run held at the pre-commit gate: take"
    "                      the change, rerun the same read, or discard it"
    "  step [match|fire|   walk the held read one interpreter port at a time"
@@ -356,6 +389,7 @@
    "  preview             re-render the pending proposal's diffs/dispositions"
    "  activate            run the pending proposal's activation transaction"
    "  stage +(R V..) -(..) queue signed edits; `status` shows them pending"
+   "  unstage +(R V..) ..  withdraw staged edits; the rest stay pending"
    "  flush               commit everything staged as one update epoch"
    "  recount [force]     re-establish (or force-rebuild) the count cache"
    "  counts REL          dump one relation's count sidecar rows"
@@ -413,6 +447,43 @@
   datum)
 
 (define (relation-key value) (~a value))
+
+;; Gate S1's staged-change spelling, shared by `stage` and `unstage`:
+;; +(REL V...) and -(REL V...), a bare fact meaning +.  -> (cons sign fact)s
+(define (read-signed-changes who argument)
+  (define datums
+    (with-handlers
+        ([exn:fail?
+          (lambda (e)
+            (error who "unreadable staged change: ~a" (exn-message e)))])
+      (port->list read (open-input-string argument))))
+  (when (null? datums)
+    (error who "expected: ~a +(REL V...) -(REL V...) ..." who))
+  (let loop ([ds datums] [acc '()])
+    (match ds
+      ['() (reverse acc)]
+      [(list-rest '+ (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '+ fact) acc))]
+      [(list-rest '- (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '- fact) acc))]
+      [(list-rest (and fact (list _ _ ...)) rest)
+       (loop rest (cons (cons '+ fact) acc))]
+      [_ (error who
+                "malformed staged change; expected signed facts like +(edge 1 2)")])))
+
+;; The batch still queued after a stage/unstage, one line.
+(define (pending-lines s)
+  (define summary (session-pending-summary s))
+  (if (null? summary)
+      (list "nothing is staged")
+      (list (format "pending: ~a — `flush` commits one update epoch"
+                    (string-join
+                     (for/list ([p (in-list summary)])
+                       (match-define (list _anchor rel adds dels) p)
+                       (format "~a~a~a" rel
+                               (if (positive? adds) (format " +~a" adds) "")
+                               (if (positive? dels) (format " -~a" dels) "")))
+                     "; ")))))
 
 ;; ---- the value-handle table (repl.md §1) ----------------------------------
 ;;
@@ -581,6 +652,39 @@
   (if spec
       (append fields (list (format "lattice:~a" (lattice-descriptor-kind spec))))
       fields))
+
+;; The daemon encodes whatever value a REPL edit carries (daemon/actions.cpp
+;; takes any number or string), so an untyped `2.5` or
+;; `x` would land in an int column and propagate (audit M-04).  add, del and
+;; stage therefore check each tuple against the declaration `tables` shows,
+;; before anything is queued.  Only the scalar primitives a typed word can
+;; spell are checked; an exact integer of any size is an int (bignums are
+;; first-class, docs/primitives.md §14), and a bare word reads as a string.
+;; A session with no committed boundary (a pre-N4 input) has no declared
+;; types to consult, and its edits keep their old, unchecked route.
+(define (check-edit-tuple! who s rel values)
+  (define head (session-current-boundary s))
+  (when head
+    (define name (symbol->qname (string->symbol (relation-key rel))))
+    (unless (hash-has-key? (boundary-environment head) name)
+      (error who "unknown relation ~a" (relation-key rel)))
+    (define descriptor
+      (hash-ref (catalog-declarations (boundary-catalog head)) name))
+    (when (eq? (declaration-descriptor-kind descriptor) 'table)
+      (define fields (declaration-descriptor-fields descriptor))
+      (unless (= (length values) (length fields))
+        (error who "~a takes ~a values; got ~a"
+               (relation-key rel) (length fields) (length values)))
+      (for ([value (in-list values)]
+            [field (in-list fields)]
+            [column (in-naturals 1)])
+        (unless (match field
+                  [(type-ref 'primitive 'int) (exact-integer? value)]
+                  [(type-ref 'primitive 'float) (inexact-real? value)]
+                  [(type-ref 'primitive 'str) (or (string? value) (symbol? value))]
+                  [_ #t])
+          (error who "~a column ~a expects ~a; got ~s"
+                 (relation-key rel) column (type-detail field) value))))))
 
 (define (boundary-catalog-projection head sizes)
   (define cat (boundary-catalog head))
@@ -1205,10 +1309,10 @@
 ;; arity, materialized full-index orders, tuple count.  An index-free
 ;; relation reports no orders and is dropped -- it has no scannable storage,
 ;; so it is not queryable until something materializes it.
-(define (daemon-materialization-facts s)
+(define (daemon-materialization-facts s [command '(catalog)])
   (define lines
     (session-command-stream!
-     s '(catalog)
+     s command
      (lambda (line) (regexp-match? #px"^\\(catalog-end [0-9]+\\)$" line))))
   (for/fold ([out (hash)]) ([line (in-list lines)])
     (match (read-datum line)
@@ -1243,8 +1347,8 @@
 ;; whose logical and runtime kinds agree join the snapshot -- anything else
 ;; (non-storage declarations, drifted kinds, index-free storage) stays out
 ;; and queries against it refuse as unknown rather than poisoning the rest.
-(define (query-boundary-snapshot s)
-  (define head (session-current-boundary s))
+(define (query-boundary-snapshot s #:head [given #f] #:facts [facts '(catalog)])
+  (define head (or given (session-current-boundary s)))
   (unless head
     (error '? (string-append
                "queries need a committed boundary catalog; "
@@ -1254,7 +1358,7 @@
       [`(pipeline (pos ,_) (evaluation ,_) (update-epoch ,epoch) ,_ ...)
        epoch]
       [_ (error '? "cannot read the daemon update epoch")]))
-  (define materializations (daemon-materialization-facts s))
+  (define materializations (daemon-materialization-facts s facts))
   (define declarations (catalog-declarations (boundary-catalog head)))
   (define-values (decl-map env-map)
     (for/fold ([decls (hash)] [env (hash)])
@@ -1464,14 +1568,40 @@
    'query-shown shown))
 
 (define (query-register-result state text)
+  ;; At a held stop a query reads the run's working state, and the stopped
+  ;; rule's variables stand for their values (frame handles).
+  (define rs0 (current-repl-session state))
+  (define scope (and rs0 (current-stop-scope state)))
+  (define plan (and scope (hash-ref repl-held-plans rs0 #f)))
+  (define-values (source table)
+    (if scope (frame-substituted-query text scope) (values text (hash))))
   ;; grammar refusals need no session, so parse before touching the daemon
   ;; (the handle resolver only fires when a #N actually appears)
   (define line
-    (parse-query-line text #:resolve-handle (query-handle-resolver state)))
+    (parse-query-line source #:resolve-handle (frame-handle-resolver state table)))
   (define rs (ensure-session-record! state))
   (discard-query-cursor! rs)
   (define s (repl-session-session rs))
-  (define catalog (query-catalog-from-boundary (query-boundary-snapshot s)))
+  (define result (query-register-run state rs s line
+                                     (if plan
+                                         (held-query-boundary-snapshot s plan)
+                                         (query-boundary-snapshot s))))
+  ;; a frame handle reads back as the variable's value
+  (define (unhandled line)
+    (for/fold ([line line]) ([(label word) (in-hash table)])
+      (define b (for/first ([b (in-list (stop-scope-bindings scope))]
+                            #:when (equal? (third b) word))
+                  b))
+      (string-replace line label (if b (second b) label))))
+  (if plan
+      (hash-set* result
+                 'lines (append (map unhandled (hash-ref result 'lines '()))
+                                (list "at the held stop: the run's working state -- committed facts plus what this run has derived through its last completed iteration"))
+                 'view "held")
+      result))
+
+(define (query-register-run state rs s line snapshot)
+  (define catalog (query-catalog-from-boundary snapshot))
   (define plan (plan-query catalog (query-line-request line)))
   (define wire (query-plan->wire-string plan))
   (match (query-request-mode (query-line-request line))
@@ -1539,9 +1669,18 @@
                #:kind "query"))
 
 (define (csv-field text)
-  (if (regexp-match? #px"[,\"\n]" text)
+  (if (regexp-match? #px"[,\"\r\n]" text)
       (string-append "\"" (regexp-replace* #px"\"" text "\"\"") "\"")
       text))
+
+;; A string cell holds the string itself, not its Slog literal: CSV quoting
+;; is the only layer a CSV reader undoes, so the literal's quotes and
+;; escapes would otherwise survive into the decoded cell.  Compound values
+;; have no plainer form and stay Slog text.
+(define (csv-cell-text cell)
+  (if (eq? (value-cell-kind cell) 'str)
+      (read (open-input-string (value-cell-text cell)))
+      (value-cell-text cell)))
 
 ;; `dump ?QUERY to PATH` -- pull the cursor to completion page by page and
 ;; write one CSV row per answer under a variable-name header.  Full-depth
@@ -1576,7 +1715,7 @@
                (displayln
                 (string-join
                  (for/list ([cell (in-list cells)])
-                   (csv-field (value-cell-text cell)))
+                   (csv-field (csv-cell-text cell)))
                  ",")
                 out))
              (define now (+ written (length rows)))
@@ -2006,7 +2145,10 @@
   (unless (string=? (string-trim argument) "")
     (error 'activate
            "bare `activate` commits after audits; a pre-commit hold rides an armed level-1 watch (`watch REL level 1`)"))
-  (define rs (ensure-session-record! state))
+  ;; Only activation commits.  `replace instance` and `preview` seal and
+  ;; show a proposal without touching the database, so readonly mode lets
+  ;; a proposal be prepared and refuses only here.
+  (define rs (ensure-mutable-session-record! state 'activate))
   (define proposal
     (or (hash-ref repl-proposals rs #f)
         (error 'activate "no pending proposal; `replace instance ...` first")))
@@ -2070,6 +2212,13 @@
                    "~a cannot be previewed at the tip: ~a; the flush would take an anchored walk"
                    rel-name (exn-message e)))])
       (session-whatif s sign rel-name)))
+  ;; strata bound to an OLDER version of the target never see this edit;
+  ;; say who they are rather than "no derived relations read" it
+  (define-values (rebind-lines rebinds)
+    (let-values ([(ordinal readers) (session-stale-readers s rel-name)])
+      (rebind-report (if (null? readers)
+                         '()
+                         (list (list rel-name ordinal readers))))))
   (define catalog (live-catalog s))
   (define (size-of name)
     (with-handlers ([exn:fail? (lambda (_e) #f)])
@@ -2087,7 +2236,9 @@
   (define route-line
     (case route
       [(input-only)
-       "likely route: input-only edit — no derived relation reads this one"]
+       (if (null? rebinds)
+           "likely route: input-only edit — no derived relation reads this one"
+           "likely route: input-only edit — no derived relation reads this version")]
       [(maintain-positive)
        (format "likely route: positive maintenance across ~a ~a (monotone cone; flush certifies the precise route)"
                cone-strata (if (= cone-strata 1) "stratum" "strata"))]
@@ -2115,15 +2266,20 @@
                  tuple-text
                  (if (zero? matches) "absent" "already present")
                  (if (zero? matches) "a genuine addition" "addition would be a no-op"))]))
-     (if (null? affected)
-         (list (format "no derived relations read ~a" rel-name))
-         (for/list ([name (in-list affected)])
-           (define n (size-of name))
-           (format "~a — ~a affected"
-                   name (if n (format "~a row~a now;" n (if (= n 1) "" "s")) ""))))
+     (cond
+       [(pair? affected)
+        (for/list ([name (in-list affected)])
+          (define n (size-of name))
+          (format "~a — ~a affected"
+                  name (if n (format "~a row~a now;" n (if (= n 1) "" "s")) "")))]
+       [(null? rebinds)
+        (list (format "no derived relations read ~a" rel-name))]
+       [else '()])
+     rebind-lines
      (list route-line
            "nothing staged, nothing mutated — preview only"))
     #:kind "whatif")
+   'rebinds rebinds
    'relation rel-name
    'sign (format "~a" sign)
    'affected (map (lambda (n) (format "~a" n)) affected)
@@ -2570,15 +2726,55 @@
 
 ;; `break rN` still needs a relation to pin: the rule's own head, read out of
 ;; the canonical plan.
+;; A break's location names a rule location: the same spelling, or the
+;; same file and line without a column (daemon/plan.h at_source).
+(define (source-names? source location)
+  (or (equal? source location)
+      (string-prefix? location (string-append source ":"))))
+
+;; The file part of a location: "reach.slog" of "reach.slog:9:1".
+(define (source-file source)
+  (first (string-split source ":")))
+
 (define (break-rule-relation s rid)
   (for/or ([r (in-list (session-plan-rules s))]
            #:when (equal? (plan-rule-rid r) rid))
     (plan-rule-head-relation r)))
 
+(define break-usage
+  (string-append
+   "expected: break REL [when (REL t ...) COND ...] | break FILE:LINE[@k] [when COND ...]"
+   " | break rN[@k] | break demand (f t ...) [when COND ...]"
+   " | break answer (f t ... a ...) [when COND ...], each optionally ending"
+   " `ignore N` and `log`"))
+
+;; Slog text as data: `[a b ...]` stays a list literal, `(#%brackets a b ...)`.
+(define (read-slog-data who text)
+  (with-handlers ([exn:fail:read?
+                   (lambda (e) (error who "cannot read ~a: ~a" text (exn-message e)))])
+    (parameterize ([read-square-bracket-with-tag #t])
+      (read (open-input-string (string-append "(" text ")"))))))
+
+;; `... ignore N` and `... log`, in either order, off the end of a break.
+(define (break-modifiers raw)
+  (let loop ([raw raw] [ignore #f] [log? #f])
+    (match (regexp-match #px"^(.*?)[[:space:]]+(log|ignore[[:space:]]+([0-9]+))$" raw)
+      [(list _ rest "log" _) (loop rest ignore #t)]
+      [(list _ rest _ n) (loop rest (string->number n) log?)]
+      [_ (values raw ignore log?)])))
+
 (define (break-result state argument)
-  (define raw (string-trim argument))
+  (define-values (raw ignore log?) (break-modifiers (string-trim argument)))
   (when (string=? raw "")
-    (error 'break "expected: break REL [when (REL t ...)] | break rN[@k]"))
+    (error 'break break-usage))
+  (match (regexp-match
+         #px"^(?:([^[:space:]]+\\.slog:[0-9]+(?::[0-9]+)?)[[:space:]]+)?(demand|answer|match|emit)[[:space:]]+(.*)$"
+         raw)
+    [(list _ location kind rest)
+     (clause-break-result state location (string->symbol kind) rest ignore log?)]
+    [_ (location-break-result state raw ignore log?)]))
+
+(define (location-break-result state raw ignore log?)
   (define-values (head when-text)
     (match (regexp-match #px"^(.*?)[[:space:]]+when[[:space:]]+(.*)$" raw)
       [(list _ target pattern) (values (string-trim target) pattern)]
@@ -2591,60 +2787,111 @@
     (match (regexp-match #px"^r([0-9]+)$" target)
       [(list _ n) (string->number n)]
       [_ #f]))
-  (when (and position (not rid))
-    (error 'break "a body position belongs to a rule: break rN@~a" position))
+  ;; A source location names one rule program-wide; rule ids restart in
+  ;; every stratum.  Locations are spelled as rule-location-string spells
+  ;; them, by basename, so a full path is reduced to its last component.
+  (define source
+    (match (regexp-match #px"^(.+\\.slog):([0-9]+)(:[0-9]+)?$" target)
+      [(list _ file line column)
+       (format "~a:~a~a" (file-name-from-path file) line (or column ""))]
+      [_ #f]))
+  (when (and position (not rid) (not source))
+    (error 'break "a body position belongs to a rule: break rN@~a or FILE:LINE@~a"
+           position position))
   (define rs (ensure-session-record! state))
   (define s (repl-session-session rs))
   (define registry (repl-session-breaks rs))
   (define id (next-break-id registry))
-  ;; the relation whose writers must run interpreted for the ports to exist
-  (define relation
-    (~a
+  ;; the relations whose writers must run interpreted for the ports to exist
+  (define relations
+    (map
+     ~a
      (cond
-      [rid (or (break-rule-relation s rid)
-               (error 'break
-                      "no rule r~a in a resident normal-flavor plan (see `code`)"
-                      rid))]
-      [else (relation-info-name
-             (relation-from-catalog 'break (live-catalog s) target))])))
+       [rid (list (or (break-rule-relation s rid)
+                      (error 'break
+                             "no rule r~a in a resident normal-flavor plan (see `code`)"
+                             rid)))]
+       [source
+        (define resident
+          (filter plan-rule-source (session-plan-rules s)))
+        (define written
+          (remove-duplicates
+           (for/list ([r (in-list resident)]
+                      #:when (source-names? source (plan-rule-source r))
+                      #:when (plan-rule-head-relation r))
+             (plan-rule-head-relation r))))
+        ;; A file with resident rules is loaded, so a line with none is a
+        ;; mistake.  A file with none has not run yet: the break waits for
+        ;; it, matched by location when its rules do run (audit D-06).
+        (when (and (null? written)
+                   (for/or ([r (in-list resident)])
+                     (source-names? (source-file source) (plan-rule-source r))))
+          (error 'break "no rule at ~a in a resident normal-flavor plan (see `code`)"
+                 source))
+        written]
+       [else (list (relation-info-name
+                    (relation-from-catalog 'break (live-catalog s) target)))])))
+  (define pending? (and source (null? relations)))
+  (define relation (if pending? "REL" (first relations)))
   ;; The pattern is read directly rather than through the query front end:
   ;; a query drops `_` columns from its fact template (they cannot be
-  ;; projected), and a break pattern is exactly where wildcards belong.
-  (define pattern
-    (and when-text
-         (let ([shape (read-datum when-text)])
-           (unless (and (pair? shape) (symbol? (first shape)))
-             (error 'break
-                    "when takes one fact pattern of constants and _: when (~a 99 _)"
-                    relation))
-           (for/list ([term (in-list (rest shape))])
-             (if (eq? term '_) '_ (why-term state term))))))
-  (define flipped (session-set-scc-policy! s (string->symbol relation)
-                                           'interpreted))
+  ;; projected), and a break pattern is exactly where wildcards belong.  A
+  ;; relation break's first `when` clause naming the relation is its head
+  ;; pattern; every other clause is a condition over the pattern's
+  ;; variables and the rule's.
+  (define clauses (if when-text (read-slog-data 'break when-text) '()))
+  (define-values (pattern guards)
+    (match clauses
+      [(cons (cons (== (string->symbol relation)) terms) more)
+       #:when (not (or rid source))
+       (values (map break-term terms) (map break-guard more))]
+      [_ (values #f (map break-guard clauses))]))
+  (define flipped
+    (remove-duplicates
+     (append-map (lambda (r) (session-set-scc-policy! s (string->symbol r) 'interpreted))
+                 relations)))
   (session-command-stream!
    s
    `(break (id ,id)
-           ,@(if rid `((rule ,rid)) `((relation ,relation)))
+           ,@(cond [rid `((rule ,rid))]
+                   [source `((source ,source))]
+                   [else `((relation ,relation))])
            ,@(if position `((position ,position)) '())
-           ,@(if pattern `((pattern ,@pattern)) '()))
+           ,@(if pattern `((pattern ,@pattern)) '())
+           ,@(break-options guards ignore log?))
    (lambda (_line) #t))
+  (define described
+    (cond [rid (format "rule r~a" rid)]
+          [source (format "the rule at ~a" source)]
+          [else relation]))
   (hash-set! registry id
-             (break-intent id (if rid 'rule 'relation)
-                           (if rid (format "r~a" rid) relation)
+             (break-intent id (if (or rid source) 'rule 'relation)
+                           (cond [rid (format "r~a" rid)] [source source] [else relation])
                            position when-text))
   (text-result
-   (format "Break ~a" id)
+   (format "~a ~a" (if log? "Logpoint" "Break") id)
    (append
-    (list (format "~a~a~a — stops the run at the port, where step/frames/why work"
-                  (if rid (format "rule r~a" rid) relation)
+    (list (format "~a~a~a~a — ~a"
+                  described
                   (if position (format " body position ~a" position) "")
-                  (if when-text (format " when ~a" when-text) "")))
-    (if (null? flipped)
-        '()
+                  (if when-text (format " when ~a" when-text) "")
+                  (if ignore (format " ignore ~a" ignore) "")
+                  (if log?
+                      "records each match in the break log, without stopping"
+                      "stops the run at the port, where step/frames/why work")))
+    (cond
+      [pending?
+       (list (string-append
+              "no resident rule there yet: armed for when one runs"
+              (if (equal? (getenv "SLOG_OPT") "interp")
+                  ""
+                  " (it stops only where that rule runs interpreted: set SLOG_OPT=interp, or arm it after a first run)")))]
+      [(null? flipped) '()]
+      [else
         (list (format "writer strat~a ~a pinned to the interpreter (a native stratum has no ports)"
                       (if (= (length flipped) 1) "um" "a")
                       (string-join (map (lambda (n) (format "s~a" n)) flipped)
-                                   ", ")))))
+                                   ", ")))]))
    #:kind "break"))
 
 (define (unbreak-result state argument)
@@ -2663,33 +2910,529 @@
                #:kind "break"))
 
 ;; The daemon owns the hit counts, so the listing is its answer, not the
-;; client's memory of what it asked for.
+;; client's memory of what it asked for.  The breaks the debugger arms for
+;; itself (the demand log, a demand step) are not the operator's.
 (define (breaks-result state)
   (define rs (ensure-session-record! state))
+  (define registry (repl-session-breaks rs))
   (define lines
     (session-debug-lines! (repl-session-session rs) '(breaks)
                           (lambda (l) (regexp-match? #px"^\\(breaks-end " l))))
-  (define rows
+  (define s (repl-session-session rs))
+  ;; whether a break can stop anywhere: the rules that have run, and the
+  ;; demands they declare, read once for the listing
+  (define resident (delay (filter values (map plan-rule-source (session-plan-rules s)))))
+  (define demands (demand-debug-demands (session-demand rs)))
+  (define ran? (pair? (session-tiers s)))
+  (define (binding kind relation source hits)
+    (define f (if (memq kind '(answer)) (regexp-replace #px"_ans$" relation "") relation))
+    (cond
+      [(positive? hits) (values "bound" "")]
+      [(not ran?) (values "pending" "binds when the program runs")]
+      [(and (memq kind '(demand answer)) (pair? (hash-keys demands))
+            (not (hash-ref demands f #f)))
+       (values "unbound" (format "~a is not a demand relation of this program" f))]
+      [(and (not (equal? source ""))
+            (not (for/or ([r (in-list (force resident))]) (source-names? source r))))
+       (values "unbound"
+               (format "no rule at ~a has run: no rule starts on that line, or its stratum never ran"
+                       source))]
+      [else (values "bound" "")]))
+  (define listed
     (for*/list ([line (in-list lines)]
                 #:do [(define datum (read-datum line))]
-                #:when (match datum [`(break ,_ ...) #t] [_ #f]))
+                #:when (match datum [`(break (id ,id) ,_ ...) (hash-ref registry id #f)] [_ #f]))
       (match datum
-        [`(break (id ,id) (relation ,relation) (rule ,rule)
-                 (position ,position) (pattern ,pattern) (hits ,hits))
-         (format "~a  ~a~a~a · ~a hit~a" id
-                 (if (equal? rule '#f) relation (format "r~a" rule))
-                 (if (equal? position '#f) ""
-                     (format "@~a" position))
-                 (if (equal? (~a pattern) "") ""
-                     (format " when (~a~a)"
-                             (if (equal? relation "") "" (format "~a " relation))
-                             pattern))
-                 hits (if (equal? hits 1) "" "s"))])))
-  (text-result "Breaks"
-               (if (null? rows)
-                   (list "none; `break REL` or `break rN` arms one")
-                   rows)
+        [`(break (id ,id) (relation ,relation) (rule ,rule) (source ,source)
+                 (position ,position) (match ,premise) (pattern ,pattern) (hits ,hits)
+                 (when ,guards) (judgment ,_) (ignore ,ignore) (log ,log?)
+                 (enabled ,enabled?))
+         (define intent (hash-ref registry id))
+         (define-values (status why) (binding (break-intent-kind intent) relation source hits))
+         (define what
+           (string-append
+            (cond [(memq (break-intent-kind intent) '(demand answer match emit))
+                   (format "~a ~a" (break-intent-kind intent) (break-intent-target intent))]
+                  [(not (equal? rule '#f)) (format "r~a" rule)]
+                  [(not (equal? source "")) source]
+                  [else relation])
+            (if (equal? position '#f) "" (format "@~a" position))
+            (if (or (memq (break-intent-kind intent) '(demand answer match emit))
+                    (equal? (~a pattern) ""))
+                ""
+                (format " when (~a ~a)" relation pattern))
+            (if (or (equal? guards "") (memq (break-intent-kind intent) '(demand answer match emit)))
+                ""
+                (format " when ~a" guards))))
+         (hasheq 'id id 'what what 'hits hits 'ignore ignore
+                 'log (eq? log? #t) 'enabled (eq? enabled? #t)
+                 'kind (~a (break-intent-kind intent))
+                 'status status 'why why
+                 ;; what the daemon holds: the port it stops at
+                 'compiled (string-join
+                            (filter (lambda (t) (not (equal? t "")))
+                                    (list (if (equal? source "") "" (format "rule at ~a" source))
+                                          (if (equal? premise "") "" (format "match ~a" premise))
+                                          (if (equal? relation "") "" (format "writes ~a" relation))
+                                          (if (equal? (~a pattern) "") "" (format "(~a)" pattern))
+                                          (if (equal? guards "") "" (format "when ~a" guards))))
+                            " · "))])))
+  (define rows
+    (for/list ([b (in-list listed)])
+      (format "~a  ~a · ~a hit~a~a~a~a~a" (hash-ref b 'id) (hash-ref b 'what)
+              (hash-ref b 'hits) (if (equal? (hash-ref b 'hits) 1) "" "s")
+              (if (positive? (hash-ref b 'ignore))
+                  (format " · ignore ~a" (hash-ref b 'ignore)) "")
+              (if (hash-ref b 'log) " · log" "")
+              (if (hash-ref b 'enabled) "" " · disabled")
+              (if (equal? (hash-ref b 'status) "unbound")
+                  (format " · cannot stop: ~a" (hash-ref b 'why)) ""))))
+  (hash-set
+   (text-result "Breaks"
+                (if (null? rows)
+                    (list "none; `break REL`, `break FILE:LINE`, `break rN` or `break demand (f ...)` arms one")
+                    rows)
+                #:kind "break")
+   'breaks listed))
+
+;; `enable bN` / `disable bN`: the break stays, with its hits, but a
+;; disabled one neither stops nor counts.
+(define (enable-break-result state argument on?)
+  (define id (string-trim argument))
+  (define rs (ensure-session-record! state))
+  (unless (hash-ref (repl-session-breaks rs) id #f)
+    (error (if on? 'enable 'disable) "no break named ~a; `breaks` lists them" id))
+  (session-command-stream! (repl-session-session rs)
+                           `(break-enable (id ,id) (enabled ,on?))
+                           (lambda (_line) #t))
+  (text-result (format "Break ~a ~a" id (if on? "enabled" "disabled"))
+               (list (if on? "it stops the run again" "it neither stops nor counts until enabled"))
                #:kind "break"))
+
+;; The daemon fields a break's conditions, ignore count and logging add.
+(define (break-options guards ignore log?)
+  (append (if (null? guards) '() `((when ,@guards)))
+          (if ignore `((ignore ,ignore)) '())
+          (if log? '((log #t)) '())))
+
+;; ---- demand relations: the call tree and its breakpoints ---------------------
+;;
+;;   calls on | off              record each run's demand calls (the break log)
+;;   calls                       the calls no rule asked, and where failure starts
+;;   calls #N [depth D] | calls (f t ...)   a call, its answers and subcalls
+;;   calls stack                 the chain of calls at the held stop
+;;   break demand (f t ...)      stop when f is asked of a matching call
+;;   break answer (f t ... a ...)  stop when such a call is answered
+;;   step into | over | out      move the held run a call at a time
+;;
+;; compiler/demand-debug.rkt reads the log; this is the REPL's half.
+
+(struct demand-debug ([on? #:mutable] [demands #:mutable] [calls #:mutable])
+  #:transparent)
+
+;; rs -> demand-debug, beside the session record as repl-last-run is.
+(define repl-demands (make-weak-hasheq))
+
+(define (session-demand rs)
+  (hash-ref! repl-demands rs (lambda () (demand-debug #f (hash) (make-calls (hash))))))
+
+;; The logpoint the log is recorded by, and the break a demand step arms.
+(define demand-log-id "demand-log")
+(define demand-step-id "demand-step")
+
+;; The live catalog's demands, for a session whose run is not being prepared.
+(define (live-demands s)
+  (define head (session-current-boundary s))
+  (if head (catalog-demands (catalog-declarations (boundary-catalog head))) (hash)))
+
+;; At each prepared run (session-prepare-hook): learn the program's demands
+;; from the catalog it will have, start a fresh call graph, and arm the
+;; logpoint on its asks and answers, and on the relations that carry a
+;; gate between rules (demand-debug.rkt `carrier?`).
+(define (demand-prepare! rs plan)
+  (define dd (hash-ref repl-demands rs #f))
+  (when (and dd (demand-debug-on? dd))
+    (define demands
+      (catalog-demands (catalog-declarations (boundary-catalog (boundary-plan-output plan)))))
+    (set-demand-debug-demands! dd demands)
+    (set-demand-debug-calls! dd (make-calls demands))
+    (arm-demand-log! (repl-session-session rs) demands)))
+
+(define (arm-demand-log! s demands)
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! s `(unbreak (id ,demand-log-id)) (lambda (_l) #t)))
+  (unless (hash-empty? demands)
+    (session-command-stream!
+     s
+     `(break (id ,demand-log-id)
+             (relation ,@(sort (hash-keys demands) string<?)
+                       ,@(for/list ([f (in-list (sort (hash-keys demands) string<?))])
+                           (string-append f "_ans"))
+                       "$sup*" "temp*")
+             (log #t))
+     (lambda (_l) #t))))
+
+;; Read what the daemon logged since the last read into the call graph.
+(define (demand-sync! rs #:always? [always? #f])
+  (define dd (session-demand rs))
+  (define c (demand-debug-calls dd))
+  (when (or always? (demand-debug-on? dd))
+    (define lines
+      (session-debug-lines! (repl-session-session rs)
+                            `(break-log (from ,(calls-next c)))
+                            (lambda (l) (regexp-match? #px"^\\(break-log-end " l))))
+    (calls-read! c lines))
+  c)
+
+(define (demand-on! state rs)
+  (define dd (session-demand rs))
+  (unless (demand-debug-on? dd)
+    (set-demand-debug-on?! dd #t)
+    ;; a program already loaded is recorded from its next run on; its
+    ;; demands are known now, for breaks and steps
+    (define s (repl-session-session rs))
+    (define demands (live-demands s))
+    (set-demand-debug-demands! dd demands)
+    (set-demand-debug-calls! dd (make-calls demands))
+    (arm-demand-log! s demands)))
+
+(define (demand-result state argument)
+  (define rs (ensure-session-record! state))
+  (define dd (session-demand rs))
+  (define running? (and (server-state-held state) #t))
+  (match (string-split (string-trim argument))
+    [(list "on")
+     (demand-on! state rs)
+     (text-result "Demand calls recorded"
+                  (list "each run records its demand calls: `calls` shows them,"
+                        "`break demand (f t ...)` stops at one, `step into|over|out` walks them")
+                  #:kind "calls")]
+    [(list "off")
+     (set-demand-debug-on?! dd #f)
+     (with-handlers ([exn:fail? void])
+       (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-log-id))
+                                (lambda (_l) #t)))
+     (text-result "Demand calls not recorded" (list "runs no longer record demand calls")
+                  #:kind "calls")]
+    [_
+     (unless (demand-debug-on? dd)
+       (error 'calls "demand calls are not being recorded; `calls on`, then run"))
+     (define c (demand-sync! rs))
+     (define words (string-split (string-trim argument)))
+     (match words
+       ['() (demand-roots-result c running?)]
+       [(list "stack") (demand-stack-result c running?)]
+       [(list "failed") (demand-failed-result c running?)]
+       [_ (demand-node-result c (string-trim argument) running?)])]))
+
+(define (logged-line c r)
+  (format "~a s~a i~a ~a ~a~a" (logged-id r) (logged-scc r) (logged-iteration r)
+          (logged-source r)
+          (if (equal? (logged-relation r) "")
+              ""
+              (format "(~a~a)" (logged-relation r)
+                      (string-append* (for/list ([w (in-list (logged-row r))])
+                                        (string-append " " (word-text c w))))))
+          (string-append* (for/list ([b (in-list (logged-bindings r))])
+                            (format " · ~a = ~a" (car b) (word-text c (cdr b)))))))
+
+;; `logs [bN]`: what the logpoints recorded in the latest run, oldest first.
+(define (logs-result state argument)
+  (define rs (ensure-session-record! state))
+  (define id (string-trim argument))
+  (define c (demand-sync! rs #:always? #t))
+  (define records
+    (for/list ([r (in-list (reverse (calls-logged c)))]
+               #:when (or (equal? id "") (equal? id (logged-id r))))
+      r))
+  (hash-set
+   (text-result (if (equal? id "") "Logpoints" (format "Logpoint ~a" id))
+                (if (null? records)
+                    (list "nothing logged; `break ... log` arms a logpoint")
+                    (for/list ([r (in-list records)]) (logged-line c r)))
+                #:kind "logs")
+   'logs (for/list ([r (in-list records)])
+           (hasheq 'id (logged-id r) 'scc (logged-scc r) 'iteration (logged-iteration r)
+                   'source (logged-source r) 'text (logged-line c r)))))
+
+(define (call-ask-json a)
+  (hasheq 'scc (call-ask-scc a) 'iteration (call-ask-iteration a)
+          'source (call-ask-source a)))
+
+;; A call as Studio's tree shows it; `children` lists the subcalls' ids
+;; when `children?`, else only counts them.
+(define (call-json c n running? #:children? [children? #f])
+  (define asks (reverse (call-node-asks n)))
+  (define parents
+    (remove-duplicates
+     (for/list ([a (in-list asks)] #:when (call-ask-parent a))
+       (call-node-index (calls-lookup c (call-ask-parent a))))))
+  (define kids (for/list ([k (in-list (call-node-children n))])
+                 (call-node-index (calls-lookup c k))))
+  (hasheq 'id (call-node-index n)
+          'call (call-text c n)
+          'relation (call-node-relation n)
+          'status (~a (call-status n running?))
+          'asked (if (pair? asks) (call-ask-json (first asks)) 'null)
+          'asks (length asks)
+          'parents parents
+          'answers (for/list ([a (in-list (reverse (call-node-answers n)))])
+                     (hasheq 'value (call-answer-text c a)
+                             'scc (call-answer-scc a) 'iteration (call-answer-iteration a)
+                             'source (call-answer-source a)))
+          'subcalls (length kids)
+          'children (if children? kids 'null)))
+
+(define (call-line c n running?)
+  (define answers (reverse (call-node-answers n)))
+  (format "#~a ~a  ~a" (call-node-index n) (call-text c n)
+          (match (call-status n running?)
+            ['answered (string-join (for/list ([a (in-list answers)])
+                                      (format "⇒ ~a (s~a i~a)" (call-answer-text c a)
+                                              (call-answer-scc a) (call-answer-iteration a)))
+                                    " ")]
+            ['pending "· no answer yet"]
+            ['failed "· no answer"])))
+
+(define (calls-summary c)
+  (define all (for/list ([i (in-range (hash-count (calls-nodes c)))]) (calls-node c i)))
+  (hasheq 'calls (length all)
+          'answered (for/sum ([n (in-list all)]) (if (pair? (call-node-answers n)) 1 0))
+          'dropped (calls-dropped c)))
+
+(define (calls-result title lines payload)
+  (hash-set (text-result title lines #:kind "calls") 'calls payload))
+
+(define (demand-roots-result c running?)
+  (define roots (calls-roots c))
+  (define frontier (calls-frontier c))
+  (define summary (calls-summary c))
+  (calls-result
+   "Demand calls"
+   (append
+    (list (format "~a calls · ~a answered~a" (hash-ref summary 'calls) (hash-ref summary 'answered)
+                  (if (positive? (calls-dropped c))
+                      (format " · ~a log records dropped at the cap" (calls-dropped c)) "")))
+    (for/list ([n (in-list roots)]) (call-line c n running?))
+    (if (and (not running?) (pair? frontier))
+        (cons "where failure starts (no answer, every subcall answered):"
+              (for/list ([n (in-list frontier)]) (string-append "  " (call-line c n running?))))
+        '()))
+   (hasheq 'view "roots" 'summary summary
+           'nodes (for/list ([n (in-list roots)]) (call-json c n running?))
+           'frontier (if running? '() (for/list ([n (in-list frontier)]) (call-node-index n))))))
+
+(define (demand-failed-result c running?)
+  (define frontier (calls-frontier c))
+  (calls-result
+   "Demand calls · no answer"
+   (if (null? frontier)
+       (list "every call has an answer")
+       (for/list ([n (in-list frontier)]) (call-line c n running?)))
+   (hasheq 'view "failed" 'summary (calls-summary c)
+           'nodes (for/list ([n (in-list frontier)]) (call-json c n running?)))))
+
+;; `#N [depth D]` or a call written out, `(nf (app (ix 0) (zero)))`.
+(define (demand-node-result c text running?)
+  (define-values (spec depth)
+    (match (regexp-match #px"^(.*?)[[:space:]]+depth[[:space:]]+([0-9]+)$" text)
+      [(list _ spec d) (values spec (string->number d))]
+      [_ (values text 1)]))
+  (define n
+    (match (regexp-match #px"^#([0-9]+)$" spec)
+      [(list _ i) (or (calls-node c (string->number i))
+                      (error 'calls "no call #~a in this run" i))]
+      [_ (or (for/first ([i (in-range (hash-count (calls-nodes c)))]
+                         #:when (equal? (call-text c (calls-node c i)) spec))
+               (calls-node c i))
+             (error 'calls "no call ~a in this run (`calls` lists the calls)" spec))]))
+  (define lines
+    (let walk ([n n] [indent ""] [depth depth] [seen '()])
+      (cons (string-append indent (call-line c n running?))
+            (if (or (zero? depth) (memq n seen))
+                '()
+                (append*
+                 (for/list ([k (in-list (call-node-children n))])
+                   (walk (calls-lookup c k) (string-append indent "  ") (sub1 depth)
+                         (cons n seen))))))))
+  (calls-result
+   (format "Demand call #~a" (call-node-index n))
+   (append lines
+           (let ([a (and (pair? (call-node-asks n)) (last (call-node-asks n)))])
+             (if a
+                 (list (format "asked at s~a i~a by ~a~a" (call-ask-scc a) (call-ask-iteration a)
+                               (call-ask-source a)
+                               (if (call-ask-parent a)
+                                   (format " in #~a" (call-node-index
+                                                      (calls-lookup c (call-ask-parent a))))
+                                   "")))
+                 '())))
+   (hasheq 'view "node" 'focus (call-node-index n)
+           'nodes (cons (call-json c n running? #:children? #t)
+                        (for/list ([k (in-list (call-node-children n))])
+                          (call-json c (calls-lookup c k) running?))))))
+
+;; The calls from the latest demand event up through each asker, with the
+;; asking rule's bindings: the stack a held stop is in.
+(define (demand-stack c running?)
+  (define last (calls-last c))
+  (if last
+      (for/list ([n (in-list (calls-stack c (cdr last)))])
+        (define a (and (pair? (call-node-asks n)) (first (call-node-asks n))))
+        (hasheq 'node (call-json c n running?)
+                'bindings (if a
+                              (for/list ([b (in-list (call-ask-bindings a))])
+                                (list (car b) (word-text c (cdr b))))
+                              '())))
+      '()))
+
+(define (stack-lines c running?)
+  (define last (calls-last c))
+  (define frames (demand-stack c running?))
+  (if (null? frames)
+      '()
+      (cons (format "demand ~a of ~a; the calls it is inside:"
+                    (car last) (hash-ref (hash-ref (first frames) 'node) 'call))
+            (for/list ([f (in-list frames)] [i (in-naturals)])
+              (define node (hash-ref f 'node))
+              (format "  ~a #~a ~a~a~a" i (hash-ref node 'id) (hash-ref node 'call)
+                      (let ([asked (hash-ref node 'asked)])
+                        (if (hash? asked) (format " · asked by ~a" (hash-ref asked 'source)) ""))
+                      (if (null? (hash-ref f 'bindings))
+                          ""
+                          (string-append " · "
+                                         (string-join (for/list ([b (in-list (hash-ref f 'bindings))])
+                                                        (format "~a = ~a" (first b) (second b)))
+                                                      " · "))))))))
+
+(define (demand-stack-result c running?)
+  (define lines (stack-lines c running?))
+  (calls-result "Demand stack"
+                (if (null? lines) (list "no demand call has been asked yet") lines)
+                (hasheq 'view "stack" 'last (and (calls-last c) (~a (car (calls-last c))))
+                        'stack (demand-stack c running?))))
+
+;; `break [FILE:LINE] KIND (R t ...) [when COND ...]`, a break on one clause
+;; of a rule (or of any rule, without a location):
+;;   demand (f t ...)        f is asked of a matching call
+;;   answer (f t ... a ...)  such a call is answered
+;;   match (R t ...)         the rule matches a row of its body atom R
+;;   emit (R t ...)          the rule writes a matching row of R
+(define (clause-break-result state location kind text ignore log?)
+  (define rs (ensure-session-record! state))
+  (define s (repl-session-session rs))
+  (define data (read-slog-data 'break text))
+  (define-values (call guards)
+    (match data
+      [(list (cons (? symbol? f) terms)) (values (cons f terms) '())]
+      [(list (cons (? symbol? f) terms) 'when conds ..1) (values (cons f terms) conds)]
+      [_ (error 'break "expected: break [FILE:LINE] ~a (R t ...) [when COND ...]" kind)]))
+  (define f (symbol->string (car call)))
+  (define source
+    (and location
+         (match (regexp-match #px"^(.+\\.slog):([0-9]+)(:[0-9]+)?$" location)
+           [(list _ file line column)
+            (format "~a:~a~a" (file-name-from-path file) line (or column ""))]
+           [_ (error 'break "~a is not FILE:LINE" location)])))
+  (define demand? (memq kind '(demand answer)))
+  (when demand? (demand-on! state rs))
+  (define demands (demand-debug-demands (session-demand rs)))
+  (define arity (and demand? (hash-ref demands f #f)))
+  (when (and demand? (pair? (hash-keys demands)) (not arity))
+    (error 'break "~a is not a demand relation; this program's are ~a" f
+           (string-join (sort (hash-keys demands) string<?) ", ")))
+  (when arity
+    (define wanted (if (eq? kind 'demand) (car arity) (+ (car arity) (cdr arity))))
+    (unless (= wanted (length (cdr call)))
+      (error 'break "~a ~a takes ~a terms~a, not ~a" kind f wanted
+             (if (eq? kind 'answer) " (its inputs, then its answers)" "")
+             (length (cdr call)))))
+  (define registry (repl-session-breaks rs))
+  (define id (next-break-id registry))
+  (define terms (map break-term (cdr call)))
+  (session-command-stream!
+   s
+   `(break (id ,id)
+           ,@(if source `((source ,source)) '())
+           ,@(match kind
+               ['demand `((relation ,f))]
+               ['answer `((relation ,(string-append f "_ans")) (judgment #t))]
+               ['match `((match ,f))]
+               ['emit `((relation ,f))])
+           ,@(if (null? terms) '() `((pattern ,@terms)))
+           ,@(break-options (map break-guard guards) ignore log?))
+   (lambda (_line) #t))
+  (define shown (string-trim (if location (format "~a ~a" location text) text)))
+  (hash-set! registry id (break-intent id kind shown #f #f))
+  (text-result
+   (format "~a ~a" (if log? "Logpoint" "Break") id)
+   (list (format "~a ~a~a — ~a" kind shown (if ignore (format " ignore ~a" ignore) "")
+                 (cond [log? "records each match in the break log, without stopping"]
+                       [(eq? kind 'demand) "stops when such a call is asked"]
+                       [(eq? kind 'answer) "stops when such a call is answered"]
+                       [(eq? kind 'match) "stops where the rule matches such a row"]
+                       [else "stops where the rule writes such a row"]))
+         (cond [arity "demand calls are recorded: `calls stack` at the stop, `calls` after"]
+               [(and demand? (hash-empty? demands)) "armed for when the program runs"]
+               [else "armed"]))
+   #:kind "break"))
+
+;; `step into|over|out` at a held stop, a call at a time.  The latest demand
+;; event is where the run stands: at an ask of D, `into` stops at the first
+;; thing D's rules do and `over` at D's answer; at an answer of D (or an ask
+;; D already answered) both go on in D's caller; `out` stops at the answer
+;; of the call the run is inside.  Each arms one break, which the stop (or
+;; the end of the run) removes; other breaks still stop the run first.
+(define (demand-step-break rs how)
+  (define dd (session-demand rs))
+  (unless (demand-debug-on? dd)
+    (error 'step "demand calls are not being recorded; `calls on` before the run"))
+  (define c (demand-sync! rs))
+  (define event (or (calls-last c)
+                   (error 'step "~a: no demand call has been asked yet" how)))
+  (define n (calls-lookup c (cdr event)))
+  (define asks (call-node-asks n))
+  ;; the call the event's rule belongs to
+  (define frame
+    (if (eq? (car event) 'ask)
+        (and (pair? asks) (call-ask-parent (first asks)))
+        (cdr event)))
+  (define caller
+    (if (eq? (car event) 'ask) frame (and (pair? asks) (call-ask-parent (last asks)))))
+  (define returned? (pair? (call-node-answers n)))
+  (define demands (demand-debug-demands dd))
+  (define (term key)
+    `(ctor ,(car key) ,@(for/list ([w (in-list (cdr key))]) `(word ,w))))
+  (define (inside key)
+    `((relation ,@(append* (for/list ([f (in-list (sort (hash-keys demands) string<?))])
+                             (list f (string-append f "_ans")))))
+      (uses ,(term key))))
+  (define (answer-of key)
+    (define outs (cdr (hash-ref demands (car key))))
+    `((relation ,(string-append (car key) "_ans"))
+      (pattern ,(term key) ,@(make-list outs '_))))
+  (define where
+    (match how
+      ['into (cond [(and (eq? (car event) 'ask) (not returned?)) (inside (cdr event))]
+                   [caller (inside caller)]
+                   [else #f])]
+      ['over (cond [(and (eq? (car event) 'ask) (not returned?)) (answer-of (cdr event))]
+                   [caller (inside caller)]
+                   [else #f])]
+      ['out (if (eq? (car event) 'ask)
+                (and frame (answer-of frame))
+                (and caller (answer-of caller)))]))
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-step-id))
+                             (lambda (_l) #t)))
+  (when where
+    (session-command-stream! (repl-session-session rs) `(break (id ,demand-step-id) ,@where)
+                             (lambda (_l) #t))))
+
+(define (demand-step-done! rs)
+  (with-handlers ([exn:fail? void])
+    (session-command-stream! (repl-session-session rs) `(unbreak (id ,demand-step-id))
+                             (lambda (_l) #t))))
 
 (define (unwatch-result state argument)
   (define id (string-trim argument))
@@ -2922,9 +3665,9 @@
 ;; T5 slice (c): a structured refusal the DRIVER met mid-run -- today a
 ;; `replay` the daemon would not honour (a non-monotone epoch answers
 ;; `level-1-unwatchable`, any non-gate park answers `replay-unavailable`).
-;; The run commits past it, so without this the refusal would vanish; a
-;; debugger continuation that was declined is exactly what the operator
-;; needs told.
+;; A pause hook that declines the refusal commits past it, so without this
+;; the refusal would vanish; a debugger continuation that was declined is
+;; exactly what the operator needs told.
 (define (refusal-records events)
   (for/list ([line (in-list events)]
              #:do [(define datum (read-datum line))]
@@ -2993,7 +3736,10 @@
   (define before (catalog-size-snapshot s))
   (define-values (value events)
     (parameterize ([session-prepare-hook
-                    (lambda (_s plan) (prepare-rebind-level1! rs plan))])
+                    (lambda (_s plan)
+                      (hash-set! repl-held-plans rs plan)
+                      (prepare-rebind-level1! rs plan)
+                      (demand-prepare! rs plan))])
       (capture-session-events state thunk)))
   (define after (catalog-size-snapshot s))
   (define change
@@ -3161,7 +3907,20 @@
                      #:kind "state")])]
     [other (error 'state "unparseable pipeline response: ~a" other)]))
 
+;; Every command that names a database (open, save, attach, csv-import)
+;; accepts one spelling: a single path component under data/.  Anything
+;; else -- `..`, a slash, a space -- would read or write outside data/, or
+;; nest a directory the library then lists as a database (audit L-02).
+(define database-name-rx #px"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+(define (check-database-name! who name)
+  (unless (regexp-match? database-name-rx name)
+    (error who
+           "database name ~s must start with a letter or digit and use only letters, digits, dot, underscore, or hyphen"
+           name)))
+
 (define (open-database! state name)
+  (check-database-name! 'open name)
   (unless (db-exists? name) (error 'open "no database named ~a under data/" name))
   (define sessions (server-state-sessions state))
   (cond
@@ -3212,8 +3971,6 @@
 ;; tutorial-only shell escape: tutorials and people exercise the same path.
 ;; The implicit name is collision-free, making a tutorial safe to repeat
 ;; without replacing an unrelated saved database.
-(define csv-import-db-name-rx #px"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
 (define (csv-import-parts argument)
   (define text (string-trim argument))
   (when (string=? text "")
@@ -3228,7 +3985,7 @@
   (define-values (_base name _dir?)
     (split-path (simplify-path (path->complete-path folder))))
   (define candidate (and (path? name) (path->string name)))
-  (unless (and candidate (regexp-match? csv-import-db-name-rx candidate))
+  (unless (and candidate (regexp-match? database-name-rx candidate))
     (error 'csv-import
            "cannot derive a database name from ~a; use `csv-import ~a as NAME`"
            folder folder))
@@ -3249,9 +4006,7 @@
 (define (csv-import-result state argument)
   (define-values (folder requested-name explicit?) (csv-import-parts argument))
   (define base (or requested-name (csv-import-derived-name folder)))
-  (unless (regexp-match? csv-import-db-name-rx base)
-    (error 'csv-import
-           "database NAME must use letters, digits, dot, underscore, or hyphen"))
+  (check-database-name! 'csv-import base)
   (when (and explicit? (csv-import-name-taken? state base))
     (error 'csv-import
            "database ~a already exists on disk or in this REPL; choose another name"
@@ -3370,8 +4125,81 @@
                        (map string-trim (string-split text "\n")))
                " "))
 
+;; ---- rebinds: a program event that writes an existing relation ----------
+;;
+;; A program event that writes a relation the database already holds makes
+;; a NEW version of it (incremental.md §0.4).  The strata bound earlier keep
+;; reading the version they were bound to, so they see neither its new rows
+;; nor any later `add` or `del` on it -- every tip edit lands in the new
+;; version.  That is the pipeline semantics, not a bug, but nothing in a
+;; change summary shows it, so a scratch fragment, a `run`, and a `whatif`
+;; say it: in words, and as the structured `rebinds` field, one record per
+;; rebound relation (relation, version, readers, suggestion).
+
+;; The readers, as prose: a relation whose own (recursive) rules read the
+;; rebound version reads as "`path`'s own rules".
+(define (readers-phrase rel readers)
+  (match (for/list ([n (in-list readers)])
+           (if (eq? n rel) (format "`~a`'s own rules" n) (format "`~a`" n)))
+    [(list one) one]
+    [(list a b) (format "~a and ~a" a b)]
+    [quoted (format "~a and ~a"
+                    (string-join (drop-right quoted 1) ", ") (last quoted))]))
+
+;; The ground facts for `rel` in an arrow-free scratch fragment -- the
+;; `rule (edge 6 7)` that was meant as `add edge 6 7` -- as `add` commands.
+(define (fragment-facts source rel)
+  (cond
+    [(or (not source) (regexp-match? #px"-->|<--" source)) '()]
+    [else
+     (for/list ([m (in-list (regexp-match* #px"\\(([^()\\s]+)((?:\\s+(?:-?[0-9][0-9.]*|\"[^\"]*\"))+)\\)"
+                                           source #:match-select values))]
+                #:when (string=? (second m) (~a rel)))
+       (format "add ~a ~a" rel (string-trim (third m))))]))
+
+;; (values lines records) for `rebinds`, a list of (rel ordinal readers).
+;; `source` is a scratch fragment's text: it gets the scratch advice (the
+;; `add` it should have been; the layer cannot be cleared).  Without it the
+;; advice is the program's.  An `add` no longer helps after the fact -- it
+;; would land in the new version too.
+(define (rebind-report rebinds [source #f])
+  (for/fold ([lines '()] [records '()]
+             #:result (values (reverse lines) (reverse records)))
+            ([rb (in-list rebinds)])
+    (match-define (list rel ordinal readers) rb)
+    (define facts (fragment-facts source rel))
+    ;; one reader takes a singular verb -- unless it is the relation's own
+    ;; rules
+    (define one? (and (null? (cdr readers)) (not (eq? (car readers) rel))))
+    (define advice
+      (cond
+        [(pair? facts)
+         (format "To add a fact the program's rules see, use `~a` instead of a rule~a; this layer cannot be cleared (it extends `~a`), so `discard session` and run the program again to undo it."
+                 (first facts)
+                 (if (null? (cdr facts)) "" " (one `add` per fact)")
+                 rel)]
+        [source
+         (format "A rule deriving into `~a` belongs in the program whose rules read it; this layer cannot be cleared (it extends `~a`), so `discard session` and run the program again to undo it."
+                 rel rel)]
+        [else
+         (format "From here on, edits to `~a` reach only ~a@v~a; to change what ~a ~a, change the program that defines ~a and run it again."
+                 rel rel ordinal (readers-phrase rel readers)
+                 (if one? "sees" "see") (if one? "it" "them"))]))
+    (values
+     (list* advice
+            (format "`~a` is now a new version (~a@v~a); ~a ~a an earlier version and won't see this or later edits to `~a`."
+                    rel rel ordinal (readers-phrase rel readers)
+                    (if one? "reads" "read") rel)
+            lines)
+     (cons (hasheq 'relation (~a rel)
+                   'version ordinal
+                   'readers (map ~a readers)
+                   'suggestion (if (pair? facts) (first facts) 'null))
+           records))))
+
 (define (scratch-register-result state source head)
   (define rs (ensure-mutable-session-record! state 'scratch))
+  (define before-ids (session-strata-ids (repl-session-session rs)))
   (define event (box #f))
   (define-values (_ _events change)
     (with-handlers
@@ -3401,17 +4229,24 @@
   (set-repl-session-changed?! rs #t)
   (define n (scratch-event-n (unbox event)))
   (define writes (scratch-event-writes (unbox event)))
-  (semantic-text-result
-   (format "Scratch ~a · ~a" n head)
-   (list (scratch-single-line source)
-         (format "fragment ~a joined the scratch layer~a"
-                 n
-                 (if (null? writes)
-                     ""
-                     (format " — writes ~a"
-                             (string-join (map ~a writes) ", ")))))
-   change
-   #:kind "scratch"))
+  (define-values (rebind-lines rebinds)
+    (rebind-report (session-rebinds (repl-session-session rs) before-ids)
+                   source))
+  (hash-set
+   (semantic-text-result
+    (format "Scratch ~a · ~a" n head)
+    (append
+     (list (scratch-single-line source)
+           (format "fragment ~a joined the scratch layer~a"
+                   n
+                   (if (null? writes)
+                       ""
+                       (format " — writes ~a"
+                               (string-join (map ~a writes) ", ")))))
+     rebind-lines)
+    change
+    #:kind "scratch")
+   'rebinds rebinds))
 
 (define (scratch-show-result state)
   (define s (ensure-session! state))
@@ -3714,6 +4549,134 @@
     "sessions" "mode" ":share" ":clear" ":theme" "more" "cancel" "scratch" "keep"
     "tiers" "code" "stage"))
 
+;; ---- inspecting a held stop, without moving it ------------------------------
+;;
+;; A stop's scope: the rule's variables bound at the port (and those a clause
+;; break's pattern bound from the matched values), each with its word; the
+;; rule's variables not bound yet; the clause row a clause break matched.  It
+;; is read once per stop -- `frames` reads the daemon's step record, which
+;; nothing but a resume changes -- and everything below reads only it, the
+;; held run's working state, or committed state: none of it steps,
+;; continues, commits or moves the session's logical time.
+(struct stop-scope (where bindings unbound clause) #:transparent)
+;; bindings: ((name text word) ...); clause: (relation . row-text) or #f
+
+(define (read-stop-scope lines)
+  (define (datums) (for/list ([line (in-list lines)]) (read-datum line)))
+  (stop-scope
+   (for/or ([d (in-list (datums))])
+     (match d
+       [`(step-at (port ,port) (rule ,_) (variant ,_) (op ,_) (source ,source) ,_ ...)
+        (hasheq 'port (~a port) 'source (~a source))]
+       [_ #f]))
+   (append*
+    (for/list ([d (in-list (datums))])
+      (match d
+        [`(bindings ,pairs ...)
+         (for/list ([pr (in-list pairs)])
+           (list (~a (first pr)) (~a (second pr))
+                 (and (= (length pr) 3) (third pr))))]
+        [_ '()])))
+   (append* (for/list ([d (in-list (datums))])
+              (match d [`(unbound ,names ...) (map ~a names)] [_ '()])))
+   (for/or ([d (in-list (datums))])
+     (match d
+       [`(clause (relation ,r) (row ,row)) (cons (~a r) (~a row))]
+       [_ #f]))))
+
+;; held -> (cons record scope): the scope of the stop the held run is at.
+(define held-scopes (make-weak-hasheq))
+
+(define (frame-lines s)
+  (session-debug-lines! s '(frames)
+                        (lambda (l) (regexp-match? #px"^\\(frames-end " l))))
+
+(define (current-stop-scope state)
+  (define held (server-state-held state))
+  (define rs (current-repl-session state))
+  (and held rs (step-stop-line? (held-run-record held))
+       (let ([cached (hash-ref held-scopes held #f)])
+         (if (and cached (eq? (car cached) (held-run-record held)))
+             (cdr cached)
+             (let ([scope (read-stop-scope (frame-lines (repl-session-session rs)))])
+               (hash-set! held-scopes held (cons (held-run-record held) scope))
+               scope)))))
+
+(define (scope-binding scope name)
+  (and scope (assoc name (stop-scope-bindings scope))))
+
+;; `p X` / `print X` at a held stop: the value a rule variable is bound to.
+(define (print-result state argument)
+  (define name (string-trim argument))
+  (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_']*$" name)
+    (error 'print "expected: print VAR, a variable of the stopped rule"))
+  (define scope (or (current-stop-scope state)
+                    (error 'print "no run is held at a rule's port; `print` reads a stop's variables")))
+  (define binding (scope-binding scope name))
+  (cond
+    [binding
+     (hash-set* (text-result (format "~a" name) (list (format "~a = ~a" name (second binding)))
+                             #:kind "print")
+                'name name 'value (second binding) 'word (or (third binding) 'null))]
+    [(member name (stop-scope-unbound scope))
+     (text-result (format "~a" name)
+                  (list (format "~a is not yet bound at this clause" name))
+                  #:kind "print")]
+    [else
+     (error 'print "~a is not a variable of the stopped rule; its variables are ~a" name
+            (string-join (append (map first (stop-scope-bindings scope))
+                                 (stop-scope-unbound scope))
+                         ", "))]))
+
+;; A query at a held stop reads the run's working state; a variable of the
+;; stopped rule stands for its value there.  Frame handles are `#` labels
+;; this server never mints (it counts up from 1), resolved before the
+;; checked table.
+(define frame-handle-base 900000000)
+
+(define (frame-substituted-query text scope)
+  (define bound
+    (for/list ([b (in-list (stop-scope-bindings scope))] #:when (third b)) b))
+  (define table (make-hash))
+  (define replaced
+    ;; whole words outside strings and comments
+    (let loop ([parts (regexp-split #px"(\"(?:[^\"\\\\]|\\\\.)*\")" text)]
+               [strings (regexp-match* #px"\"(?:[^\"\\\\]|\\\\.)*\"" text)]
+               [out '()])
+      (define piece
+        (regexp-replace*
+         #px"(?<![A-Za-z0-9_'#])([A-Za-z_][A-Za-z0-9_']*)(?![A-Za-z0-9_'])"
+         (car parts)
+         (lambda (all name)
+           (match (assoc name bound)
+             [(list _ _ word)
+              (define label (format "#~a" (+ frame-handle-base (hash-count table))))
+              (hash-set! table label word)
+              label]
+             [_ all]))))
+      (if (null? strings)
+          (string-append* (reverse (cons piece out)))
+          (loop (cdr parts) (cdr strings) (list* (car strings) piece out)))))
+  (values replaced table))
+
+(define (frame-handle-resolver state table)
+  (define checked (query-handle-resolver state))
+  (lambda (label)
+    (define word (hash-ref table label #f))
+    (if word
+        (query-literal 'word (number->string word))
+        (checked label))))
+
+;; The prepared run the held stop is in, from the session's prepare hook.
+(define repl-held-plans (make-weak-hasheq))
+
+;; The snapshot a query at a held stop plans against: the prepared
+;; boundary's catalog, bound by the daemon to the run's working relations.
+(define (held-query-boundary-snapshot s plan)
+  (define head (boundary-plan-output plan))
+  (query-boundary-snapshot s #:head head
+                           #:facts `(catalog boundary ,(boundary-key head))))
+
 ;; ---- T5 slice (c) / R4: the pre-commit gate as a place ---------------------
 ;; A level-1 watch is an explicit request to stop the run before it commits,
 ;; so a session that has armed one runs its semantic commands on a HELD
@@ -3773,7 +4736,8 @@
 ;; resolve a pause or observe one, and neither wants a held run of its own.
 (define pause-resolution-verbs
   '("commit" "continue" "replay" "abort" "step" "frames" "finish" "why"
-    "breaks" "unbreak" "whynot"))
+    "breaks" "unbreak" "whynot" "enable" "disable" "calls" "logs"
+    "p" "print"))
 
 ;; Fields of the uniform pause record, for rendering (t0-contract).
 (define (pause-record-field line key)
@@ -3795,7 +4759,18 @@
        [_ '()])]
     [_ '()]))
 
-(define (held-pause-result state held)
+(define (held-pause-result state held #:refused [refused #f])
+  (held-pause-result* state held refused))
+
+;; The pause record, carrying the demand stack when calls are recorded.
+(define (with-calls-stack result calls)
+  (if calls
+      (hash-set result 'calls (hasheq 'view "stack"
+                                      'last (and (calls-last calls) (~a (car (calls-last calls))))
+                                      'stack (demand-stack calls #t)))
+      result))
+
+(define (held-pause-result* state held refused)
   (define line (held-run-record held))
   (define cites (pause-watch-citations line))
   (define rs (current-repl-session state))
@@ -3807,10 +4782,13 @@
   (define broke
     (match (and stepped? (pause-breakpoint-detail line))
       [(? string? detail)
-       (match (regexp-match #px"^(b[0-9]+):" detail)
+       (match (regexp-match #px"^(b[0-9]+|demand-step):" detail)
          [(list _ id) id]
          [_ #f])]
       [_ #f]))
+  ;; With demand calls recorded, the stop is inside a chain of calls.
+  (define calls
+    (and rs stepped? (demand-debug-on? (session-demand rs)) (demand-sync! rs)))
   (define watch-lines
     (for/list ([id (in-list cites)])
       (define intent (and registry (hash-ref registry id #f)))
@@ -3821,15 +4799,24 @@
                   ""))))
   (attach-session-state
    state
+   (with-calls-stack
    (text-result
     ;; Name the place honestly: a step stop, the pre-commit gate, or the
     ;; clean iteration boundary `finish` asked to be held at.
-    (cond [broke (format "Paused · break ~a" broke)]
+    (cond [(equal? broke demand-step-id) "Paused · demand step"]
+          [broke (format "Paused · break ~a" broke)]
           [stepped? "Paused · step"]
           [(pair? cites) "Paused · pre-commit gate"]
           [(unbox (held-run-interrupted held)) "Paused · interrupt"]
           [else "Paused · iteration boundary"])
     (append
+     ;; the continuation the operator just asked for, declined in place
+     (match (and refused (read-datum refused))
+       [`(refused ,class ,_generation ,detail ...)
+        (list (format "refused: ~a ~a" class
+                      (string-join (for/list ([d (in-list detail)])
+                                     (format "~s" d)) " ")))]
+       [_ '()])
      (list (format "~a · iteration ~a · phase ~a"
                    (or (pause-record-field line 'stratum) "?")
                    (or (pause-record-field line 'iteration) "?")
@@ -3838,13 +4825,16 @@
          (list (format "port ~a" (or (pause-breakpoint-detail line) "?"))
                "frames shows the join stack at this port")
          '())
+     (if calls (stack-lines calls #t) '())
      watch-lines
      (if (unbox (held-run-interrupted held))
          (list "Ctrl-C: the run is paused at a slice boundary; nothing is committed"
                "continue resumes it · abort settles the current iteration, then discards the run")
          '())
      (list
-      "queries here answer COMMITTED masters; the candidate rows are not in them"
+      (if stepped?
+          "p VAR prints the rule's variables; ?queries read the run's working state, a variable of the rule standing for its value"
+          "queries here answer COMMITTED masters; the candidate rows are not in them")
       (format "held: ~a" (held-run-source held)))
      (if (positive? (held-run-replays held))
          (list (format "replayed ~a time~a"
@@ -3852,10 +4842,13 @@
                        (if (= (held-run-replays held) 1) "" "s")))
          '())
      (list (string-append
-            "step [match|fire|emit|tuple] · frames · why · finish · "
+            "step [match|fire|emit|tuple] · "
+            (if calls "step into|over|out · calls stack · " "")
+            "frames · why · finish · "
             (if broke "continue · " "commit · replay · ")
             "abort")))
-    #:kind "paused")))
+    #:kind "paused")
+   calls)))
 
 ;; The daemon reports the join stack STRUCTURALLY -- port, rule position and
 ;; rows -- plus, since 2026-09-08, the BINDINGS of the named registers the
@@ -3887,15 +4880,27 @@
          (format "  ~a" (string-join (for/list ([pr (in-list pairs)])
                                        (format "~a = ~a" (first pr) (second pr)))
                                      " · "))]
+        [`(unbound ,names ...)
+         (format "  not yet bound at this clause: ~a" (string-join (map ~a names) ", "))]
+        [`(clause (relation ,r) (row ,row)) (format "  matched (~a ~a)" r row)]
         [`(frames-end ,n) (format "~a frame~a" n (if (= n 1) "" "s"))]
         [`(refused ,class ,_generation ,detail ...)
          (format "refused: ~a ~a" class
                  (string-join (for/list ([d (in-list detail)])
                                 (format "~s" d)) " "))]
         [_ line])))
+  ;; the scope as data too, for an editor to show beside the rule
+  (define scope (read-stop-scope lines))
   (attach-session-state
    state
-   (text-result "Frames" rendered #:kind "frames")))
+   (hash-set* (text-result "Frames" rendered #:kind "frames")
+              'bindings (for/list ([b (in-list (stop-scope-bindings scope))])
+                          (list (first b) (second b)))
+              'unbound (stop-scope-unbound scope)
+              'clause (match (stop-scope-clause scope)
+                        [(cons r row) (hasheq 'relation r 'row row)]
+                        [_ 'null])
+              'at (or (stop-scope-where scope) 'null))))
 
 ;; ---- T5 slice (d1): `why` at the prompt (repl-ux §9.4) --------------------
 ;;
@@ -4007,14 +5012,19 @@
                 #:kind "proof")))
 
 ;; Wait for the held thread's next event: it either finishes the command
-;; (result or fault) or parks again.
-(define (await-held-run state held)
+;; (result or fault), parks again, or stays at the park on record because
+;; the daemon declined the continuation.  A replay counts only once it
+;; lands.
+(define (await-held-run state held #:replay? [replay? #f])
   (match (channel-get (held-run-from-run held))
     [(list 'paused line)
      (set-held-run-record! held line)
      (set-held-run-parks! held (add1 (held-run-parks held)))
+     (when replay?
+       (set-held-run-replays! held (add1 (held-run-replays held))))
      (set-server-state-held! state held)
      (held-pause-result state held)]
+    [(list 'refused line) (held-pause-result state held #:refused line)]
     [(list 'result value)
      (set-server-state-held! state #f)
      (set-server-state-interrupt! state #f)   ; scoped to the command
@@ -4052,20 +5062,27 @@
        (parameterize
            ([session-pause-hook
              (lambda (_s line)
+               (define (hold! event)
+                 (channel-put from-run event)
+                 (match (channel-get to-run)
+                   ['abort
+                    (raise (exn:fail:gate-abort
+                            "aborted at the pre-commit gate"
+                            (current-continuation-marks)))]
+                   [directive directive]))
                (cond
+                 ;; only a held park sends anything but a continue, so a
+                 ;; refusal answers the operator: the run is still parked
+                 ;; there, and must stay held rather than commit
+                 [(regexp-match? #px"^\\(refused " line)
+                  (hold! (list 'refused line))]
                  [(or (gate-pause-line? line) (unbox hold-next)
                       (server-state-interrupt state))
                   (set-box! hold-next #f)
                   ;; an interrupt is consumed by the park it causes
                   (set-box! interrupted (and (server-state-interrupt state) #t))
                   (set-server-state-interrupt! state #f)
-                  (channel-put from-run (list 'paused line))
-                  (match (channel-get to-run)
-                    ['abort
-                     (raise (exn:fail:gate-abort
-                             "aborted at the pre-commit gate"
-                             (current-continuation-marks)))]
-                    [directive directive])]
+                  (hold! (list 'paused line))]
                  [else 'continue]))])
          (with-handlers ([(lambda (_) #t)
                           (lambda (e) (channel-put from-run (list 'raise e)))])
@@ -4085,9 +5102,8 @@
      (channel-put (held-run-to-run held) 'continue)
      (await-held-run state held)]
     [(equal? verb "replay")
-     (set-held-run-replays! held (add1 (held-run-replays held)))
      (channel-put (held-run-to-run held) 'replay)
-     (await-held-run state held)]
+     (await-held-run state held #:replay? #t)]
     ;; T5 slice (c3): a step is a resume with a granularity.  From the gate
     ;; it replays the completed read and stops at the first matching port
     ;; (walking the very read that produced the candidate); from a step stop
@@ -4096,6 +5112,13 @@
           (equal? (string-trim argument) "iter"))
      ;; repl-ux §9.3's coarsest step is `finish` by another name.
      (dispatch-at-gate state held "finish")]
+    [(and (equal? verb "step")
+          (member (string-trim argument) '("into" "over" "out")))
+     (define rs (ensure-session-record! state))
+     (demand-step-break rs (string->symbol (string-trim argument)))
+     (channel-put (held-run-to-run held) 'continue)
+     (begin0 (await-held-run state held)
+             (demand-step-done! rs))]
     [(equal? verb "step")
      (define line (step-command-line argument))
      (unless line
@@ -4125,6 +5148,19 @@
     [else (dispatch-command* state source)]))
 
 (define (dispatch-command state source)
+  ;; The server outlives the programs it compiles: a syntax error must come
+  ;; back as this command's failure, never print to the bootstrap pipe and
+  ;; exit the process (the parser's command-line default).
+  (define result
+    (parameterize ([parse-errors-raise? #t])
+      (dispatch-command/held state source)))
+  ;; Whether a run is held after this command, read once it has finished:
+  ;; a resolved run's own result is built on the held thread before the
+  ;; hold is released, and an observation made at a stop (a query, frames)
+  ;; is not itself a pause, so neither answers this by its kind (audit D-34).
+  (hash-set result 'held (and (server-state-held state) #t)))
+
+(define (dispatch-command/held state source)
   (define held (server-state-held state))
   (cond
     [held (dispatch-at-gate state held source)]
@@ -4212,6 +5248,9 @@
                      (if rs (or (repl-session-database rs) "scratch") "none"))
              (format "resident databases: ~a"
                      (hash-count (server-state-sessions state))))
+       (if (server-state-held state)
+           (list "a run is held: continue, commit, replay or abort resolves it")
+           '())
        (for/list ([p (in-list pending)])
          (match-define (list anchor rel adds dels) p)
          (format "pending~a: ~a~a~a"
@@ -4260,6 +5299,11 @@
     ["break" (break-result state argument)]
     ["unbreak" (unbreak-result state argument)]
     ["breaks" (breaks-result state)]
+    ["enable" (enable-break-result state argument #t)]
+    ["disable" (enable-break-result state argument #f)]
+    ["calls" (demand-result state argument)]
+    ["logs" (logs-result state argument)]
+    [(or "p" "print") (print-result state argument)]
     ["watch" (watch-result state argument)]
     ["unwatch" (unwatch-result state argument)]
     ["watches" (watches-result state)]
@@ -4276,52 +5320,60 @@
     ;; epoch with one change summary.
     ["stage"
      (define rs (ensure-mutable-session-record! state 'stage))
-     (define datums
-       (with-handlers
-           ([exn:fail?
-             (lambda (e)
-               (error 'stage "unreadable staged change: ~a" (exn-message e)))])
-         (port->list read (open-input-string argument))))
-     (when (null? datums)
-       (error 'stage "expected: stage +(REL V...) -(REL V...) ..."))
-     (define staged
-       (let loop ([ds datums] [acc '()])
-         (match ds
-           ['() (reverse acc)]
-           [(list-rest '+ (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '+ fact) acc))]
-           [(list-rest '- (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '- fact) acc))]
-           ;; a bare fact stages as an add
-           [(list-rest (and fact (list _ _ ...)) rest)
-            (loop rest (cons (cons '+ fact) acc))]
-           [_ (error 'stage
-                     "malformed staged change; expected signed facts like +(edge 1 2)")])))
+     (define staged (read-signed-changes 'stage argument))
+     ;; every change is checked before any is queued, so a refused stage
+     ;; leaves the pending batch as it was
+     (for ([sf (in-list staged)])
+       (match-define (cons _sign (cons rel vals)) sf)
+       (check-edit-tuple! 'stage (repl-session-session rs) rel vals))
      (for ([sf (in-list staged)])
        (match-define (cons sign (cons rel vals)) sf)
        (session-batch! (repl-session-session rs) sign rel vals))
-     (define summary (session-pending-summary (repl-session-session rs)))
      (text-result
       (format "Staged ~a change~a"
               (length staged) (if (= (length staged) 1) "" "s"))
       (append
        (for/list ([sf (in-list staged)])
          (format "~a~a" (car sf) (cdr sf)))
-       (list (format "pending: ~a — `flush` commits one update epoch"
-                     (string-join
-                      (for/list ([p (in-list summary)])
-                        (match-define (list _anchor rel adds dels) p)
-                        (format "~a~a~a" rel
-                                (if (positive? adds) (format " +~a" adds) "")
-                                (if (positive? dels) (format " -~a" dels) "")))
-                      "; "))))
+       (pending-lines (repl-session-session rs)))
+      #:kind "stage")]
+    ;; M-06: a refused flush keeps the batch, so the change that broke it is
+    ;; withdrawn by name, in the spelling it was staged with.
+    ["unstage"
+     (define rs (ensure-mutable-session-record! state 'unstage))
+     (define s (repl-session-session rs))
+     (define changes (read-signed-changes 'unstage argument))
+     (define-values (withdrawn missing)
+       (partition (lambda (sf)
+                    (match-define (cons sign (cons rel vals)) sf)
+                    (session-unbatch! s sign rel vals))
+                  changes))
+     (text-result
+      (format "Unstaged ~a change~a"
+              (length withdrawn) (if (= (length withdrawn) 1) "" "s"))
+      (append
+       (for/list ([sf (in-list withdrawn)])
+         (format "~a~a" (car sf) (cdr sf)))
+       (for/list ([sf (in-list missing)])
+         (format "~a~a was not staged" (car sf) (cdr sf)))
+       (pending-lines s))
       #:kind "stage")]
     ["flush"
      (define rs (ensure-mutable-session-record! state 'flush))
+     (define s (repl-session-session rs))
      (define-values (_ _events change)
-       (capture-semantic-change
-        state rs "flush" "settled" '()
-        (lambda () (session-flush! (repl-session-session rs)))))
+       (with-handlers
+           ([exn:fail?
+             (lambda (e)
+               ;; a batch that failed validation is still queued; say so,
+               ;; rather than leave the user to guess it was dropped
+               (if (null? (session-pending-summary s))
+                   (raise e)
+                   (error 'flush "~a; nothing was applied, and the staged changes are kept (`unstage` withdraws one)"
+                          (exn-message e))))])
+         (capture-semantic-change
+          state rs "flush" "settled" '()
+          (lambda () (session-flush! s)))))
      (set-repl-session-changed?! rs #t)
      (semantic-text-result
       "Flush"
@@ -4367,17 +5419,22 @@
      (when (string=? argument "")
        (error 'run "expected: run PATH"))
      (define rs (ensure-mutable-session-record! state 'run))
+     (define before-ids (session-strata-ids (repl-session-session rs)))
      (define-values (_ _events change)
        (capture-semantic-change
         state rs "run" "settled" '()
         (lambda () (session-run! (repl-session-session rs) argument))))
      (hash-set! repl-last-run rs argument)
      (set-repl-session-changed?! rs #t)
-     (semantic-text-result
-      (format "Run ~a" argument)
-      (list "program completed at a settled daemon boundary")
-      change
-      #:kind "run")]
+     (define-values (rebind-lines rebinds)
+       (rebind-report (session-rebinds (repl-session-session rs) before-ids)))
+     (hash-set
+      (semantic-text-result
+       (format "Run ~a" argument)
+       (cons "program completed at a settled daemon boundary" rebind-lines)
+       change
+       #:kind "run")
+      'rebinds rebinds)]
     ["whatif" (whatif-result state argument)]
     ["replace" (replace-instance-result state argument)]
     ["preview" (preview-result state)]
@@ -4395,6 +5452,7 @@
        (error (string->symbol verb) "expected a relation followed by values"))
      (match-define (list* rel values) datum)
      (define rs (ensure-mutable-session-record! state (string->symbol verb)))
+     (check-edit-tuple! (string->symbol verb) (repl-session-session rs) rel values)
      (define requested
        (list (hasheq 'relation (relation-key rel)
                      'added (if (string=? verb "add") 1 0)
@@ -4403,11 +5461,17 @@
        (capture-semantic-change
         state rs verb "settled" requested
         (lambda ()
-          (session-batch! (repl-session-session rs)
-                          (if (string=? verb "add") '+ '-)
-                          (string->symbol (relation-key rel))
-                          values)
-          (session-flush! (repl-session-session rs)))))
+          (define s (repl-session-session rs))
+          (define sign (if (string=? verb "add") '+ '-))
+          (define rel* (string->symbol (relation-key rel)))
+          (session-batch! s sign rel* values)
+          ;; a refused flush keeps the batch queued; this edit was never
+          ;; staged by the user, so it must not outlive its own refusal
+          (with-handlers ([exn:fail?
+                           (lambda (e)
+                             (session-unbatch! s sign rel* values)
+                             (raise e))])
+            (session-flush! s)))))
      (set-repl-session-changed?! rs #t)
      (semantic-text-result
       (format "~a · ~a" (string-titlecase verb) (relation-key rel))
@@ -4464,6 +5528,7 @@
          [(list db source "as" destination) (values db source destination)]
          [_ (error 'attach
                    "expected: attach DB as DEST | attach DB SOURCE as DEST")]))
+     (check-database-name! 'attach db)
      (define rs (ensure-mutable-session-record! state 'attach))
      (define plan (box #f))
      (define-values (_ _events change)
@@ -4528,6 +5593,7 @@
          [_ (values (string-trim argument) #f)]))
      (when (string=? name "")
        (error 'save "expected: save NAME [with scratch]"))
+     (check-database-name! 'save name)
      (define rs (ensure-mutable-session-record! state 'save))
      (define pending-scratch
        (session-scratch-events (repl-session-session rs)))
@@ -4582,6 +5648,14 @@
     [(or ":quit" "quit" "exit")
      (set-server-state-closing?! state #t)
      (hasheq 'kind "quit" 'title "Goodbye" 'lines (list "REPL closed") 'close #t)]
+    ;; at a held stop, a bare variable of the stopped rule that no command
+    ;; claims prints it
+    [_ #:when (and (string=? (string-trim argument) "")
+                   (server-state-held state)
+                   (let ([scope (current-stop-scope state)])
+                     (and scope (or (scope-binding scope trimmed)
+                                    (member trimmed (stop-scope-unbound scope))))))
+     (print-result state trimmed)]
     [_
      (error 'command
             (format "unknown command ~a; type :help for the current command set" verb))])]))
@@ -4631,9 +5705,7 @@
 
 (define (serve-request state request)
   (define id (request-id request))
-  (with-handlers ([exn:fail?
-                   (lambda (e)
-                     (failure id "command" (exn-message e)))])
+  (with-handlers ([exn:fail? (lambda (e) (command-failure id e))])
     (match (hash-ref request 'method #f)
       ["command"
        (define params (hash-ref request 'params (hasheq)))
@@ -4805,7 +5877,8 @@
 
 (module+ test
   (require rackunit
-           racket/runtime-path)
+           racket/runtime-path
+           (only-in "lexer.rkt" make-tinkr-lexer token->tag token->str))
 
   (define-runtime-path semantic-session-golden
     "../tests/expected/repl/semantic-session.txt")
@@ -4816,6 +5889,207 @@
   (define framed (get-output-bytes out))
   (check-equal? (read-frame (open-input-bytes framed))
                 (hasheq 'id 7 'method "ping"))
+
+  ;; Every answer says whether a run is held, including an observation made
+  ;; at the stop, and the answer that releases it says it is not.
+  (let ([held-environment (environment-variables-copy (current-environment-variables))])
+    (environment-variables-set! held-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! held-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables held-environment])
+      (define state (make-server-state))
+      (define (held? line) (hash-ref (dispatch-command state line) 'held))
+      (check-false (held? "run tests/reach.slog"))
+      (check-false (held? "break r1"))
+      (check-true (held? "run tests/reach.slog"))
+      (check-true (held? "?count (path X Y)"))
+      (check-regexp-match #px"a run is held"
+                          (string-join (hash-ref (dispatch-command state ":status") 'lines)))
+      (check-false (held? "abort"))
+      (void (dispatch-command state ":quit"))))
+
+  ;; A program event at the prompt that writes a relation the program
+  ;; already reads makes a new version of it (incremental.md §0.4): the
+  ;; earlier readers keep the version they were bound to and never see the
+  ;; new rows or any later edit.  The result says so, in words and as the
+  ;; structured `rebinds` field; `whatif` says the same; and a retraction
+  ;; of a rule-derived fact says why it refuses and what works instead.
+  (let ([rebind-environment (environment-variables-copy (current-environment-variables))]
+        [second-program (make-temporary-file "repl-rebind-~a.slog")])
+    (environment-variables-set! rebind-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! rebind-environment #"SLOG_THREADS" #"1")
+    (with-output-to-file second-program #:exists 'truncate
+      (lambda () (display "table (edge int int)\nrule (edge 8 9)\n")))
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables rebind-environment])
+      (define state (make-server-state))
+      (define (command line) (dispatch-command state line))
+      (define (lines-of result) (string-join (hash-ref result 'lines) "\n"))
+      (dynamic-wind
+        void
+        (lambda ()
+          (void (command "run tests/reach.slog"))
+          ;; a fact written as a rule is not an input
+          (check-exn
+           #px"\\(2 3\\) from edge: tuple is derived-only -- a rule of the program derives it \\(a fact in the program source, like `rule \\(edge 2 3\\)`, is a rule too\\).*to remove it, change the program and run it again"
+           (lambda () (command "del edge 2 3")))
+          ;; a scratch view over program relations rebinds nothing, and an
+          ;; edit to its inputs still reaches it
+          (define view (command "table (p2 int int) rule (path X Y) --> (p2 X Y)"))
+          (check-equal? (hash-ref view 'rebinds) '())
+          (define clean-whatif (command "whatif add edge 4 5"))
+          (check-equal? (hash-ref clean-whatif 'rebinds) '())
+          (check-equal? (hash-ref clean-whatif 'affected) '("p2" "path"))
+          (check-regexp-match #px"p2 \\+4 \\(6 -> 10\\)"
+                              (lines-of (command "add edge 4 5")))
+          (check-regexp-match #px"p2 -4 \\(10 -> 6\\)"
+                              (lines-of (command "del edge 4 5")))
+          ;; a scratch fact into edge: a new version path never reads
+          (define fact (command "rule (edge 6 7)"))
+          (check-equal? (hash-ref fact 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 1
+                                      'readers '("path")
+                                      'suggestion "add edge 6 7")))
+          (check-regexp-match
+           #px"`edge` is now a new version \\(edge@v1\\); `path` reads an earlier version and won't see this or later edits to `edge`.\nTo add a fact the program's rules see, use `add edge 6 7` instead of a rule; this layer cannot be cleared"
+           (lines-of fact))
+          (check-regexp-match #px"`edge` is now a new version"
+                              (string-join (hash-ref fact 'brief-lines) "\n"))
+          ;; whatif names the readers instead of "no derived relations"
+          (define stale-whatif (command "whatif del edge 1 2"))
+          (check-equal? (hash-ref stale-whatif 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 1
+                                      'readers '("path")
+                                      'suggestion 'null)))
+          (check-false (regexp-match? #px"no derived relations read"
+                                      (lines-of stale-whatif)))
+          (check-regexp-match
+           #px"From here on, edits to `edge` reach only edge@v1; to change what `path` sees, change the program that defines it and run it again.\nlikely route: input-only edit — no derived relation reads this version"
+           (lines-of stale-whatif))
+          ;; a rule extending a recursive relation: its own rules are
+          ;; stale readers, beside the scratch view over it
+          (define self (command "rule (path 99 99) <-- (edge 1 2)"))
+          (check-equal? (hash-ref (first (hash-ref self 'rebinds)) 'readers)
+                        '("p2" "path"))
+          (check-regexp-match
+           #px"`p2` and `path`'s own rules read an earlier version.*\nA rule deriving into `path` belongs in the program whose rules read it"
+           (lines-of self))
+          ;; a `run` at the prompt reports the same, with the program advice
+          (define rerun (command (format "run ~a" second-program)))
+          (check-equal? (hash-ref rerun 'rebinds)
+                        (list (hasheq 'relation "edge" 'version 2
+                                      'readers '("path")
+                                      'suggestion 'null)))
+          (check-regexp-match #px"`edge` is now a new version \\(edge@v2\\)"
+                              (lines-of rerun)))
+        (lambda ()
+          (void (command ":quit"))
+          (delete-file second-program)))))
+
+  ;; Two programs whose heads stage (a constructed id another head reads)
+  ;; each mint a temp in their first rule stratum.  Layered into one
+  ;; session they must not land on one relation: level-numbered temps
+  ;; named both `temp1x0`, at arities 2 and 3, and the second install
+  ;; killed the daemon ("relation arity mismatch for temp1x0").  Both
+  ;; layers stay queryable, and both keep maintaining afterwards.
+  (let ([layer-environment (environment-variables-copy (current-environment-variables))]
+        [first-program (make-temporary-file "repl-layer-a-~a.slog")]
+        [second-program (make-temporary-file "repl-layer-b-~a.slog")])
+    (environment-variables-set! layer-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! layer-environment #"SLOG_THREADS" #"1")
+    (with-output-to-file first-program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "struct (lbnd int int)\ntable (lsrc int int)\n"
+                  "table (lst int lbnd)\ntable (lkv lbnd int)\n"
+                  "rule (lsrc 1 2) (lsrc 2 3)\n"
+                  "rule (lsrc X Y) --> (lst X (lbnd X Y)) (lkv (lbnd X Y) Y)\n"))))
+    (with-output-to-file second-program #:exists 'truncate
+      (lambda ()
+        (display (string-append
+                  "struct (lcell int int int)\ntable (llink int int int)\n"
+                  "table (lowns int int lcell)\ntable (lval lcell int int)\n"
+                  "rule (llink 1 2 5) (llink 2 3 6)\n"
+                  "rule (llink X Y C) --> (lowns X C (lcell X Y C)) (lval (lcell X Y C) Y C)\n"))))
+    (define state (make-server-state))
+    (define (count-of query)
+      (hash-ref (dispatch-command state query) 'query-matched))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-directory repository-root]
+                       [current-environment-variables layer-environment])
+          (void (dispatch-command state (format "run ~a" first-program)))
+          (void (dispatch-command state (format "run ~a" second-program)))
+          (check-equal? (count-of "?count (lst X Y)") 2)
+          (check-equal? (count-of "?count (lkv X Y)") 2)
+          (check-equal? (count-of "?count (lowns X Y Z)") 2)
+          (check-equal? (count-of "?count (lval X Y Z)") 2)
+          (void (dispatch-command state "add lsrc 5 6"))
+          (void (dispatch-command state "add llink 7 8 9"))
+          (check-equal? (count-of "?count (lkv X Y)") 3)
+          (check-equal? (count-of "?count (lval X Y Z)") 3)))
+      (lambda ()
+        (close-server-session! state)
+        (delete-file first-program)
+        (delete-file second-program))))
+
+  ;; A memory-budget pause is read as the record it is, in either spelling;
+  ;; no other pause is one.
+  (check-true (memory-pause? "(paused (generation 9) (scc 3) (stratum \"alpha\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget memory)))"))
+  (check-true (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 memory)"))
+  (check-false (memory-pause? "(paused (generation 9) (scc 3) (stratum \"memory\") (iteration 7) (phase read) (settled #f) (progress (words 42) (exact #f)) (timing (call-ms 1.250) (total-ms 9.500)) (cause (budget time)))"))
+  (check-false (memory-pause? "(paused 3 \"000878c0\" 17 read 2113480 8003 8003 time)"))
+  (check-false (memory-pause? "(paused (cause (breakpoint \"memory\")))"))
+  (check-false (memory-pause? "(paused unbalanced memory"))
+
+  ;; A run that reaches the daemon's memory cap fails, out of memory, rather
+  ;; than being continued past the cap one slice at a time.  A 1-byte cap is
+  ;; below the daemon's own resident size, so the first check trips it.
+  (let ([memory-environment (environment-variables-copy (current-environment-variables))])
+    (environment-variables-set! memory-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! memory-environment #"SLOG_THREADS" #"1")
+    (environment-variables-set! memory-environment #"SLOG_MEM_BYTES" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables memory-environment])
+      (define state (make-server-state))
+      (define answer (serve-request state (hasheq 'id 1 'method "command"
+                                                  'params (hasheq 'line "run tests/accel_chain.slog"))))
+      (check-false (hash-ref answer 'ok))
+      (check-regexp-match #px"out of memory" (hash-ref (hash-ref answer 'error) 'message))
+      (void (dispatch-command state ":quit"))))
+
+  ;; A syntax error is the command's failure, positioned at the offending
+  ;; token -- the parser must not print to the bootstrap pipe and exit the
+  ;; server -- and the session survives it.
+  (let ([state (make-server-state)]
+        [broken (make-temporary-file "repl-parse-~a.slog")])
+    (define (command line)
+      (serve-request state (hasheq 'id 1 'method "command"
+                                   'params (hasheq 'line line))))
+    (with-output-to-file broken #:exists 'truncate
+      (lambda () (display "table (edge int int)\nrule (edge X Y) --> (edge Y X))\n")))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-directory repository-root])
+          (define run-error (hash-ref (command (format "run ~a" broken)) 'error))
+          (check-equal? (hash-ref run-error 'span)
+                        (hasheq 'file (path->string broken) 'line 2 'col 31))
+          (check-regexp-match #px"^repl-parse-[^:]+\\.slog:2:31: Expected an atom"
+                              (hash-ref run-error 'message))
+          ;; a scratch fragment is positioned in its own layer file
+          (define scratch-span
+            (hash-ref (hash-ref (command "rule (edge X Y --> (edge Y X)") 'error)
+                      'span))
+          (check-equal? (list (file-name-from-path (hash-ref scratch-span 'file))
+                              (hash-ref scratch-span 'line)
+                              (hash-ref scratch-span 'col))
+                        (list (string->path "1.slog") 1 16))
+          (check-true (hash-ref (command ":ping") 'ok))))
+      (lambda ()
+        (close-server-session! state)
+        (delete-file broken))))
 
   (define state (make-server-state))
   (define help-result (dispatch-command state ":help"))
@@ -4845,6 +6119,13 @@
                (dispatch-command state "library select __missing_repl_test_database__")))
   (check-exn #px"expected: library"
              (lambda () (dispatch-command state "library next")))
+  ;; L-02: a database name is one component under data/, for every command
+  ;; that takes one; the refusal comes before any session is created.
+  (for ([command (in-list (list "open .."
+                                "save ../out/l02_escape"
+                                "attach l02/nested as x"))])
+    (check-exn #px"database name \".*\" must start with a letter or digit"
+               (lambda () (dispatch-command state command))))
   (check-equal? (hash-ref (dispatch-command state ":status") 'lines)
                 (list (format "protocol: ~a" protocol-version)
                       (format "slog: ~a" slog-version)
@@ -5076,6 +6357,19 @@
   (define test-environment
     (environment-variables-copy (current-environment-variables)))
   (environment-variables-set! test-environment #"SLOG_NO_MEM_CAP" #"1")
+  ;; A daemon fatal() reaches the client as one (error ...) record, which
+  ;; drive-to-fixpoint! and the batch driver raise with its text.  It used to
+  ;; print two bare lines to stdout and exit, so a run that hit one -- the
+  ;; trace's struct lookup at an iteration barrier -- told the REPL user only
+  ;; "daemon EOF mid-stratum".
+  (parameterize ([current-directory repository-root]
+                 [current-environment-variables test-environment]
+                 [current-error-port (open-output-nowhere)])
+    (define s (make-session #:echo void))
+    (check-equal?
+     (session-action! s '(write-rel-csv "out/fatal-probe" "no_such_relation")
+                      (lambda (in) (for/list ([line (in-lines in)]) line)))
+     (list "(error \"fatal: Cannot write unknown relation no_such_relation\")")))
   (check-equal?
    (parameterize ([current-directory repository-root]
                   [current-environment-variables test-environment])
@@ -5094,6 +6388,29 @@
             "drop path"
             ":quit")))
    (file->string semantic-session-golden))
+
+  ;; M-06: a flush refused by one staged change keeps the batch; withdrawing
+  ;; that change lets the rest commit.  A refused `del` is not left queued.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/reach.slog"
+                  "stage +(edge 9 9) -(edge 7 7)"
+                  "flush"
+                  "unstage -(edge 7 7)"
+                  "flush"
+                  "?(edge 9 X)"
+                  "del edge 7 7"
+                  ":status"
+                  ":quit")))])
+    (check-regexp-match
+     #px"tuple is absent; nothing was applied, and the staged changes are kept"
+     transcript)
+    (check-regexp-match #px"◆ Query\n  1 row\n  1  \\(edge 9 9\\)" transcript)
+    (check-regexp-match #px"› del edge 7 7\n! Command failed" transcript)
+    (check-false
+     (regexp-match? #px"pending" (last (string-split transcript "› :status")))))
 
   ;; The `?` register (R2): grammar refusals need no daemon; the live rows/
   ;; count/exists/explain checks drive a real scratch session over
@@ -5153,6 +6470,51 @@
     ;; closing the 4-cycle makes path the complete relation on 4 nodes,
     ;; and the query observes it at the post-edit epoch
     (check-regexp-match #px"◆ Query count\n  16 rows match" transcript))
+
+  ;; A first run's later strata see every row its first stratum wrote, though
+  ;; that stratum kept `goal` in (1 0) alone and the later ones read it
+  ;; through (0 1): the identity ordering the relation was born with must
+  ;; not pass for a maintained one.  It did, kept empty at the boundary
+  ;; while (1 0) was dropped, and goal and answer read as empty.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/session/stale_identity.slog"
+                  "?count (goal G N)"
+                  "?count (every G)"
+                  "?count (answer G N)"
+                  ":quit")))])
+    (check-regexp-match
+     #px"› \\?count \\(goal G N\\)\n◆ Query count\n  3 rows match" transcript)
+    (check-regexp-match
+     #px"› \\?count \\(every G\\)\n◆ Query count\n  3 rows match" transcript)
+    (check-regexp-match
+     #px"› \\?count \\(answer G N\\)\n◆ Query count\n  3 rows match" transcript))
+
+  ;; The oracle and the value writer decode formulas a first run destructures
+  ;; (land, lle: id-leading join orderings of their own) and mints in later
+  ;; strata: every check is decided, none reads as a dangling reference, and
+  ;; the rows render.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/session/smt_destructure.slog"
+                  "?(answer G V)"
+                  "?count (error E)"
+                  "?(part \"neither\" F)"
+                  ":quit")))])
+    (check-regexp-match
+     #px"◆ Query\n  2 rows\n  1  \\(answer \"(both|neither)\"" transcript)
+    (check-regexp-match #px"\\(answer \"both\" \\(_enum \"sat\"\\)" transcript)
+    (check-regexp-match #px"\\(answer \"neither\" \\(_enum \"unsat\"\\)"
+                        transcript)
+    (check-regexp-match
+     #px"› \\?count \\(error E\\)\n◆ Query count\n  0 rows match"
+     transcript)
+    (check-regexp-match #px"\\(part \"neither\" \\(llt \\(ic 3\\) \\(ladd \\(ic 2\\) \\(ic 1\\)\\)\\)"
+                        transcript))
 
   ;; The held cursor, cell previews, and dump (R2 slice b) over a 12-node
   ;; chain whose closure (66 pairs) overflows one 50-row page, and a 5-deep
@@ -5231,13 +6593,15 @@
     (check-equal? (length (file->lines dump-file)) 67)
     (delete-file dump-file)
     ;; watches: registration echoes the exact bound VersionKey; closing the
-    ;; 12-cycle fires the relation watch at every propagation barrier
-    ;; (aggregated to one heartbeat line) and moves the query count 66->144
+    ;; 12-cycle fires the relation watch at its 12 propagation barriers
+    ;; (aggregated to one heartbeat line; the count round this first edit
+    ;; runs changes no membership, so it is not one) and moves the query
+    ;; count 66->144
     (check-regexp-match #px"◆ Watch w1\n  path @ v1:" transcript)
     (check-regexp-match
      #px"◆ Watch w2\n  \\?count \\(path X Y\\) — 66 rows now" transcript)
     (check-regexp-match
-     #px"watch w1: [0-9]+ hits, last at [0-9a-f]+_maint1 iter 12" transcript)
+     #px"watch w1: 12 hits, last at [0-9a-f]+_maint1 iter 12" transcript)
     (check-regexp-match
      #px"watch w2: \\?count \\(path X Y\\) — 66 -> 144 \\(\\+78\\)" transcript)
     (check-regexp-match
@@ -5246,6 +6610,35 @@
     ;; unwatch removes the daemon registration and the intent
     (check-regexp-match #px"◆ Watch w1\n  removed \\(path\\)" transcript)
     (check-regexp-match #px"◆ Watches\n  w2  \\?count" transcript))
+
+  ;; String values (audit Q-14): a row prints each string as the Slog
+  ;; literal that lexes back to it, and `dump` writes the string itself
+  ;; under CSV quoting alone.  The value carries every escape the daemon
+  ;; emits, a CSV delimiter, and a non-ASCII character.
+  (let* ([value "q\"\\, ☃\n\t\r"]
+         [dump-path "out/repl-strings.csv"]
+         [transcript
+          (parameterize ([current-directory repository-root]
+                         [current-environment-variables test-environment])
+            (when (file-exists? dump-path) (delete-file dump-path))
+            (plain-transcript
+             (list "run tests/reach.slog"
+                   (format "table (word str int) rule (word ~s 1)" value)
+                   "?(word W I)"
+                   (format "dump ?(word W I) to ~a" dump-path)
+                   ":quit")))]
+         ;; one transcript line: the row did not split at the newline
+         [printed (regexp-match #px"\n  1  \\(word (\"[^\n]*\") 1\\)\n"
+                                transcript)])
+    (check-not-false printed)
+    (define token
+      (let ([in (open-input-string (second printed))])
+        ((make-tinkr-lexer "row" in) in)))
+    (check-equal? (token->tag token) 'str)
+    (check-equal? (token->str token) (string-append "\"" value "\""))
+    (define dump-file (build-path repository-root dump-path))
+    (check-equal? (file->string dump-file) "W,I\n\"q\"\"\\, ☃\n\t\r\",1\n")
+    (delete-file dump-file))
 
   ;; The scratch register (R3 slice a): Slog definitions typed at the prompt
   ;; are immediate interp-only program events; a fragment ADOPTS the live
@@ -5361,6 +6754,27 @@
       (when (directory-exists? "data/r3_scratch_replay")
         (delete-directory/files "data/r3_scratch_replay"))))
 
+  ;; M-04: edits are checked against the declared column types before they
+  ;; are queued.  A bignum is an int; a float is not, and a stage holding
+  ;; one bad change queues none of them.
+  (let ([transcript
+         (parameterize ([current-directory repository-root]
+                        [current-environment-variables test-environment])
+           (plain-transcript
+            (list "run tests/reach.slog"
+                  "add edge 1 2.5"
+                  "add edge 99999999999999999999 1"
+                  "stage +(edge 5 6) +(edge 1)"
+                  "stage +(nosuch 1)"
+                  ":status"
+                  ":quit")))])
+    (check-regexp-match #px"add: edge column 2 expects int; got 2\\.5" transcript)
+    (check-regexp-match #px"◆ Add · edge\n  \\(edge 99999999999999999999 1\\)"
+                        transcript)
+    (check-regexp-match #px"stage: edge takes 2 values; got 1" transcript)
+    (check-regexp-match #px"stage: unknown relation nosuch" transcript)
+    (check-false (regexp-match? #px"pending" transcript)))
+
   ;; clear scratch (R3 slice b): a fresh-only layer retracts wholesale --
   ;; strata forgotten, introduced names dropped dependents-first -- and the
   ;; recipe stays replay-honest (create, fill, drop).  A layer that
@@ -5417,6 +6831,31 @@
       (when (file-exists? kept-path) (delete-file kept-path))
       (when (directory-exists? "data/r3_clear_replay")
         (delete-directory/files "data/r3_clear_replay"))))
+
+  ;; L-01: saving an opened database back under its own name would write a
+  ;; recipe that opens itself.  The save refuses, and the database on disk
+  ;; still loads with its original contents.
+  (let ([transcript
+         (lambda (commands)
+           (parameterize ([current-directory repository-root]
+                          [current-environment-variables test-environment])
+             (plain-transcript commands)))])
+    (parameterize ([current-directory repository-root])
+      (when (directory-exists? "data/l01_own_base")
+        (delete-directory/files "data/l01_own_base")))
+    (check-regexp-match
+     #px"save l01_own_base\n! Command failed\n  session: refusing to save over l01_own_base: this session reads it as an input"
+     (transcript (list "run tests/reach.slog"
+                       "save l01_own_base"
+                       "open l01_own_base"
+                       "add edge 4 5"
+                       "save l01_own_base"
+                       ":quit")))
+    (check-regexp-match
+     #px"Opened l01_own_base(?s:.*)◆ Query count\n  6 rows match"
+     (transcript (list "open l01_own_base" "?count (path X Y)" ":quit")))
+    (parameterize ([current-directory repository-root])
+      (delete-directory/files "data/l01_own_base")))
 
   ;; tier visibility (R3 slice c): under forced interp every stratum sits
   ;; on the interpreter rung with its plan cached, deterministically;
@@ -5572,7 +7011,30 @@
         (string-join (hash-ref maint-result 'lines) "\n"))
       (check-regexp-match #px"watch w2: .*hit" maint-text)
       (check-regexp-match #px"counts valid" maint-text)
-      (void (run3! ":quit"))))
+      (void (run3! ":quit"))
+      ;; prepare-time binding serves level 0 too: a watch on the prepared
+      ;; successor key reports the very run that creates it.  path settles
+      ;; over three non-empty iterations, one hit per barrier.
+      (define s (make-session #:echo void))
+      (define prepared-hits 0)
+      (parameterize
+          ([session-prepare-hook
+            (lambda (_s plan)
+              (match (assq 'actions (cdr (boundary-plan->datum plan)))
+                [(cons _ actions)
+                 (for ([action (in-list actions)])
+                   (match action
+                     [`(create (qname "path") ,key ,_ ,_)
+                      (register-daemon-watch! s "p0" key)]
+                     [_ (void)]))]))]
+           [session-pause-hook
+            (lambda (_s line)
+              (when (regexp-match? #px"\\(cause \\(watch \\(watch-id \"p0\"\\)\\)\\)"
+                                   line)
+                (set! prepared-hits (add1 prepared-hits))))])
+        (session-run! s "tests/reach.slog"))
+      (check-equal? prepared-hits 3)
+      (void (session-close! s))))
 
   ;; T5 slice (c): `replay` at the pre-commit gate.  The parked read's send
   ;; shards are discarded and the SAME read runs again from its origin, so
@@ -5581,7 +7043,7 @@
   ;; still answers committed masters only, and the commit that follows writes
   ;; content byte-equal to a run that was never replayed.  Control: a
   ;; maintenance epoch refuses the level-1-only continuation by name and
-  ;; flavor, and the run commits past the refusal.
+  ;; flavor, and a hook that continues commits past the refusal.
   (let ([interp-environment (environment-variables-copy test-environment)])
     (environment-variables-set! interp-environment #"SLOG_OPT" #"interp")
     (parameterize ([current-directory repository-root]
@@ -5639,7 +7101,9 @@
       (void (run3! "run tests/reach.slog"))
       (void (run3! "watch path level 1"))
       (define maint-result #f)
-      (parameterize ([session-pause-hook (lambda (_s _line) 'replay)])
+      (parameterize ([session-pause-hook
+                      (lambda (_s line)
+                        (and (regexp-match? #px"^\\(paused " line) 'replay))])
         (set! maint-result (run3! "add edge 4 1")))
       (define maint-text (string-join (hash-ref maint-result 'lines) "\n"))
       ;; every park of the change's epochs refuses, naming that epoch's own
@@ -5991,6 +7455,253 @@
       (void (run! "unbreak b1"))
       (check-not-equal? (hash-ref (run! "continue") 'kind) "paused")
       (check-regexp-match #px"none; `break REL`" (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; A break at a source location stops in that rule and no other.  Rule ids
+  ;; restart in every stratum -- reach.slog's fact block and its first rule
+  ;; are both r0 in their own strata -- so `break rN` can stop in rules it
+  ;; does not name; a location names one rule program-wide.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (check-exn #px"no rule at reach\\.slog:3"
+                 (lambda () (run! "break reach.slog:3")))
+      ;; a path is reduced to the basename rule locations are spelled with
+      (check-regexp-match #px"the rule at reach\\.slog:14"
+                          (text (run! "break tests/reach.slog:14")))
+      ;; every stop of the re-run is in the recursive rule (line 14), until
+      ;; the run completes; the edge->path rule (line 9) never stops it
+      (define stops
+        (let loop ([result (run! "run tests/reach.slog")] [stops '()])
+          (if (equal? (hash-ref result 'kind) "paused")
+              (loop (run! "continue") (cons (text result) stops))
+              stops)))
+      (check-true (pair? stops))
+      (for ([stop (in-list stops)])
+        (check-regexp-match #px"port b1:fire@reach\\.slog:14:1:" stop))
+      (check-regexp-match
+       (pregexp (format "b1  reach\\.slog:14 · ~a hit" (length stops)))
+       (text (run! "breaks")))
+      (void (run! ":quit"))))
+
+  ;; A location in a file that has not run yet arms a pending break, which
+  ;; stops that file's first run (audit D-06): the debugger is reachable
+  ;; without a run to arm it from.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (check-regexp-match #px"armed for when one runs"
+                          (text (run! "break tests/reach.slog:14")))
+      (define first-run (run! "run tests/reach.slog"))
+      (check-equal? (hash-ref first-run 'title) "Paused · break b1")
+      (check-regexp-match #px"port b1:fire@reach\\.slog:14:1:" (text first-run))
+      (void (run! "abort"))
+        (void (run! ":quit"))))
+
+  ;; Demand relations, a call at a time (demand-debug.rkt).  dem_stlc asks
+  ;; `ck` of three programs; `(app (num 3) (num 4))` is ill-typed, so its
+  ;; call has no answer while both of its subcalls do -- the failure
+  ;; frontier.  A demand break with a constructor pattern names a call
+  ;; whose `app` does not exist yet when it is armed.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (check-regexp-match #px"armed for when the program runs"
+                          (text (run! "break demand (ck _ (app (num 3) _))")))
+      (define stop (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      ;; the stop is the ask, and the stack names it with its asker's
+      ;; bindings: a root call, asked by the program's own rule
+      (check-regexp-match
+       #px"demand ask of \\(ck \\(mt\\) \\(app \\(num 3\\) \\(num 4\\)\\)\\)"
+       (text stop))
+      (check-regexp-match #px"0 #0 .* · asked by dem_stlc\\.slog:30:1 · e = " (text stop))
+      ;; into: the first thing the call's rules do is ask its function
+      (define into (run! "step into"))
+      (check-equal? (hash-ref into 'title) "Paused · demand step")
+      (check-regexp-match #px"demand ask of \\(ck \\(mt\\) \\(num 3\\)\\)" (text into))
+      (check-regexp-match #px"1 #0 \\(ck \\(mt\\) \\(app" (text into))
+      ;; over: run until that call answers, inside the same caller
+      (define over (run! "step over"))
+      (check-regexp-match #px"demand answer of \\(ck \\(mt\\) \\(num 3\\)\\)" (text over))
+      ;; out of a call that never answers runs to the end
+      (define out (run! "step out"))
+      (check-equal? (hash-ref out 'kind) "run")
+      ;; the tree: the ill-typed call has no answer and is where failure starts
+      (define tree (run! "calls"))
+      (check-regexp-match #px"#0 \\(ck \\(mt\\) \\(app \\(num 3\\) \\(num 4\\)\\)\\)  · no answer"
+                          (text tree))
+      (check-regexp-match #px"where failure starts[^\n]*\n  #0 " (text tree))
+      (check-equal? (hash-ref (hash-ref tree 'calls) 'frontier) '(0))
+      (define node (text (run! "calls #0")))
+      (check-regexp-match #px"  #[0-9]+ \\(ck \\(mt\\) \\(num 3\\)\\)  ⇒ \\(tint\\)" node)
+      (check-regexp-match #px"  #[0-9]+ \\(ck \\(mt\\) \\(num 4\\)\\)  ⇒ \\(tint\\)" node)
+      ;; a well-typed call's subtree reaches its lookups
+      (check-regexp-match #px"\\(lookup \\(ext \\(mt\\) \"x\" \\(tint\\)\\) \"x\"\\)  ⇒ \\(tint\\)"
+                          (text (run! "calls #3 depth 9")))
+      (void (run! ":quit"))))
+
+  ;; Answer breaks read the answer row as its judgment and take conditions;
+  ;; a logpoint records without stopping; ignore counts hits before the
+  ;; first stop; a disabled break neither stops nor counts.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/dem_stlc.slog"))
+      ;; with the program loaded, a pattern is checked against the demand
+      (check-exn #px"answer ck takes 3 terms" (lambda () (run! "break answer (ck E T)")))
+      (check-exn #px"path is not a demand relation|is not a demand relation"
+                 (lambda () (run! "break demand (prog _)")))
+      (void (run! "break answer (ck G E T) when (= E (num _)) ignore 1"))
+      (void (run! "break demand (lookup _ X) log"))
+      (define stop (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      ;; the first num answer was ignored; this is the second
+      (check-regexp-match #px"demand answer of \\(ck \\(mt\\) \\(num 4\\)\\)" (text stop))
+      (check-regexp-match #px"b1  answer \\(ck G E T\\) when \\(= E \\(num _\\)\\) · 2 hits · ignore 1"
+                          (text (run! "breaks")))
+      (void (run! "disable b1"))
+      (check-equal? (hash-ref (run! "continue") 'kind) "run")
+      (define breaks (text (run! "breaks")))
+      (check-regexp-match #px"· 2 hits · ignore 1 · disabled" breaks)
+      (check-regexp-match #px"b2  demand \\(lookup _ X\\) · 5 hits · log" breaks)
+      (check-regexp-match #px"b2 s[0-9]+ i[0-9]+ dem_stlc\\.slog:15:1 \\(lookup .* · X = \"x\""
+                          (text (run! "logs b2")))
+      ;; a rule break's condition is over the rule's own variables
+      (void (run! "break tests/dem_stlc.slog:17 when (= e1 (var _))"))
+      (define ruled (run! "run tests/dem_stlc.slog"))
+      (check-equal? (hash-ref ruled 'title) "Paused · break b3")
+      (check-regexp-match #px"e1 = \\(var " (text (run! "frames")))
+      (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; A break on one clause of a rule: where it matches a body atom, writes
+  ;; its head, or asks a demand.  A break that cannot stop says why.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "break tests/reach.slog:14 match (edge 3 _)"))
+      (void (run! "break tests/reach.slog:14 emit (path 1 _)"))
+      (void (run! "break tests/reach.slog:3"))
+      (check-regexp-match #px"b1 .* · 0 hits"
+                          (text (run! "breaks")))
+      (define matched (run! "run tests/reach.slog"))
+      (check-regexp-match #px"port b1:match@reach\\.slog:14:1" (text matched))
+      (check-regexp-match #px"\\(3 4\\)|3 4" (text (run! "frames")))
+      (check-regexp-match #px"port b2:emit@reach\\.slog:14:1" (text (run! "continue")))
+      (let loop ([r (run! "continue")])
+        (when (equal? (hash-ref r 'kind) "paused") (loop (run! "continue"))))
+      (define listed (run! "breaks"))
+      (check-regexp-match #px"b3  reach\\.slog:3 · 0 hits · cannot stop: no rule at reach\\.slog:3 has run"
+                          (text listed))
+      (check-equal? (for/list ([b (in-list (hash-ref listed 'breaks))]) (hash-ref b 'status))
+                    '("bound" "bound" "unbound"))
+      ;; a demand asked by one rule only: lookup is asked by line 15 (a
+      ;; variable) and line 11 (its own recursion)
+      (void (run! "unbreak b1"))
+      (void (run! "unbreak b2"))
+      (void (run! "unbreak b3"))
+      (void (run! "break tests/dem_stlc.slog:15 demand (lookup _ X) when (= X \"x\")"))
+      (define asked (run! "run tests/dem_stlc.slog"))
+      (check-regexp-match #px"port b1:emit@dem_stlc\\.slog:15:1" (text asked))
+      (check-regexp-match #px"demand ask of \\(lookup .* \"x\"\\)" (text asked))
+      (void (run! "abort"))
+      ;; at a location, a pattern's variables are the rule's: line 17 asks
+      ;; ck of e1 and of e2 in one firing, and this stops only at e2's
+      (void (run! "unbreak b1"))
+      (void (run! "break tests/dem_stlc.slog:17 demand (ck env e2)"))
+      (define second (run! "run tests/dem_stlc.slog"))
+      (check-regexp-match #px"demand ask of \\(ck \\(mt\\) \\(num 4\\)\\)" (text second))
+      (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; Inspecting a held stop does not move it.  A clause break on the
+  ;; nested pattern of 0cfa's `(ret v (ar ea k))` stops at the drive port,
+  ;; where the rule has bound only `v` -- the pattern binds `ea` and `k`
+  ;; from the matched value.  Printing, bare variables, queries against the
+  ;; run's working state with the frame's variables substituted, and frames
+  ;; again leave the daemon's pipeline position, the stop and the hit count
+  ;; exactly where they were.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "break examples/tinycfa/0cfa.slog:46 match (ret v (ar ea k))"))
+      (define stop (run! "run examples/tinycfa/0cfa.slog"))
+      (check-equal? (hash-ref stop 'title) "Paused · break b1")
+      (define s (ensure-session! state))
+      (define before (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks"))))
+      (define frames (run! "frames"))
+      (check-equal? (map first (hash-ref frames 'bindings)) '("v" "ea" "k"))
+      (check-regexp-match #px"matched \\(ret " (text frames))
+      (check-regexp-match #px"^k = \\(" (text (run! "p k")))
+      (check-regexp-match #px"^ea = \\(" (text (run! "ea")))
+      (check-exn #px"not a variable of the stopped rule" (lambda () (run! "print zz")))
+      (define counted (run! "?count (ret V K)"))
+      (check-regexp-match #px"[1-9][0-9]* rows? match" (text counted))
+      (check-equal? (hash-ref counted 'view) "held")
+      ;; `v` stands for its value: the ret row the stop matched is there
+      (check-regexp-match #px"yes" (text (run! "?exists (ret v _)")))
+      (check-equal? (list (pipeline-datum s) (text (run! "frames")) (text (run! "breaks")))
+                    before)
+      (check-not-equal? (hash-ref (run! "continue") 'kind) "error")
+      (void (run! "abort"))
+      (void (run! ":quit"))))
+
+  ;; A continuation the daemon declines leaves the run where it was.  Replay
+  ;; is gate-only, so a break stop refuses it; the refusal must come back as
+  ;; the same held stop -- not resume the run and commit the held command --
+  ;; and the stop must still resolve.
+  (let ([break-environment (environment-variables-copy test-environment)])
+    (environment-variables-set! break-environment #"SLOG_OPT" #"interp")
+    (environment-variables-set! break-environment #"SLOG_THREADS" #"1")
+    (parameterize ([current-directory repository-root]
+                   [current-environment-variables break-environment])
+      (define state (make-server-state))
+      (define (run! line) (dispatch-command state line))
+      (define (text result) (string-join (hash-ref result 'lines) "\n"))
+      (void (run! "run tests/reach.slog"))
+      (void (run! "break path"))
+      (check-equal? (hash-ref (run! "rule (path 77 7) <-- (edge 1 2)") 'title)
+                    "Paused · break b1")
+      (define refused (run! "replay"))
+      (check-equal? (hash-ref refused 'title) "Paused · break b1")
+      (check-regexp-match #px"refused: replay-unavailable" (text refused))
+      ;; a declined replay is not one that happened
+      (check-false (regexp-match? #px"replayed" (text refused)))
+      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
+      (check-regexp-match #px"nothing was committed" (text (run! "abort")))
+      (check-regexp-match #px"6 rows match" (text (run! "?count (path X Y)")))
       (void (run! ":quit"))))
 
   ;; T5 slice (d2): `whynot` -- the failure frontier over committed state.

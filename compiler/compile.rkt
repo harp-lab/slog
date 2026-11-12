@@ -126,12 +126,12 @@
              (for/list ([(lvl rules) (in-hash levels)])
                (list lvl (rule-location-string (car rules))))))))
 
-(define/contract (plan-all rules rel-env dynamic-rels level)
-  (-> set? hash? set? natural? (cons/c (set/c planned-rule?) hash?))
-  ;; level rides into deterministic temp names (temp<flavor><level>x<n>):
-  ;; temps of different strata coexist by name in one daemon database, so
-  ;; names must be unique program-wide (RF1 slice 0)
-  (plan-stratum rules rel-env dynamic-rels #:level level))
+(define/contract (plan-all rules rel-env dynamic-rels)
+  (-> set? hash? set? (cons/c (set/c planned-rule?) hash?))
+  ;; temp names are a digest of the stratum's rules (join-planning.rkt):
+  ;; temps coexist by name in one daemon database across every program a
+  ;; session layers onto it, so names must be unique session-wide
+  (plan-stratum rules rel-env dynamic-rels))
 
 (define/contract (lower-all planned-rules rel-env decomps)
   (-> set? hash? hash? cprog?)
@@ -167,6 +167,34 @@
 ;; computed from pre-simplification inputs only -- later passes introduce
 ;; generated names that differ run to run, while the front end's output is
 ;; a pure function of these inputs.
+
+;; A module's source tokens, as one digest for the job hash.  The tokens are
+;; the whole source text, whitespace and comments included, with a position
+;; each, and `print`ing them spelled the file path out in every token: the
+;; bulk of the job-hash key, ~4MB and ~0.35s to print for a thousand
+;; reified facts.  This serializes each lexer token compactly (the path
+;; once per run of tokens sharing it) and digests that: injective over the
+;; same data, so the key still changes exactly when a token does.  A token
+;; of any other shape is written whole.
+(define (module-tokens-digest tokens)
+  (define o (open-output-bytes))
+  (define last-file #f)
+  (for ([t (in-list tokens)])
+    (match t
+      [`(token ,(? symbol? tag)
+               (pos ,file ,(? exact-integer? l0) ,(? exact-integer? c0)
+                    ,(? exact-integer? l1) ,(? exact-integer? c1))
+               ,(? string? text))
+       (unless (eq? file last-file)
+         (write-string "F" o) (write file o) (newline o)
+         (set! last-file file))
+       (write-string "T" o) (write tag o)
+       (for ([n (in-list (list l0 c0 l1 c1))])
+         (write-char #\space o)
+         (write-string (number->string n) o))
+       (write-char #\space o) (write text o) (newline o)]
+      [_ (write-string "X" o) (write t o) (newline o)]))
+  `(tokens ,(bytes->hex-string (sha256 (get-output-bytes o #t)))))
 
 ;; program->jobs returns
 ;;   (list jobs facts-stratum? frozen final-type-env full-program-model).
@@ -217,7 +245,7 @@
   ;; named record.
   (define (module-cache-datum m)
     `(module ,(module-ir-path m)
-             ,(module-ir-tokens m)
+             ,(module-tokens-digest (module-ir-tokens m))
              ,(module-ir-rules m)))
   (define info2
     (sort (map module-cache-datum (set->list mods))
@@ -228,9 +256,16 @@
   ;; targets) without necessarily changing the rels env (a user decl toggling
   ;; the synthesis off), so it keys the cache too
   (define info4 (sort (hash->list decomps) symbol<? #:key car))
-  (define progstr
-    (with-output-to-string
-     (lambda () (print (list info0 info1 info2 info3 info4
+  ;; The program's printed cache key is large -- every module's tokens and
+  ;; rules, provenance included; ~5MB for a thousand reified facts -- so it
+  ;; is printed and digested ONCE, straight to bytes, and each stratum's
+  ;; job hash is a digest of that digest and its level.  Hashing the
+  ;; printed program per stratum cost a full copy-and-hash of it for every
+  ;; stratum (the same lesson as the source fingerprints, tools.rkt).
+  (define program-digest
+    (let ([o (open-output-bytes)])
+     (parameterize ([current-output-port o])
+      (print (list info0 info1 info2 info3 info4
                              daemon-headers-fingerprint
                              compiler-sources-fingerprint
                              ;; codegen-affecting settings: a toggle must
@@ -274,7 +309,8 @@
                              ;; the facts split changes stratum rule sets, so
                              ;; it must key the cache (else a split and a
                              ;; non-split build would share a .so slot)
-                             split-facts?)))))
+                             split-facts?)))
+     (bytes->hex-string (sha256 (get-output-bytes o #t)))))
   ;; RF1 slice-0 audit instrument: dump the job-hash inputs component by
   ;; component so two runs of the same tree can be diffed to find which
   ;; input churns (docs/rf1-contract.md, determinism doctrine).  Gated off
@@ -297,7 +333,8 @@
             (pretty-write v o))))))
   (define (job-hash level)
     (substring (bytes->hex-string
-                (sha256 (string->bytes/utf-8 (format "~a:stratum ~a" progstr level))))
+                (sha256 (string->bytes/utf-8
+                         (format "~a:stratum ~a" program-digest level))))
                0
                (if debug-mode 8 32)))
 
@@ -863,7 +900,7 @@
   (parameterize ([count-flavor (and (count-flavor)
                                     (count-mode dynamic-rels (make-hash)))])
   (match-define (cons planned rel-env+)
-    (plan-all rules (type-env-rels type-env) plan-dynamic (stratum-level stratum)))
+    (plan-all rules (type-env-rels type-env) plan-dynamic))
   (define cprog (lower-all planned rel-env+ decomps))
   ;; atomic writes: run-tests.sh -jN can compile the SAME content-addressed
   ;; stratum in two processes at once, and a torn .cpp/.cprog read would break a
@@ -897,15 +934,20 @@
   ;; every SLOG_PLAN_ABI setting, or the .so cache would key on an env var.
   (define-values (abi2-cohort kernel-groups)
     (canonicalize-all/abi2+groups cprog plan-flavor model))
-  (call-with-atomic-output
-   (fullpath (format "build/~a~a.plan" hash-name
-                     (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
-                         (string-append "." incremental-flavor-abi)
-                         "")))
-   (lambda ()
-     (displayln (kernel-plan->string
-                 (or (and ship-abi2? abi2-cohort)
-                     (canonicalize-all cprog plan-flavor))))))
+  ;; Written LAST, after the tier sidecar and every TU: a .plan on disk means
+  ;; this emission completed, so compile-strata may reuse its TUs instead of
+  ;; re-running the planner (and every .plan reader may keep treating a miss
+  ;; as "emit").
+  (define (write-plan!)
+    (call-with-atomic-output
+     (fullpath (format "build/~a~a.plan" hash-name
+                       (if (memq plan-flavor '(count maint1 maint3neg maint4neg))
+                           (string-append "." incremental-flavor-abi)
+                           "")))
+     (lambda ()
+       (displayln (kernel-plan->string
+                   (or (and ship-abi2? abi2-cohort)
+                       (canonicalize-all cprog plan-flavor)))))))
   ;; RF1 slice 2 audit instrument (SLOG_DUMP_ABI2=<dir>): emit the ABI-2
   ;; cohort beside the shipped plan.  Inspect-only -- nothing reads it,
   ;; which is the point: the split gets exercised over real programs
@@ -930,13 +972,16 @@
   ;; write-cpp returns either one string (a single TU) or a list of
   ;; (suffix . contents) pairs -- the spine (suffix "") plus part TUs.
   (define tus (if (string? emitted) (list (cons "" emitted)) emitted))
-  (for/list ([tu (in-list tus)])
-    (match-define (cons suffix contents) tu)
-    (define path
-      (fullpath (format "build/~a~a.cpp" hash-name
-                        (if (string=? suffix "") "" (string-append "." suffix)))))
-    (call-with-atomic-output path (lambda () (display contents)))
-    path)))
+  (define paths
+    (for/list ([tu (in-list tus)])
+      (match-define (cons suffix contents) tu)
+      (define path
+        (fullpath (format "build/~a~a.cpp" hash-name
+                          (if (string=? suffix "") "" (string-append "." suffix)))))
+      (call-with-atomic-output path (lambda () (display contents)))
+      path))
+  (write-plan!)
+  paths))
 
 ;; Build (or reuse) the delta-entry flavor of one stratum job
 ;; (docs/incremental.md §0.5 mode 3, 0.B5), returning its .so path.
@@ -1415,9 +1460,7 @@
                "a declaration-only program has no jobs; provide its "
                "#:type-env and #:model from program->jobs"))]))
   (define compiler-key
-    (or provided-compiler-key
-        (bytes->hex-string
-         (sha256 (string->bytes/utf-8 compiler-sources-fingerprint)))))
+    (or provided-compiler-key compiler-sources-fingerprint))
   (define image
     (seal-program-image program type-env model
                         #:compiler-key compiler-key
@@ -1641,7 +1684,7 @@
     name))
 
 ;; T3b slice 1: resolve the selective-compilation policy ONCE, before any job
-;; hash is computed -- the policy folds into progstr, so it must be settled
+;; hash is computed -- the policy folds into the job hash, so it must be settled
 ;; before program->jobs runs, and it must be the same value the emitter sees.
 (define (compile-strata path dbmanifest
                         #:split-facts? [split-facts? #f]
@@ -1749,7 +1792,15 @@
                  (lambda () (ensure-negative-maintenance-so job))
                  (lambda () (ensure-recursive-negative-maintenance-so job)))]
         [else
-         (define cpps (emit-stratum-cpp job))   ; write .cpp(s) now (fast, main thread)
+         ;; a completed earlier emission (its .plan is written last) left the
+         ;; TUs and sidecars this job hash names: reuse them -- planning and
+         ;; emission dominate a warm re-run of a stratum that never built
+         (define cpps
+           (let ([cached (stratum-tu-paths proghash)])
+             (if (and (pair? cached)
+                      (file-exists? (fullpath (format "build/~a.plan" proghash))))
+                 cached
+                 (emit-stratum-cpp job))))
          ;; T3b slices 1-3, the two ways a stratum earns the interp rung:
          ;; zero-clang (slice 1: every variant classified interp-only --
          ;; nothing to build, ever) and profile-skip (slice 2: the profile

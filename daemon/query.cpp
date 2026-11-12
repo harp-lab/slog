@@ -1007,8 +1007,13 @@ std::shared_ptr<const BoundPlan> bind(
   require(request.bindings.size() == request.plan.storage_relations,
           ErrorK::binding,
           "query bind: catalog frame width changed after seal");
+  // A committed boundary, or the prepared one a parked run is in: the run's
+  // working state so far.
   const BoundarySnapshot* boundary = db.getBoundary(request.boundary_key);
-  require(boundary != nullptr, ErrorK::binding,
+  require(boundary != nullptr
+            || (db.isPreparedBoundaryKey(request.boundary_key)
+                && db.isSuspended()),
+          ErrorK::binding,
           "query bind: BoundaryKey is not committed in this evaluation: "
             + request.boundary_key);
   std::vector<Relation*> frame;

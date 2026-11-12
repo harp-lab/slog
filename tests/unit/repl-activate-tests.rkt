@@ -78,5 +78,25 @@
                    "preview"))))
         (check-regexp-match #px"the committed boundary moved since this proposal was sealed"
                             transcript)
-        (check-regexp-match #px"Proposal — replace instance right" transcript)))
+        (check-regexp-match #px"Proposal — replace instance right" transcript))
+
+      ;; M-05: sealing a proposal only reads the live program, so readonly
+      ;; mode allows it; activating one commits a new boundary, so readonly
+      ;; mode refuses it like every other mutator, and the proposal waits.
+      (test-case "readonly mode seals a proposal but refuses to activate it"
+        (define transcript
+          (parameterize ([current-directory repo-root])
+            (plain-transcript
+             (list (format "run ~a" (path->string (build-path dir "analysis.slog")))
+                   "mode readonly"
+                   "replace instance right with \"w5-demo-lib-v2.slog\""
+                   "activate"
+                   "mode mutable"
+                   "activate"))))
+        (check-regexp-match #px"Proposal d[0-9]+ — replace instance right"
+                            transcript)
+        (check-regexp-match
+         #px"› activate\n! Command failed\n  activate: current database is read-only"
+         transcript)
+        (check-regexp-match #px"Activated — p1:" transcript)))
     (lambda () (delete-directory/files dir))))

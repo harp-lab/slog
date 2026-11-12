@@ -2,12 +2,12 @@
  *
  * The per-arity boilerplate the native flavored plugins carry -- index
  * requisitions and Write/Intern/Count/Maintain task construction -- driven
- * from a sealed plan's structural facts.  Registration is cold (once per
- * flavored stratum install), but instantiating the daemon's storage
- * templates across the full arity range is the dominant compile cost, so
- * this deliberately lives in its own translation unit built at -O0 (the
- * same optimization level every native flavored .so uses); plan-count.cpp
- * calls through the non-template entry points in plan-count.h.
+ * from a sealed plan's structural facts. Registration is cold (once per
+ * stratum install), but constructing the tasks also instantiates their hot
+ * virtual work() methods. This translation unit uses the normal optimized
+ * daemon flags and remains a separate object to cache the full-arity template
+ * compilation. plan-count.cpp calls through the non-template entry points
+ * in plan-count.h.
  */
 
 #include "plan-count.h"

@@ -218,7 +218,7 @@
              "negation through recursion -- not stratified: the rule at ~a negates ~a, but ~a and ~a are mutually recursive (cycle: ~a)\n  in rule: ~a"
              (rule-location-string rule) b b h
              (string-join (map symbol->string cycle-rels) " ")
-             (strip-prov rule))))
+             (syn-source rule))))
 
   ;; condensation edges and levels: level(scc) = 1 + max level of preds
   (define preds-of ; scc id -> set of predecessor scc ids

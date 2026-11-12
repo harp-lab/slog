@@ -117,7 +117,10 @@ struct PauseRecord
   // True only at a coherent iteration/terminal barrier. Mid-read progress is
   // explicitly inexact rather than masquerading as a finalized delta count.
   bool settled = false;
-  std::uint64_t tuples = 0;
+  // Exact: net tuple growth since the stratum started, negative under
+  // deletion maintenance.  Inexact: the words the partial read has emitted,
+  // rendered under their own name -- they are not tuples.
+  std::int64_t progress = 0;
   bool progress_exact = false;
   double ms_call = 0;
   double ms_total = 0;
@@ -214,7 +217,8 @@ inline std::string renderPauseRecord(const PauseRecord& record)
     + " (iteration " + std::to_string(record.iteration) + ")"
     + " (phase " + record.phase + ")"
     + " (settled " + (record.settled ? "#t" : "#f") + ")"
-    + " (progress (tuples " + std::to_string(record.tuples) + ") (exact "
+    + " (progress (" + (record.progress_exact ? "tuples " : "words ")
+    + std::to_string(record.progress) + ") (exact "
     + (record.progress_exact ? "#t" : "#f") + ")) " + timing
     + " (cause " + renderPauseCause(record.cause) + "))";
 }

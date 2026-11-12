@@ -461,5 +461,8 @@ Do not declare relations or constructors named `list`, `cons`, `nil`, `cset`,
 also reserved.
 
 Primitive operation names and comparison operators have their built-in
-meaning in expression or guard position. The complete inventory is in
-[built-in operations](builtins.md).
+meaning in expression or guard position. A constructor (a struct, union
+variant, enum member, or demand relation) therefore cannot take a primitive's
+name: `(neg X)` always means the primitive, so declaring
+`union (expr (lit int) (neg expr))` is a compile error naming the declaration.
+The complete inventory is in [built-in operations](builtins.md).

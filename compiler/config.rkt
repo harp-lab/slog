@@ -92,10 +92,22 @@
 ;; ---- system detection ---------------------------------------------------
 (define (detect-ram-mb)
   (with-handlers ([exn:fail? (λ (_) #f)])
-    (and (file-exists? "/proc/meminfo")
-         (for/or ([line (in-list (file->lines "/proc/meminfo"))])
-           (define m (regexp-match #rx"^MemTotal:[ ]+([0-9]+) kB" line))
-           (and m (quotient (string->number (second m)) 1024))))))
+    (cond
+      [(eq? (system-type 'os*) 'macosx)
+       (define-values (sp out in err)
+         (subprocess #f #f #f "/usr/sbin/sysctl" "-n" "hw.memsize"))
+       (close-output-port in)
+       (define bytes (string->number (string-trim (port->string out))))
+       (close-input-port out)
+       (close-input-port err)
+       (subprocess-wait sp)
+       (and (zero? (subprocess-status sp)) (exact-positive-integer? bytes)
+            (quotient bytes (* 1024 1024)))]
+      [else
+       (and (file-exists? "/proc/meminfo")
+            (for/or ([line (in-list (file->lines "/proc/meminfo"))])
+              (define m (regexp-match #rx"^MemTotal:[ ]+([0-9]+) kB" line))
+              (and m (quotient (string->number (second m)) 1024))))])))
 
 (define (write-system-facts!)
   (define cores (processor-count))

@@ -60,6 +60,11 @@ pub struct App {
     completion_relations: BTreeSet<String>,
     completion_namespaces: BTreeSet<String>,
     pub transcript: Vec<TranscriptEntry>,
+    /// Transcript entries already published to co-authors. The transcript
+    /// only grows, except that `:clear` empties it and resets this mark with
+    /// it, so the entries past the mark are always exactly the unpublished
+    /// ones.
+    published_entries: usize,
     /// In-flight UI workflows are rendered after the durable transcript but
     /// are not part of it until the backend commits a response.
     pub operations: OperationTable,
@@ -71,12 +76,8 @@ pub struct App {
     tutorial_overlay: Option<TutorialOverlay>,
     tutorial_run: Option<TutorialRun>,
     command_queue_busy: bool,
-    /// Ctrl-C stage-1 guard (repl-ux.md §9.2 doctrine, partially adopted):
-    /// while a command is in flight, one Ctrl-C must not tear the session
-    /// down mid-fixpoint -- the first press warns, and only a second press
-    /// within the confirmation window takes the interrupting-exit path
-    /// (the escape hatch a genuinely hung server still needs).
-    busy_ctrlc_at: Option<std::time::Instant>,
+    /// When a Ctrl-C or Ctrl-D last armed the quit confirmation (`quit_key`).
+    quit_armed_at: Option<std::time::Instant>,
     /// The newest successful result remains a live, client-owned canvas.
     /// Older result entries retain their last rendered lines in the transcript.
     pub canvas: Option<PresentationCanvas>,
@@ -109,19 +110,22 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let transcript = vec![TranscriptEntry::system(
+            "Connected",
+            vec![
+                "Rust terminal client ↔ Racket database control plane".to_owned(),
+                "Type :help for commands; :share shows co-author connection details".to_owned(),
+            ],
+        )];
         Self {
             editor: Editor::default(),
             completion: None,
             completion_databases: BTreeSet::new(),
             completion_relations: BTreeSet::new(),
             completion_namespaces: BTreeSet::new(),
-            transcript: vec![TranscriptEntry::system(
-                "Connected",
-                vec![
-                    "Rust terminal client ↔ Racket database control plane".to_owned(),
-                    "Type :help for commands; :share shows co-author connection details".to_owned(),
-                ],
-            )],
+            // Co-authors receive the opening entries in their first snapshot.
+            published_entries: transcript.len(),
+            transcript,
             operations: OperationTable::default(),
             transcript_scroll: 0,
             library: None,
@@ -129,7 +133,7 @@ impl App {
             tutorial_overlay: None,
             tutorial_run: None,
             command_queue_busy: false,
-            busy_ctrlc_at: None,
+            quit_armed_at: None,
             canvas: None,
             canvas_entry: None,
             canvas_search: None,
@@ -209,6 +213,47 @@ impl App {
             vec![message, "Ctrl-C again within 2s force-quits".to_string()],
         ));
     }
+
+    /// Ctrl-C or Ctrl-D at an empty prompt. Ctrl-C means pause, never kill
+    /// (repl-ux.md §9.2), and neither key quits on one press: an idle prompt
+    /// may stand at a paused run, which quitting discards along with every
+    /// session's unsaved changes. The first press says so, and a Ctrl-C with
+    /// a run in flight also asks the server to PAUSE it at the next slice
+    /// boundary (stage 2, over the control connection). Only a second press
+    /// within 2s takes the interrupting exit -- the hatch a hung server
+    /// still needs.
+    fn quit_key(&mut self, interrupt: bool) -> Effect {
+        if self
+            .quit_armed_at
+            .is_some_and(|armed| armed.elapsed().as_secs() < 2)
+        {
+            return Effect::Shutdown;
+        }
+        self.quit_armed_at = Some(std::time::Instant::now());
+        if interrupt && self.command_queue_busy {
+            self.transcript.push(TranscriptEntry::system(
+                "Interrupt",
+                vec![
+                    "pausing the run at its next slice boundary; \
+                     Ctrl-C again within 2s to force-quit instead \
+                     (kills the run)"
+                        .to_string(),
+                ],
+            ));
+            return Effect::Interrupt;
+        }
+        self.transcript.push(TranscriptEntry::system(
+            "Quit",
+            vec![
+                "Ctrl-C or Ctrl-D again within 2s quits".to_string(),
+                "quitting closes every resident session: any paused run and \
+                 unsaved changes are lost"
+                    .to_string(),
+            ],
+        ));
+        Effect::None
+    }
+
     pub fn set_command_queue_busy(&mut self, busy: bool) {
         self.command_queue_busy = busy;
     }
@@ -241,7 +286,10 @@ impl App {
                     search.editor.insert(&text.replace(['\r', '\n'], " "));
                     self.update_canvas_search_preview();
                 } else {
-                    self.editor.insert(&text);
+                    // Terminals paste a line break as the CR that Enter
+                    // sends (or as CRLF); the editor's line break is LF.
+                    self.editor
+                        .insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
                 Effect::None
             }
@@ -399,37 +447,13 @@ impl App {
                         return Effect::None;
                     }
                     if self.editor.is_empty() {
-                        // Ctrl-C means pause, never kill (repl-ux.md §9.2).
-                        // A run in flight: the first press asks the server to
-                        // PAUSE it at the next slice boundary (stage 2, over
-                        // the control connection); only a quick second press
-                        // takes the interrupting exit -- the hatch a hung
-                        // server still needs.
-                        if self.command_queue_busy {
-                            let confirm = self
-                                .busy_ctrlc_at
-                                .is_some_and(|t| t.elapsed().as_secs() < 2);
-                            if !confirm {
-                                self.busy_ctrlc_at = Some(std::time::Instant::now());
-                                self.transcript.push(TranscriptEntry::system(
-                                    "Interrupt",
-                                    vec![
-                                        "pausing the run at its next slice boundary; \
-                                         Ctrl-C again within 2s to force-quit instead \
-                                         (kills the run)"
-                                            .to_string(),
-                                    ],
-                                ));
-                                return Effect::Interrupt;
-                            }
-                        }
-                        return Effect::Shutdown;
+                        return self.quit_key(true);
                     }
                     self.completion = None;
                     self.editor.clear();
                     return Effect::None;
                 }
-                KeyCode::Char('d') if self.editor.is_empty() => return Effect::Shutdown,
+                KeyCode::Char('d') if self.editor.is_empty() => return self.quit_key(false),
                 KeyCode::Char('a')
                     if self.tutorial_run.is_none()
                         || self
@@ -494,10 +518,11 @@ impl App {
             }
             KeyCode::Enter => self.submit(),
             // Some terminals map their multiline shortcut to LF rather than
-            // reporting a modified Enter. In raw mode Crossterm preserves LF
-            // as a character; accept it as a newline. This also makes Ctrl+J
-            // a portable fallback when modified Enter is not distinguishable.
-            KeyCode::Char('\n') => {
+            // reporting a modified Enter. In raw mode Crossterm reports LF as
+            // the key that types it, Ctrl+J; accept it as a newline. This
+            // also makes Ctrl+J a portable fallback when modified Enter is not
+            // distinguishable.
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.editor.insert("\n");
                 Effect::None
             }
@@ -1061,6 +1086,7 @@ impl App {
         }
         if command.text() == ":clear" {
             self.transcript.clear();
+            self.published_entries = 0;
             self.canvas = None;
             self.canvas_entry = None;
             self.canvas_search = None;
@@ -1633,6 +1659,12 @@ impl App {
 
     pub fn take_shared_actions(&mut self) -> Vec<SharedAction> {
         std::mem::take(&mut self.shared_actions)
+    }
+
+    /// Transcript entries added since the last call, for co-authors.
+    pub fn take_unpublished_entries(&mut self) -> &[TranscriptEntry] {
+        let start = std::mem::replace(&mut self.published_entries, self.transcript.len());
+        &self.transcript[start..]
     }
 
     pub fn plain_shared_action(action: &SharedAction) -> String {
@@ -2255,11 +2287,19 @@ attempts = 2
         assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Interrupt));
         assert_eq!(app.transcript.last().expect("notice").title, "Interrupt");
         // Quick second press: the interrupting exit (the hung-server hatch).
-        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Shutdown));
-        // Idle prompt (not busy): Ctrl-C still exits directly.
-        let mut idle = App::new();
-        assert!(matches!(app.on_terminal(ctrlc.clone()), Effect::Shutdown));
-        assert!(matches!(idle.on_terminal(ctrlc), Effect::Shutdown));
+        assert!(matches!(app.on_terminal(ctrlc), Effect::Shutdown));
+    }
+
+    #[test]
+    fn idle_quit_keys_warn_first_and_quit_on_a_quick_second_press() {
+        for code in [KeyCode::Char('c'), KeyCode::Char('d')] {
+            let key = Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+            // An idle prompt may stand at a paused run: one press only warns.
+            let mut app = App::new();
+            assert!(matches!(app.on_terminal(key.clone()), Effect::None));
+            assert_eq!(app.transcript.last().expect("warning").title, "Quit");
+            assert!(matches!(app.on_terminal(key), Effect::Shutdown));
+        }
     }
 
     #[test]
@@ -2540,11 +2580,22 @@ text = "The mutable database is called {{database}}."
     fn line_feed_is_a_portable_multiline_fallback() {
         let mut app = App::new();
         app.editor.insert("first line");
+        // What Crossterm reports for a raw LF byte, and for Ctrl+J.
         app.on_terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('\n'),
+            KeyCode::Char('j'),
             KeyModifiers::CONTROL,
         )));
         assert_eq!(app.editor.text(), "first line\n");
+    }
+
+    #[test]
+    fn a_pasted_rule_lands_in_the_editor_as_one_buffer() {
+        let mut app = App::new();
+        let effect = app.on_terminal(Event::Paste(
+            "rule (path X Y)\r  --> (reach X)\r\n".to_owned(),
+        ));
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(app.editor.text(), "rule (path X Y)\n  --> (reach X)\n");
     }
 
     #[test]
@@ -3203,6 +3254,24 @@ text = "The mutable database is called {{database}}."
         let comment = app.transcript.last().expect("comment");
         assert_eq!(comment.kind, EntryKind::Comment);
         assert_eq!(comment.lines, vec!["; ask codex to inspect edge"]);
+    }
+
+    #[test]
+    fn clear_restarts_the_entries_published_to_coauthors() {
+        let mut app = App::new();
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let submit = |app: &mut App, line: &str| {
+            app.editor.insert(line);
+            app.on_terminal(enter.clone());
+            app.take_unpublished_entries()
+                .iter()
+                .flat_map(|entry| entry.lines.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(submit(&mut app, "; before"), vec!["; before"]);
+        // `:clear` leaves the transcript shorter than what was published.
+        assert!(submit(&mut app, ":clear").is_empty());
+        assert_eq!(submit(&mut app, "; after"), vec!["; after"]);
     }
 
     #[test]

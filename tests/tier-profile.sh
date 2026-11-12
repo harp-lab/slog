@@ -35,6 +35,7 @@ fail() { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
 export SLOG_OPT=tiered           # the default regime, pinned against ambient env
 export SLOG_SMT_SOLVERS=mock
+export SLOG_AWAIT_BUILDS=1     # each run's queued builds land before it exits
 unset SLOG_TIER_SKIP_MS SLOG_TIER_PROFILE 2>/dev/null || true
 
 PROG=tests/reach.slog
@@ -104,7 +105,7 @@ run_fixture run1 out/tprof-1 || fail run1
 ok=1
 for h in $COVERED; do
   grep -q "build/$h.plan" "$WORK/run1.log" || { echo "  $h did not cold-start interpreted"; ok=0; }
-  # builds were queued: the O0 lands (pool drains before driver exit)
+  # builds were queued: the O0 lands (SLOG_AWAIT_BUILDS drains the pool)
   wait_for "build/$h.O0.so" 60 || { echo "  $h queued no O0 build"; ok=0; }
   for k in $(kernel_keys "$h"); do
     grep -q '(started interp) (upgraded #f)' "build/profile/$k.profile" 2>/dev/null \

@@ -19,7 +19,7 @@
  ;; J1 arm marks (SLOG_MULTIPLAN)
  arm-mark! planned-rule-arm
  ;; provenance
- syn? syn-prov strip-prov rule-location-string with-rule-context
+ syn? syn-prov strip-prov rule-location-string with-rule-context syn-source
  ;; atoms
  var? slog-literal?
  ;; primitive operators
@@ -45,7 +45,8 @@
  ;; clause analysis (typed/planned clause grammar)
  clause-vars clause-in-vars clause-out-vars head-in-vars)
 
-(require "primitives.rkt")
+(require racket/file
+         "primitives.rkt")
 
 ;; -----------------------------------------------------------------------
 ;; J1 arm marks (SLOG_MULTIPLAN, docs/join-planning-assessment.md): planned
@@ -100,6 +101,33 @@
      (define p (file-name-from-path (format "~a" file)))
      (format "~a:~a" (if p (path->string p) file) (add1 line))]
     [_ "<unknown>"]))
+
+;; How an error should quote a rule or clause: the user's own text, read back
+;; from its file between the form's delimiting tokens, whitespace collapsed.
+;; The form itself is desugared -- lifted constants and nested terms are
+;; gensyms (`(path X _tconst6jUh7)` for `(path X "s")`) -- so printing it
+;; shows the user something they never wrote.  Falls back to the stripped
+;; form when the text is out of reach: a synthetic token, a hand-built
+;; fixture, or a source replayed from a saved database rather than a file.
+(define (syn-source form)
+  (match form
+    [`(syn (prov (token ,_ (pos ,file ,line ,col ,_ ,_) ,_)
+                 (token ,_ (pos ,file ,_ ,_ ,end-line ,end-col) ,_))
+           ,_ ...)
+     #:when (and (exact-integer? col) (exact-integer? end-col)
+                 (<= line end-line) (file-exists? file))
+     (define lines (file->lines file))
+     (if (< end-line (length lines))
+         (string-normalize-spaces
+          (string-join
+           (for/list ([n (in-range line (add1 end-line))])
+             (define text (list-ref lines n))
+             (substring text
+                        (if (= n line) (min col (string-length text)) 0)
+                        (if (= n end-line) (min end-col (string-length text)) (string-length text))))
+           "\n"))
+         (format "~a" (strip-prov form)))]
+    [_ (format "~a" (strip-prov form))]))
 
 ;; Run `thunk`; if it raises a CONTRACT failure, re-raise with the rule's source
 ;; location prefixed.  A per-rule internal failure -- classically an unbound

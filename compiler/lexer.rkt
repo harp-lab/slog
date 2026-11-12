@@ -44,6 +44,11 @@
     (define (emit-token tag lexeme)
       (begin0 (make-token tag filename line-pos col-pos lexeme)
         (advance-col! (string-length lexeme))))
+    ;; "basename:line:col" (1-based) of the lexeme being matched, spelled
+    ;; like ir-shared.rkt's rule-location-string
+    (define (location)
+      (define p (file-name-from-path (format "~a" filename)))
+      (format "~a:~a:~a" (if p (path->string p) filename) (add1 line-pos) (add1 col-pos)))
     (define lex
       (lexer [(eof) (emit-token 'eof "")]
              [(:: ";;" (:* (:& (:~ "\n") any-char))) (emit-token 'comment lexeme)]
@@ -80,6 +85,17 @@
              [(:: (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_")
                   (:* (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_" "'")))
               (emit-token 'id lexeme)]
+             ; a hyphenated word (on-cycle) is an error, not an identifier.
+             ; Without this rule it splits at the `-` operator lexeme below
+             ; into the subtraction `on - cycle`, which surfaced much later
+             ; as an opaque simplify-all contract failure.  Longest-match
+             ; makes this beat the identifier rule; it starts with a letter
+             ; or `_`, so numeric `1-2` lexes as before.
+             [(:: (:or (:/ "A" "Z") (:/ "a" "z") "_")
+                  (:* (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_" "'"))
+                  (:+ (:: "-" (:+ (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_" "'")))))
+              (error (format "~a: ~a is not a valid name: names may contain letters, digits, `_` and `'`, but not `-` (write ~a; subtraction is (- a b))"
+                             (location) lexeme (string-replace lexeme "-" "_")))]
              ; keyword parameters (#:floor, #:ceiling, ...): one id token
              ; (longest-match beats the generic "#:" operator lexeme below)
              [(:: "#:" (:+ (:or (:/ "A" "Z") (:/ "a" "z") (:/ "0" "9") "_")))

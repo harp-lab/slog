@@ -58,14 +58,30 @@ The required tools and libraries are:
 - Boost headers
 - zlib development headers
 - GMP development headers
+- OpenSSL development headers and libcrypto
 
 On Debian or Ubuntu, the native packages are typically `racket`, `make`,
-`clang`, `libomp-dev`, `libboost-dev`, `zlib1g-dev`, and `libgmp-dev`. If
+`clang`, `libomp-dev`, `libboost-dev`, `zlib1g-dev`, `libgmp-dev`, and `libssl-dev`. If
 Racket cannot load `sha`, install it with:
 
 ```console
 $ raco pkg install sha
 ```
+
+On macOS (Apple Silicon or Intel), install the native dependencies with Homebrew:
+
+```console
+$ xcode-select --install
+$ brew install racket rust libomp boost gmp openssl@3
+$ raco pkg install sha
+```
+
+Slog defaults to Apple Clang and the system C++ standard library, with an
+external OpenMP runtime. Apple Clang 15 on macOS 14 is tested. Homebrew supplies
+the dependencies above; zlib comes from the macOS SDK. The compiler, daemon,
+freezer, and generated plugins share `daemon/native.mk`. See the
+[native build notes](docs/native-build.md) for conventional compiler/flag
+overrides, optional Homebrew LLVM, and test dependencies.
 
 Slog builds the daemon and compiled rule plugins when they are needed. Put the
 graph program above in `reach.slog`, then run:
@@ -118,7 +134,8 @@ The first run may spend time compiling. Compiled plugins are cached under
 
 Slog normally uses `systemd-run` when it is available to enforce a hard memory
 limit. Without it, Slog still has a graceful in-process memory limit, but not a
-hard cgroup cap. Z3 and cvc5 are optional; the SMT library has a deterministic
+hard cgroup cap. macOS uses the native Mach RSS API for this graceful limit
+and launches the daemon directly. Z3 and cvc5 are optional; the SMT library has a deterministic
 `mock` backend for ground formulas.
 
 ## A little more than reachability

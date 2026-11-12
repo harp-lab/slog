@@ -994,11 +994,11 @@
          (unless (or sa sb)
            (error 'operationalization
                   "(cjoin ~a ~a): neither argument's collection-lattice spec is known -- cjoin needs an argument bound from a (set ...)/(map ...) lattice value column\n  in rule: ~a"
-                  a b (strip-prov rule)))
+                  a b (syn-source rule)))
          (when (and sa sb (not (equal? sa sb)))
            (error 'operationalization
                   "(cjoin ~a ~a): arguments carry different lattice specs ~a and ~a\n  in rule: ~a"
-                  a b sa sb (strip-prov rule)))
+                  a b sa sb (syn-source rule)))
          (hash-set env x (or sa sb))]
         [_ env])))
 

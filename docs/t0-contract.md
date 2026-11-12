@@ -582,7 +582,7 @@ Tied to the fork-gate criteria (roadmap §3.1):
 | `(bye <unix-seconds>)` | `slogd.cpp:102-107` | close handshake |
 | `(transient-armed)` / `(maintenance-armed)` | `daemon.h:277,284` | `session.rkt:228,239` |
 | `(schema-rel table\|struct\|lat <name> <arity> [extra])` + `(schema-end)` | `actions.rkt` `(schema)` | `runslog.rkt:157` (name = `[^ ]+` — the Seam 6 tolerance), `session.rkt:768-771` |
-| `(relation_size <name> <n>)` | `actions.rkt` `(sizes)` | api tests, session sizing |
+| `(relation_size <name> <n>)` + `(sizes-end <count>)` | `actions.rkt` `(sizes)` | api tests, session sizing |
 | `(dumprow ...)` / `(dumpdone <n>)` | dump actions | `runslog.rkt:360-362` error-fact watch |
 | `(countrow ...)` / `(countdone <rel> <n>)` | count dumps | count/session harnesses |
 | `(inputledger direct\|mask ...)` / `(inputledger-done <n>)` | `actions.rkt` | ledger fixtures |

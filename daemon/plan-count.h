@@ -118,7 +118,7 @@ void attach_native_descriptor(Daemon* daemon, const std::string& path,
                               const NativeCodeDescriptor* desc,
                               const std::string& artifact_key);
 
-// Registration ladders (plan-flavored-tasks.cpp, built -O0): the per-arity
+// Registration ladders (plan-flavored-tasks.cpp, daemon optimization): the per-arity
 // index/task boilerplate the native flavored plugins carry, driven from a
 // sealed plan's structural facts.
 void add_flavored_index(u16 arity, Relation* relation,

@@ -120,6 +120,10 @@ expect_re "s3-epoch-parked" '\(quiescence \(pauses [1-9][0-9]*\)\)' \
 # class) and answers from committed masters
 expect "s3-barrier-admitted" '(barrier-query "6 rows match")' out/joint-s3.log
 expect "s3-settled-agrees" '(settled-query "6 rows match")' out/joint-s3.log
+# and that barrier's progress is the epoch's SIGNED net growth: retracting
+# (4 5) takes path's four (_ 5) rows (an unsigned count wrapped to 2^64-4)
+expect "s3-progress-signed" '(barrier (progress (tuples -4) (exact #t)))' \
+  out/joint-s3.log
 
 # --- T5 slice (d5): the monotone-enforcement matrix -------------------------
 # The debugger arc's standing pin (t5-contract §0.1) crossed in one run: a

@@ -13,7 +13,8 @@
          ;; loader (docs/incremental.md 0.E2): -d chains holding a saved
          ;; session replay their recipes through the live session machinery
          "session.rkt"
-         "dbtool.rkt")
+         "dbtool.rkt"
+         (only-in "tools.rkt" pool-drain!))
 
 (define EXIT-FILE-NOT-FOUND 1)
 (define EXIT-RUNTIME-ERROR 2)
@@ -201,6 +202,11 @@
                    #:strict? strict?
                    #:bias bias
                    #:reoptimise? reoptimise?)
+    ;; SLOG_AWAIT_BUILDS=1: let the tiered builds this run queued land
+    ;; before exiting.  Off by default -- a run's latency is its fixpoints;
+    ;; an abandoned build is simply queued again, or profile-skipped, next run.
+    (when (equal? (getenv "SLOG_AWAIT_BUILDS") "1")
+      (pool-drain!))
 
     (when verbose?
       (fprintf (current-error-port) "Execution completed successfully.\n"))))

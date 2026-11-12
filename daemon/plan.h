@@ -1480,10 +1480,16 @@ struct ProofSchema
   {
     std::string relation;
     std::vector<u16> order;   // physical position -> nominal column; empty = nominal
+    bool struct_ = false;     // a struct's row: nominal 0 is its id
   };
   Row driver;
   std::vector<std::vector<Row>> levels;  // per cursor slot, in premise order
   std::vector<Row> heads;                // per bound sink port
+  // Per sink port, the mkstruct head a break can name: the emit stages
+  // only the content fields (the id is minted at intern), so the row is the
+  // fields, `order` mapping them to field position.  Never journalled: a
+  // derivation keyed without its id could not be found again.
+  std::vector<Row> struct_heads;
   bool capturable = false;               // any head worth journalling
   // §0.1 monotone-only, decided at the plan: a counted or maintenance rule
   // observes nothing at level 1 -- no capture (d1), no break (d3).
@@ -1585,64 +1591,50 @@ struct StepSink final : public DebugSink
   static_assert(static_cast<u8>(EventK::instantiation) == 6);
   static_assert(static_cast<u8>(EventK::emit) == 7);
 
-  // T5 slice (d3): does a standing break want THIS transition?  Returns its
-  // id, or empty for none.  A break narrows by any combination of head
-  // relation, rule and body position, and each filter is tested against the
-  // state that port actually carries.
-  std::string break_here(const Event& e, const DebugView& view) const
+  // A rule location matches its own spelling and, without its column, every
+  // rule starting on that line: "reach.slog:11" names "reach.slog:11:1".
+  static bool at_source(const std::string& loc, const std::string& source)
   {
-    const std::string* head = nullptr;
-    if (e.kind == EventK::emit && e.port < schema->heads.size())
-      head = &schema->heads[e.port].relation;
-    const u16 slot = e.op_index < view.ops.size()
-      ? view.ops[e.op_index].cursor : u16{0xffff};
-    for (const Database::BreakSpec& b : db->breakSpecs())
-    {
-      if (b.rule_id != UINT32_MAX && e.rule_id != b.rule_id) continue;
-      if (b.position != 0xffff)
-      {
-        if (e.kind != EventK::probe_match || slot != b.position) continue;
-      }
-      else if (!b.relation.empty() || !b.pattern.empty())
-      {
-        if (e.kind != EventK::emit || head == nullptr) continue;
-        if (!b.relation.empty() && *head != b.relation) continue;
-        if (!b.pattern.empty())
-        {
-          if (e.tuple.size() != b.pattern.size()) continue;
-          bool same = true;
-          for (size_t i = 0; i < b.pattern.size() && same; ++i)
-            same = b.wild[i] || e.tuple[static_cast<u16>(i)] == b.pattern[i];
-          if (!same) continue;
-        }
-      }
-      else if (e.kind != EventK::instantiation) continue;
-      return b.id;
-    }
-    return std::string();
+    return loc == source
+      || (loc.size() > source.size() && loc.compare(0, source.size(), source) == 0
+          && loc[source.size()] == ':');
   }
 
-  // One captured derivation: the head this emit produced, the driving delta
-  // row, and one premise per open cursor level -- the same walk
-  // DebugView::proof() makes, with each row labelled and un-permuted.
-  void record(const Event& e, const DebugView& view)
+  // The relation an emit writes and its row in nominal order: a set or
+  // temp head's staged row as is, a mkstruct head's content fields.  False
+  // for a port that is not an emit or a head no schema names.
+  bool emitted_row(const Event& e, const std::string*& head,
+                   std::vector<u64>& row) const
   {
-    if (e.port >= schema->heads.size()) return;         // an effect sink
-    const ProofSchema::Row& head = schema->heads[e.port];
-    if (head.relation.empty()) return;                  // not journallable
-    Database::ProofRecord out;
-    out.relation = head.relation;
-    // Set and temp heads stage the nominal row (plan.h's sealer), so the
-    // head needs no inversion: the sink permutes on the way to the index.
-    out.tuple.assign(e.tuple.begin(), e.tuple.end());
-    out.rule_id = e.rule_id;
-    out.variant = e.variant_ordinal;
-    out.rule_loc = rule_loc ? *rule_loc : std::string();
-    out.rule_tag = rule_tag ? *rule_tag : std::string();
-    out.driver_relation = schema->driver.relation;
-    out.driver = ProofSchema::nominalize(schema->driver.order,
-                                         view.driver.data(),
-                                         view.driver.size());
+    if (e.kind != EventK::emit) return false;
+    if (e.port < schema->heads.size()
+        && !schema->heads[e.port].relation.empty())
+    {
+      head = &schema->heads[e.port].relation;
+      row.assign(e.tuple.begin(), e.tuple.end());
+      return true;
+    }
+    if (e.port < schema->struct_heads.size()
+        && !schema->struct_heads[e.port].relation.empty())
+    {
+      const ProofSchema::Row& fields = schema->struct_heads[e.port];
+      head = &fields.relation;
+      row = ProofSchema::nominalize(fields.order, e.tuple.begin(),
+                                    e.tuple.size());
+      return true;
+    }
+    return false;
+  }
+
+  // The driving row and one premise per open cursor level -- the same walk
+  // DebugView::proof() makes, with each row labelled and un-permuted.
+  void labelled_body(const DebugView& view, std::string& driver_relation,
+                     std::vector<u64>& driver,
+                     std::vector<Database::ProofPremise>& premises) const
+  {
+    driver_relation = schema->driver.relation;
+    driver = ProofSchema::nominalize(schema->driver.order, view.driver.data(),
+                                     view.driver.size());
     for (size_t ip : view.levels)
     {
       const u16 slot = view.ops[ip].cursor;
@@ -1661,9 +1653,242 @@ struct StepSink final : public DebugSink
         }
         else
           premise.row.assign(row.begin(), row.end());
-        out.premises.push_back(std::move(premise));
+        premises.push_back(std::move(premise));
       }
     }
+  }
+
+  // Named registers bound at this port (t5-contract §3, frames names).
+  // Bound = preloads + the driver's columns + every assignment by an op
+  // that has run: ops before op_index, plus op_index itself when the port
+  // reports a success (a match, a passed guard, a fire, an emit).  A miss
+  // or failed guard leaves op_index's outputs unbound; the drive port has
+  // run no body op at all.
+  Database::BreakBindings rule_bindings(
+      const Event& e, const DebugView& view,
+      std::vector<std::string>* unbound = nullptr) const
+  {
+    Database::BreakBindings out;
+    if (program == nullptr || program->reg_names.empty()) return out;
+    std::vector<bool> bound(program->nregs, false);
+    for (const auto& [reg, _v] : program->preloads)
+      if (reg < bound.size()) bound[reg] = true;
+    if (program->driver_regs.empty())
+    {
+      for (size_t i = 0; i < view.driver.size() && i < bound.size(); ++i)
+        bound[i] = true;
+    }
+    else
+      for (u16 r : program->driver_regs)
+        if (r < bound.size()) bound[r] = true;
+    if (e.kind != EventK::driver)
+    {
+      const bool success = e.kind == EventK::probe_match
+                        || e.kind == EventK::guard_pass
+                        || e.kind == EventK::instantiation
+                        || e.kind == EventK::emit;
+      const size_t upto = std::min(e.op_index + (success ? 1 : 0),
+                                   program->op_writes.size());
+      for (size_t i = 0; i < upto; ++i)
+        for (u16 r : program->op_writes[i])
+          if (r < bound.size()) bound[r] = true;
+    }
+    for (size_t r = 0; r < program->reg_names.size() && r < bound.size()
+                       && r < view.regs.size(); ++r)
+      if (bound[r] && !program->reg_names[r].empty())
+        out.emplace_back(program->reg_names[r], view.regs[r]);
+    if (unbound != nullptr)
+      for (size_t r = 0; r < program->reg_names.size(); ++r)
+      {
+        const std::string& name = program->reg_names[r];
+        const bool named = !name.empty()
+          && std::none_of(out.begin(), out.end(),
+                          [&](const auto& b) { return b.first == name; })
+          && std::find(unbound->begin(), unbound->end(), name)
+               == unbound->end();
+        if (named && (r >= bound.size() || !bound[r]))
+          unbound->push_back(name);
+      }
+    return out;
+  }
+
+  // At the drive port or a match, the row of `relation` this port just
+  // matched, in nominal order -- a struct's without its id, as the source
+  // writes the atom: "the rule has matched this body atom".
+  bool matched_row(const Event& e, const DebugView& view, u16 slot,
+                   const std::string& relation, std::vector<u64>& row) const
+  {
+    if (e.kind == EventK::driver)
+    {
+      if (schema->driver.relation != relation) return false;
+      row = ProofSchema::nominalize(schema->driver.order, view.driver.data(),
+                                    view.driver.size());
+      if (schema->driver.struct_ && !row.empty()) row.erase(row.begin());
+      return true;
+    }
+    if (e.kind != EventK::probe_match || slot >= schema->levels.size()
+        || slot >= view.cursors.size())
+      return false;
+    const PrefixCursor& cursor = *view.cursors[slot];
+    const std::vector<ProofSchema::Row>& rows = schema->levels[slot];
+    for (u16 i = 0; i < cursor.premise_count() && i < rows.size(); ++i)
+      if (rows[i].relation == relation)
+      {
+        const TupleView r = cursor.premise(i);
+        row = ProofSchema::nominalize(rows[i].order, r.begin(), r.size());
+        if (rows[i].struct_ && !row.empty()) row.erase(row.begin());
+        return true;
+      }
+    return false;
+  }
+
+  // Did the body use a value one of these terms matches: is one in the
+  // driving row or a premise row?
+  bool uses_any(const std::vector<Database::BreakTerm>& terms,
+                const DebugView& view) const
+  {
+    const auto holds = [&](const u64* row, size_t n) {
+      for (size_t i = 0; i < n; ++i)
+        for (const Database::BreakTerm& t : terms)
+        {
+          Database::BreakBindings scratch;
+          if (t.kind == Database::BreakTerm::exact ? row[i] == t.word
+              : db->matchBreakTerm(t, row[i], scratch))
+            return true;
+        }
+      return false;
+    };
+    if (holds(view.driver.data(), view.driver.size())) return true;
+    for (size_t ip : view.levels)
+    {
+      const PrefixCursor& cursor = *view.cursors[view.ops[ip].cursor];
+      for (u16 i = 0; i < cursor.premise_count(); ++i)
+      {
+        const TupleView row = cursor.premise(i);
+        if (holds(row.begin(), row.size())) return true;
+      }
+    }
+    return false;
+  }
+
+  // T5 slice (d3): the standing breaks that want THIS transition.  A break
+  // narrows by any combination of head relation, rule and body position,
+  // each tested against the state that port actually carries, and then by
+  // its pattern, the words its body must use, and its guards.  A logpoint
+  // that matches records the transition and the run goes on; of the
+  // stopping breaks the first past its ignore count wins, and its id is
+  // returned (empty for none).  `may_stop` false (a step stops here anyway,
+  // or the breaks are quiet after a stop) leaves only the logpoints.
+  // The stopping break's bindings and matched clause row, for the stop.
+  struct Stopped
+  {
+    Database::BreakBindings bound;
+    std::string relation;
+    std::vector<u64> row;
+  };
+
+  std::string break_here(const Event& e, const DebugView& view, bool may_stop,
+                         Stopped& stopped)
+  {
+    const std::string* head = nullptr;
+    std::vector<u64> row;
+    const bool emitted = emitted_row(e, head, row);
+    const u16 slot = e.op_index < view.ops.size()
+      ? view.ops[e.op_index].cursor : u16{0xffff};
+    std::string stop;
+    bool have_rule_vars = false;
+    Database::BreakBindings rule_vars;
+    for (const Database::BreakSpec& b : db->breakSpecs())
+    {
+      if (!b.enabled || (!b.log && (!may_stop || !stop.empty()))) continue;
+      if (b.rule_id != UINT32_MAX && e.rule_id != b.rule_id) continue;
+      if (!b.source.empty() && !(rule_loc && at_source(*rule_loc, b.source)))
+        continue;
+      std::vector<u64> matched;
+      if (!b.premise.empty())
+      {
+        if (!matched_row(e, view, slot, b.premise, matched)) continue;
+      }
+      else if (b.position != 0xffff)
+      {
+        if (e.kind != EventK::probe_match || slot != b.position) continue;
+      }
+      else if (!b.relations.empty() || !b.pattern.empty())
+      {
+        if (!emitted) continue;
+        if (!b.relations.empty()
+            && !Database::relationNamed(b.relations, *head))
+          continue;
+      }
+      else if (e.kind != EventK::instantiation) continue;
+      // At a rule's location the pattern's variables are the rule's own:
+      // `(ck env e1)` is the rule's ask of e1, not any ask of ck it makes.
+      const bool located = !b.source.empty() && !b.pattern.empty();
+      if ((located || !b.guards.empty() || b.log) && !have_rule_vars)
+      {
+        rule_vars = rule_bindings(e, view);
+        have_rule_vars = true;
+      }
+      Database::BreakBindings bound;
+      if (located) bound = rule_vars;
+      if (!b.pattern.empty()
+          && !db->matchBreakRow(b, b.premise.empty() ? row : matched, bound))
+        continue;
+      if (!b.uses.empty() && !uses_any(b.uses, view)) continue;
+      if (!b.guards.empty() || b.log)
+      {
+        if (!located) bound.insert(bound.end(), rule_vars.begin(), rule_vars.end());
+        if (!db->breakGuardsHold(b, bound)) continue;
+      }
+      const u64 hits = db->countBreakHit(b);
+      if (b.log)
+      {
+        Database::BreakLogRecord out;
+        out.id = b.id;
+        out.rule_id = e.rule_id;
+        out.rule_loc = rule_loc ? *rule_loc : std::string();
+        if (emitted) out.relation = *head;
+        out.row = row;
+        out.bindings = std::move(bound);
+        labelled_body(view, out.driver_relation, out.driver, out.premises);
+        db->recordBreakLog(std::move(out));
+      }
+      else if (hits > b.ignore)
+      {
+        stop = b.id;
+        stopped.bound = std::move(bound);
+        if (!b.premise.empty())
+        {
+          stopped.relation = b.premise;
+          stopped.row = std::move(matched);
+        }
+        else if (emitted && !b.pattern.empty())
+        {
+          stopped.relation = *head;
+          stopped.row = row;
+        }
+      }
+    }
+    return stop;
+  }
+
+  // One captured derivation: the head this emit produced, the driving delta
+  // row, and one premise per open cursor level.
+  void record(const Event& e, const DebugView& view)
+  {
+    if (e.port >= schema->heads.size()) return;         // an effect sink
+    const ProofSchema::Row& head = schema->heads[e.port];
+    if (head.relation.empty()) return;                  // not journallable
+    Database::ProofRecord out;
+    out.relation = head.relation;
+    // Set and temp heads stage the nominal row (plan.h's sealer), so the
+    // head needs no inversion: the sink permutes on the way to the index.
+    out.tuple.assign(e.tuple.begin(), e.tuple.end());
+    out.rule_id = e.rule_id;
+    out.variant = e.variant_ordinal;
+    out.rule_loc = rule_loc ? *rule_loc : std::string();
+    out.rule_tag = rule_tag ? *rule_tag : std::string();
+    labelled_body(view, out.driver_relation, out.driver, out.premises);
     db->recordProof(std::move(out));
   }
 
@@ -1679,15 +1904,13 @@ struct StepSink final : public DebugSink
           || e.rule_id == db->stepRuleFilter());
     // A step outranks a break at the same transition: the operator asked
     // for this position explicitly, and the break is still armed after.
+    // Logpoints record either way.
     std::string broke;
-    if (!stepping)
-    {
-      if (!breaking || db->breakSuppressed()) return DebugAction::continue_;
-      if ((db->breakEventMask() & event_bit(e.kind)) == 0)
-        return DebugAction::continue_;
-      broke = break_here(e, view);
-      if (broke.empty()) return DebugAction::continue_;
-    }
+    Stopped stopped;
+    if (breaking && (db->breakEventMask() & event_bit(e.kind)) != 0)
+      broke = break_here(e, view, !stepping && !db->breakSuppressed(),
+                         stopped);
+    if (!stepping && broke.empty()) return DebugAction::continue_;
     // One stop per arming, whichever worker reaches a matching port first.
     if (!db->claimStepStop()) return DebugAction::continue_;
     Database::StepStop& stop = db->stepStopSlot();
@@ -1703,56 +1926,30 @@ struct StepSink final : public DebugSink
     stop.driver = proof.driver;
     stop.premises = proof.premises;
     stop.break_id = broke;
-    // Named registers bound at this port (t5-contract §3, frames names).
-    // Bound = preloads + the driver's columns + every assignment by an op
-    // that has run: ops before op_index, plus op_index itself when the port
-    // reports a success (a match, a passed guard, a fire, an emit).  A miss
-    // or failed guard leaves op_index's outputs unbound; the drive port has
-    // run no body op at all.
-    stop.bindings.clear();
-    if (program != nullptr && !program->reg_names.empty())
-    {
-      std::vector<bool> bound(program->nregs, false);
-      for (const auto& [reg, _v] : program->preloads)
-        if (reg < bound.size()) bound[reg] = true;
-      if (program->driver_regs.empty())
+    // The rule's variables bound at this port, then those the break's
+    // pattern bound from the matched values (`A` and `K` of `(ar A K)`,
+    // which the rule binds only at a later port), then the rest, unbound.
+    stop.unbound.clear();
+    stop.bindings = rule_bindings(e, view, &stop.unbound);
+    for (const auto& [name, word] : stopped.bound)
+      if (std::none_of(stop.bindings.begin(), stop.bindings.end(),
+                       [&](const auto& b) { return b.first == name; }))
       {
-        for (size_t i = 0; i < view.driver.size() && i < bound.size(); ++i)
-          bound[i] = true;
+        stop.bindings.emplace_back(name, word);
+        std::erase(stop.unbound, name);
       }
-      else
-        for (u16 r : program->driver_regs)
-          if (r < bound.size()) bound[r] = true;
-      if (e.kind != EventK::driver)
-      {
-        const bool success = e.kind == EventK::probe_match
-                          || e.kind == EventK::guard_pass
-                          || e.kind == EventK::instantiation
-                          || e.kind == EventK::emit;
-        const size_t upto = std::min(e.op_index + (success ? 1 : 0),
-                                     program->op_writes.size());
-        for (size_t i = 0; i < upto; ++i)
-          for (u16 r : program->op_writes[i])
-            if (r < bound.size()) bound[r] = true;
-      }
-      for (size_t r = 0; r < program->reg_names.size() && r < bound.size()
-                         && r < view.regs.size(); ++r)
-        if (bound[r] && !program->reg_names[r].empty())
-          stop.bindings.emplace_back(program->reg_names[r], view.regs[r]);
-    }
+    stop.clause_relation = std::move(stopped.relation);
+    stop.clause_row = std::move(stopped.row);
     if (stepping)
       // Disarm here, not at resume: the machine returns breakpoint with the
       // transition already committed, and the parked continuation must run
       // on afterwards without stopping at every port.
       db->stepDisarm();
     else
-    {
       // A break must survive its own hit, so it goes QUIET instead: every
       // other worker runs on to the read barrier, and the resume (which
       // clears the stop) re-opens it for the next one.
-      db->countBreakHit(broke);
       db->suppressBreaks();
-    }
     return DebugAction::pause;
   }
 };
@@ -2475,23 +2672,32 @@ public:
       return slot < frame.size() && frame[slot] != nullptr
         ? frame[slot]->getName() : std::string();
     };
+    const auto slot_struct = [&](u16 slot) {
+      return slot < frame.size() && frame[slot] != nullptr
+        && frame[slot]->getStructId() > 0;
+    };
     if (sealed.driver.kind == DriverK::scan_delta
         || sealed.driver.kind == DriverK::probe_delta)
       proof_schema.driver = {slot_name(sealed.driver.relation),
-                             sealed.driver.order};
+                             sealed.driver.order,
+                             slot_struct(sealed.driver.relation)};
     proof_schema.levels.reserve(sealed.cursors.size());
     for (const CursorPlan& cursor : sealed.cursors)
     {
       std::vector<ProofSchema::Row> rows;
       if (const auto* probe = std::get_if<ProbePlan>(&cursor))
-        rows.push_back({slot_name(probe->relation), probe->order});
+        rows.push_back({slot_name(probe->relation), probe->order,
+                        slot_struct(probe->relation)});
       else if (const auto* filter = std::get_if<FilterPlan>(&cursor))
-        rows.push_back({slot_name(filter->relation), filter->order});
+        rows.push_back({slot_name(filter->relation), filter->order,
+                        slot_struct(filter->relation)});
       else
       {
         const Join3Plan& join3 = std::get<Join3Plan>(cursor);
-        rows.push_back({slot_name(join3.left.relation), join3.left.order});
-        rows.push_back({slot_name(join3.right.relation), join3.right.order});
+        rows.push_back({slot_name(join3.left.relation), join3.left.order,
+                        slot_struct(join3.left.relation)});
+        rows.push_back({slot_name(join3.right.relation), join3.right.order,
+                        slot_struct(join3.right.relation)});
       }
       proof_schema.levels.push_back(std::move(rows));
     }
@@ -2504,6 +2710,15 @@ public:
         {journallable ? slot_name(head.relation) : std::string(), {}});
       if (!proof_schema.heads.back().relation.empty())
         proof_schema.capturable = true;
+      ProofSchema::Row content;
+      if (head.head_kind == HeadK::struct_ && !head.order.empty())
+      {
+        // master-content order, the id (nominal 0) last and not staged
+        content.relation = slot_name(head.relation);
+        for (size_t i = 0; i + 1 < head.order.size(); ++i)
+          content.order.push_back(static_cast<u16>(head.order[i] - 1));
+      }
+      proof_schema.struct_heads.push_back(std::move(content));
     }
   }
 

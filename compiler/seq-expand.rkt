@@ -15,10 +15,13 @@
 ;; names stay fixed).
 ;;
 ;; DIRECTION.  Bindedness is a scheduling fact (§5.1), approximated here at
-;; rule level: variables of every non-seq-pat body clause count as bound
-;; (the same over-approximation the demand transform uses -- a genuinely
-;; unsafe rule still errors in planning).  A fixpoint then classifies each
-;; seq-pat:
+;; rule level: variables an atom, struct id-binding, or const mentions
+;; count as bound, and a let (value prim or function call) binds its
+;; output once its inputs are bound -- its inputs are READ, not bound
+;; (counting them bound sent [0 l ... 9] feeding (llen l2) down the
+;; pattern direction, with nothing left to bind l2).  A genuinely unsafe
+;; rule still errors in planning.  A fixpoint then classifies each
+;; seq-pat, re-closing over lets as each one binds its variables:
 ;;
 ;;   pattern       the list var is bound: llen guard + lref anchors +
 ;;                 lslice splices (§5.2).  Equality checks ride the
@@ -107,6 +110,33 @@
     [`(syn ,_ ,_ ,args ...) (apply set-union (set) (map term-vars args))]
     [_ (set)]))
 
+;; What one non-seq-pat body clause binds, given the variables already
+;; bound -- the planner's view.  A value-prim or function call
+;; (= x (f a ...)) is a let (the type checker's test: f is in the fun env)
+;; that binds x once its inputs are bound; READING a variable there does
+;; not bind it.  Atoms, struct id-bindings and consts bind every variable
+;; they mention; guards and negations bind nothing.
+(define (clause-binds cl bound funs)
+  (match cl
+    [`(syn ,_ = ,(? symbol? x) (syn ,_ ,(? symbol? f) ,args ...))
+     #:when (hash-has-key? funs f)
+     (if (subset? (apply set-union (set) (map term-vars args)) bound)
+         (set x)
+         (set))]
+    [`(syn ,_ ,(or '/= (? primitive-cmp?)) ,_ ...) (set)]
+    [(? neg-clause?) (set)]
+    [_ (clause-arg-vars cl)]))
+
+;; Close `bound` under the clauses' bindings: lets fire as their inputs
+;; become bound, in any order.
+(define (close-bound bound cls funs)
+  (define bound+
+    (for/fold ([b bound]) ([cl (in-list cls)])
+      (set-union b (clause-binds cl b funs))))
+  (if (= (set-count bound+) (set-count bound))
+      bound
+      (close-bound bound+ cls funs)))
+
 ;; Does a declared column type name resolve to the sequence base type?
 (define (cseq-type? rels t)
   (and (symbol? t) (eq? 'cseq (lattice-base-type rels t))))
@@ -150,12 +180,13 @@
 ;; stratification edges (base . occurrence-rel), decomp-edges style.
 (define (expand-seq-patterns rules type-env)
   (define rels (type-env-rels type-env))
+  (define funs (type-env-funs type-env))
   (define used-occ (mutable-set))   ; occurrence rels some rule now joins
   (define pos-provs (mutable-set))  ; floating-run sites (their provs)
 
   (define rules0
     (for/fold ([acc (set)]) ([rule (in-set rules)])
-      (for/fold ([acc acc]) ([r (in-list (expand-rule rule rels used-occ
+      (for/fold ([acc acc]) ([r (in-list (expand-rule rule rels funs used-occ
                                                       pos-provs))])
         (set-add acc r))))
 
@@ -224,15 +255,20 @@
      ;; lowering that DROPS the source atom must reintroduce the edges.
      (values rules+ env+ (set))]))
 
-(define (expand-rule rule rels used-occ pos-provs)
+(define (expand-rule rule rels funs used-occ pos-provs)
   (match rule
     [`(syn ,prov rule ,bodys ... --> ,heads ...)
      #:when (ormap seq-pat-cl? bodys)
      (define sps (filter seq-pat-cl? bodys))
      (define others (filter (lambda (c) (not (seq-pat-cl? c))) bodys))
 
-     ;; rule-level bindedness: everything a non-seq-pat body clause mentions
-     (define bound0
+     ;; rule-level bindedness: what the non-seq-pat body clauses bind.  A
+     ;; variable a let only READS is not bound: in
+     ;; (= l2 [0 l ... 9]) (= n (llen l2)), l2 must come from construction,
+     ;; not be destructured as if something else had bound it.
+     (define bound0 (close-bound (set) others funs))
+     ;; ...and what they mention at all (read or bound)
+     (define mentioned
        (apply set-union (set) (map clause-arg-vars others)))
      ;; occurrence counts across the whole rule, for dead-splice elision
      ;; (a NAMED splice read by nothing still skips its lslice)
@@ -248,8 +284,8 @@
            [(? symbol? x) (hash-update! uses x add1 0)]
            [_ (void)])))
      (define (used-outside-pattern? x)
-       ;; bound elsewhere or mentioned more than its one pattern occurrence
-       (or (> (hash-ref uses x 0) 1) (set-member? bound0 x)))
+       ;; mentioned elsewhere or more than its one pattern occurrence
+       (or (> (hash-ref uses x 0) 1) (set-member? mentioned x)))
 
      ;; the vars an atom binds into cseq columns (occurrence-join eligibility)
      (define atom-cseq-bound
@@ -282,7 +318,10 @@
                [else #f])))
          (if progressed
              (let-values ([(p l items) (sp-parts progressed)])
-               (fixpoint (set-union bound (set-add (live-item-vars items) l))))
+               ;; ...and the lets that read what this seq-pat just bound
+               (fixpoint (close-bound
+                          (set-union bound (set-add (live-item-vars items) l))
+                          others funs)))
              bound)))
      (for ([sp (in-list sps)])
        (unless (hash-has-key? directions sp)

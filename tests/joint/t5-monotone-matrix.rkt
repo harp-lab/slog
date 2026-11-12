@@ -36,6 +36,9 @@
     (parameterize ([session-pause-hook
                     (lambda (_s l)
                       (cond
+                        ;; a declined continuation comes back for the same
+                        ;; park; the matrix commits past it
+                        [(regexp-match? #px"^\\(refused " l) 'continue]
                         [(and (regexp-match? #px"\\(phase read\\)" l)
                               (regexp-match? #px"\\(cause \\(watch " l))
                          (set! parks (add1 parks))

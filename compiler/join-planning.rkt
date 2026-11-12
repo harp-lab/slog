@@ -44,6 +44,7 @@
 (require "params.rkt")
 (require "ir-shared.rkt")
 (require "join-actions.rkt")
+(require "sha256.rkt")
 
 ;; J1/J2 arm choice-group ids: kernel-unique and deterministic (minted
 ;; along plan-stratum's canonical walk; the box is parameterized per
@@ -206,14 +207,10 @@
 ;; rules        set of typed rules (one stratum's worth)
 ;; rel-env      relation declarations (hash), extended here with temps
 ;; dynamic-rels relations that grow during this stratum (its rules' heads)
-;; #:level      the stratum's level, embedded in temp names: temps of two
-;;              strata coexist by NAME in one daemon database (emit-cpp
-;;              reuses an existing relation of the same name, fatal on
-;;              arity mismatch), so names must be unique program-wide
 ;;
 ;; Returns (cons planned-rules rel-env+) with planned-rules a set.
 
-(define (plan-stratum rules rel-env dynamic-rels #:level [level 0])
+(define (plan-stratum rules rel-env dynamic-rels)
   ;; temps created by staging are dynamic too; track them alongside
   (define temps (mutable-set))
   (define (dynamic? name)
@@ -235,7 +232,7 @@
     (set-box! rel-env-box (hash-set (unbox rel-env-box) name `(temp ,arity))))
 
   ;; Deterministic temp naming (RF1 slice 0; see rule-sort-key above).
-  ;; Shape: temp[<flavor>]<level>x<n> -- all-alphanumeric ON PURPOSE:
+  ;; Shape: temp[<flavor>]<stratum>x<n> -- all-alphanumeric ON PURPOSE:
   ;;  - tests/stats-tests.sh normalizes `temp[A-Za-z0-9]+`, so a `_` would
   ;;    break the fires goldens;
   ;;  - not `v_`-prefixed (emit-cpp value-reference namespace) and not
@@ -246,6 +243,32 @@
   ;; signature), and emit-cpp resolves temps BY NAME against the live
   ;; database, fatal on arity mismatch -- under gensym the flavors never
   ;; shared names, and this preserves exactly that.
+  ;;
+  ;; <stratum> is a digest of the stratum's rules, not its level.  Temps
+  ;; coexist by NAME with every other relation in the daemon database --
+  ;; emit-cpp and the plan installer reuse an existing relation of the same
+  ;; name, fatal on arity mismatch -- and that database outlives one
+  ;; program: a session layers program after program onto it, and each
+  ;; program numbers its strata from 0.  Level-numbered temps (temp<L>x<N>)
+  ;; were unique within one program only, so the second program's level-1
+  ;; temp landed on the first program's ("install: relation arity mismatch
+  ;; for temp1x0" when the arities differed, a silently shared temp when
+  ;; they agreed).  The digest is over the canonical rule keys (variables
+  ;; renamed, provenance stripped), so a name is a pure function of the
+  ;; stratum's content: run-stable, blind to line shifts and to edits in
+  ;; other strata, and the same wherever in a session the program is run --
+  ;; the names ride into .plan and .cpp text, whose content-addressed keys
+  ;; must not depend on a session position.  Two strata share temps only if
+  ;; their rules are alpha-equivalent, in which case their staging, and so
+  ;; every temp's arity, is identical too.  Computed on the first mint;
+  ;; most strata stage nothing.
+  (define stratum-tag
+    (delay
+      (substring
+       (bytes->hex-string
+        (sha256 (string->bytes/utf-8
+                 (string-join (map rule-sort-key sorted-rules) "\n"))))
+       0 12)))
   (define flavor-tag
     (cond [(dred-maintenance-flavor?)     "r"]   ; _maint4neg
           [(negative-maintenance-flavor?) "n"]   ; _maint3neg
@@ -258,8 +281,9 @@
     (let loop ()
       (define n (unbox temp-counter))
       (set-box! temp-counter (add1 n))
-      (define name (string->symbol (format "temp~a~ax~a" flavor-tag level n)))
-      ;; skip names already taken (a user relation could spell temp<L>x<N>;
+      (define name (string->symbol
+                    (format "temp~a~ax~a" flavor-tag (force stratum-tag) n)))
+      ;; skip names already taken (a user relation could spell temp<S>x<N>;
       ;; rel-env content is run-stable, so the skip is deterministic too)
       (if (hash-has-key? (unbox rel-env-box) name)
           (loop)

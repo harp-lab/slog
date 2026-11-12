@@ -7,6 +7,8 @@
          current-source-override
          current-source-capture
          parse-error
+         parse-errors-raise?
+         (struct-out exn:fail:slog-parse)
          syn->filename)
 
 (require "lexer.rkt")
@@ -46,12 +48,34 @@
       ""
       (string-append " " (whitespace (- n 1)))))
 
+;; A syntax error at FILE:LINE:COL, both 1-based like rule-location-string
+;; (ir-shared.rkt); the message carries the same prefix.
+(struct exn:fail:slog-parse exn:fail (file line col) #:transparent)
+
+;; parse-error's default prints the offending tokens to stdout and exits 1:
+;; the command-line contract.  An embedding that must outlive a bad program
+;; -- the REPL server, whose stdout is a bootstrap pipe nobody reads -- sets
+;; this to raise exn:fail:slog-parse instead.
+(define parse-errors-raise? (make-parameter #f))
+
 (define module-toks (hash))
 (define (parse-error msg toks [after-toks '()])
+  (when (parse-errors-raise?)
+    (define pos (token->pos (first toks)))
+    (define file (pos->file pos))
+    (define line (add1 (pos->startline pos)))
+    (define col (add1 (pos->startcol pos)))
+    (raise (exn:fail:slog-parse
+            (format "~a:~a:~a: ~a"
+                    (let-values ([(_dir name _must-be-dir?) (split-path file)]) name)
+                    line col msg)
+            (current-continuation-marks)
+            file line col)))
   (newline)
-  ; Pretty-prints an error message
+  ; Pretty-prints an error message.  Lexer lines are 0-based; editors and
+  ; rule-location-string count from 1.
   (define (line-prefix line)
-    (let ([pre (format "~a: " line)]) (string-append (whitespace (- 5 (string-length pre))) pre)))
+    (let ([pre (format "~a: " (add1 line))]) (string-append (whitespace (- 5 (string-length pre))) pre)))
   ; whitespace up to first column
   (define col (pos->startcol (token->pos (first toks))))
   (define origin-line (pos->startline (token->pos (first toks))))
@@ -134,6 +158,13 @@
   (match (token->tag tok)
     [(or 'id 'ref)
      (define symb (string->symbol (token->str tok)))
+     ;; `const` is reserved: every literal is spelled (const v) below, so a
+     ;; user's (const 1) -- a constructor, relation or variable named const
+     ;; -- would be indistinguishable from one, and downstream passes would
+     ;; read it as a malformed literal
+     (when (eq? symb 'const)
+       (error (format "~a: const is a reserved word (the compiler's spelling of a literal); choose another name"
+                      (rule-location-string `(syn (prov ,tok ,tok))))))
      (if (member symb '(true false))
          (cons (emit-expr `(const ,symb) toks (advance toks)) (advance toks))
          (cons symb (advance toks)))]

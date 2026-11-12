@@ -19,7 +19,7 @@
 #include "gzfile.h"
 #include "index.h"
 #include "counts.h"
-#include "protocol.h"   // quoteString, for the value adapter's CELL records
+#include "protocol.h"   // quoteString, for string values and CELL records
 #include <string>
 #include <vector>
 #include <set>
@@ -37,6 +37,9 @@
 #include <mutex>
 #include <memory>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include <omp.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -114,20 +117,28 @@ public:
   virtual void restoreHarvest() {}
 };
 
-// Resident set size in bytes, from /proc/self/statm (the honest number, which
-// composes with the SLOG_MEM_MAX cgroup cap).  Field 2 is resident pages.
+// Current resident bytes, not the high-water mark returned by getrusage.
+// Used by the graceful memory cap on both Linux and macOS.
 inline u64 readRSSbytes()
 {
+#ifdef __APPLE__
+  mach_task_basic_info_data_t info{};
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+    return static_cast<u64>(info.resident_size);
+#else
   std::ifstream statm("/proc/self/statm");
   u64 total_pages = 0, resident_pages = 0;
   if (statm >> total_pages >> resident_pages)
     return resident_pages * (u64)sysconf(_SC_PAGESIZE);
+#endif
   return 0;
 }
 
 // The memory cap (docs/pausing.md §5) is checked against ACTUAL RSS, re-read at
 // the sendBatch choke point about once per this many emitted words (~2 MiB) --
-// a /proc read that rarely is negligible, and reading the true RSS avoids the
+// an OS query that rarely is negligible, and reading the true RSS avoids the
 // false trips an emitted-words estimate would cause (re-derivations, non-dedup
 // temps over-count growth).
 #define rss_check_words (256 * 1024)
@@ -398,6 +409,13 @@ private:
   // full-index orderings maintained only in externally-seeded runs (the
   // staging-replay fix); getAnyIndex skips them (see addIndex)
   std::set<std::vector<u16>> seeded_orderings;
+  // The identity ordering ensureDefaultIndex made for an index-less relation
+  // (empty: none), until a program install requisitions it.  It holds the
+  // relation's content only until the first program ordering arrives: no
+  // WriteTask maintains an ordering its stratum did not requisition, so
+  // from then on it silently goes stale.  It must not outlive that moment
+  // unrequisitioned -- see retirePlaceholder.
+  std::vector<u16> placeholder_ord;
   // Index-reuse boundary (cross-stratum keep-set): while an incoming FRESH
   // stratum installs, addIndex/addMapIndex record every ordering it
   // requisitions here; the boundary sweep (Database::boundarySweep, run at
@@ -920,6 +938,7 @@ public:
     // the next getIndex through it then fatals during CSV/BIN export.
     struct_master_index.clear();
     struct_lookup_index.clear();
+    placeholder_ord.clear();
 
     // Registration teardown invalidates the count invariant ("a version's
     // count map covers exactly its live tuples", §6.1) with everything else.
@@ -1035,6 +1054,7 @@ public:
       if (!fresh_requisitions.count(it->first))
       {
 	++sweep_dropped;
+	if (it->first == placeholder_ord) placeholder_ord.clear();
 	for (u16 b = 0; b < bucket_count; ++b)
 	  delete it->second[b];
 	delete [] it->second;
@@ -1831,6 +1851,36 @@ public:
     return struct_lookup_index;
   }
 
+  // One struct instance's storage-order row (id at column 0), by id: every
+  // reader that decodes a struct value finds its fields here.  Any
+  // id-leading ordering will do -- its bucket is the id's, and the id is
+  // unique within it -- but not just the one getLookupIndex names: a
+  // relation born with ensureDefaultIndex's identity ordering keeps it
+  // registered beside the program's own id-leading join ordering (say
+  // (0 2 1) for a rule matching (add A B)), nothing writes it, and the
+  // lookup memo may pick it.  So probe each id-leading ordering (an
+  // unwritten one's bucket is empty, so a miss there is cheap).  Seeded-only
+  // orderings are skipped, as getAnyIndex skips them: unmaintained in a
+  // fresh run.  False when no ordering holds the id.
+  bool indexedStructRow(u64 v, std::vector<u64>& row)
+  {
+    for (const auto& [ord, buckets] : indices)
+    {
+      if (ord.empty() || ord[0] != 0 || seeded_orderings.count(ord)) continue;
+      bool found = false;
+      buckets[buckethash(v)]->forEach([&](const u64* t)
+      {
+        if (found || t[0] != v) return;
+        found = true;
+        row.assign(ord.size(), 0);
+        for (u16 i = 0; i < ord.size(); ++i)
+          row[ord[i]] = t[i];               // t is in index order
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+
   u64* getInternAlloc(u16 b)
   {
     return &(intern_allocators[b]);
@@ -1968,6 +2018,38 @@ public:
     struct_tombstone_count.fetch_sub(1, std::memory_order_relaxed);
   }
 
+  // A struct instance the lookup index does not hold, read at an iteration
+  // barrier: minted this iteration (its interned row sits in the delta until
+  // the next write phase indexes it) or retracted (the dictionary's dead
+  // half keeps its content).  Storage order, id at column 0.  Both are
+  // scans, for the rare reader that renders values at a barrier -- the
+  // trace, a boundary peek -- where a delta names such an instance.
+  bool unindexedStructRow(u64 id, std::vector<u64>& row)
+  {
+    if (struct_id == 0) return false;
+    for (const InsertBatch* b : *delta)
+      for (u64 j = 0; j + arity <= b->usage; j += arity)
+        if (b->data[j] == id)
+        {
+          row.assign(&b->data[j], &b->data[j] + arity);
+          return true;
+        }
+    if (!struct_tombstones
+        || struct_tombstone_count.load(std::memory_order_relaxed) == 0)
+      return false;
+    const std::vector<u16>& ord = getMasterIndex();
+    for (u16 b = 0; b < bucket_count; ++b)
+      for (const auto& [key, dead] : struct_tombstones[b])
+      {
+        if (dead != id) continue;
+        row.assign(arity, 0);
+        row[0] = id;
+        for (u16 c = 0; c + 1 < arity; ++c) row[ord[c]] = key[c];
+        return true;
+      }
+    return false;
+  }
+
   // Id-space severance (refresh-from-disk, merge scratch teardown, freeze):
   // the incoming id space replaces this one wholesale, so retained mappings
   // would collide with unrelated content rather than protect identity.
@@ -2093,6 +2175,7 @@ public:
     // it would replace the live merged map with an empty one.
     if (tracking_requisitions)
       fresh_requisitions.insert(ord);   // boundary keep-set (see addIndex)
+    if (ord == placeholder_ord) placeholder_ord.clear();   // now maintained
     if (indices.count(ord)) return;
     if (tracking_requisitions) fresh_created.insert(ord);
     indices[ord] = new Index*[bucket_count];
@@ -2126,6 +2209,7 @@ public:
     {
       if (tracking_requisitions) pending_backfill.emplace(ord, true);
       else backfillOrdering(ord, true, all_buckets);
+      retirePlaceholder();
     }
 
     if (!ord.empty())
@@ -2157,6 +2241,8 @@ public:
     if (tracking_requisitions)
       (delta ? fresh_delta_requisitions : fresh_requisitions).insert(ord);
     auto& tbl = delta ? deltaindices : indices;
+    if (!delta && !seeded_only && ord == placeholder_ord)
+      placeholder_ord.clear();          // requisitioned: maintained from now on
     // Idempotent: re-registering an existing ordering is a no-op.  A hot-swap
     // upgrade (docs/fast-compile.md §4) re-runs a stratum plugin against the
     // live database, so the replacement plugin requisitions the same indices
@@ -2185,6 +2271,7 @@ public:
     {
       if (tracking_requisitions) pending_backfill.emplace(ord, false);
       else backfillOrdering(ord, false, all_buckets);
+      retirePlaceholder();
     }
 
     // Record this index's leading column so reorg hash-buckets the delta by it.
@@ -2256,9 +2343,36 @@ public:
 		       lat_spec_tree, lat_arena)
 	: makeIndex(arity);
     indices[ord] = arr;
+    placeholder_ord = ord;
     if (std::find(write_leadcols.begin(), write_leadcols.end(), (u16)0)
 	== write_leadcols.end())
       write_leadcols.push_back(0);
+  }
+
+  // A program ordering just arrived (addIndex/addMapIndex), so an
+  // unrequisitioned placeholder stops being maintained.  Drop it, or a later
+  // stratum that does requisition the identity ordering finds it registered
+  // and takes it as live: the boundary sweep keeps its stale (on a first run,
+  // empty) trees and drops the ordering that holds the rows -- a silent row
+  // loss -- and getAnyIndex, the dump source, may pick it meanwhile.  A
+  // boundary install defers this to the sweep, which drops every ordering
+  // the install did not requisition, after the deferred backfills have read
+  // from it; elsewhere the new ordering was just backfilled from it eagerly,
+  // so it holds nothing the relation would lose.  A requisition re-creating
+  // the identity ordering later backfills it from the live content.
+  void retirePlaceholder()
+  {
+    if (placeholder_ord.empty() || tracking_requisitions) return;
+    auto it = indices.find(placeholder_ord);
+    placeholder_ord.clear();
+    if (it == indices.end() || indices.size() == 1) return;
+    for (u16 b = 0; b < bucket_count; ++b)
+      delete it->second[b];
+    delete [] it->second;
+    indices.erase(it);
+    // the master/lookup memos may name it (see clearAllIndices)
+    struct_master_index.clear();
+    struct_lookup_index.clear();
   }
 
   bool isEmpty()
@@ -3178,7 +3292,10 @@ struct RunStatus {
   RunPosition where;    // when suspended: AT_BOUNDARY | MID_READ
   const char* reason;   // when suspended: "time" | "memory"
   u32 iteration;        // iteration count so far
-  u64 new_tuples;       // growth since the stratum started (see continueRun)
+  // Net growth since the stratum started: signed, because deletion
+  // maintenance shrinks relations.  Mid-read it is the emitted-words counter
+  // instead -- the only figure a partial read has (see continueRun).
+  s64 progress;
   double ms_call;       // wall time this call
   double ms_total;      // wall time across all calls for this stratum
   // Per-phase wall time of the sentinel thread, accumulated over every
@@ -3502,6 +3619,12 @@ public:
     // the ports have bound at this stop (plan.h StepSink).  Last, so any
     // positional initializer of the earlier fields stays valid.
     std::vector<std::pair<std::string, u64>> bindings;
+    // The rule's named variables no port has bound yet at this stop.
+    std::vector<std::string> unbound;
+    // A clause break's matched row (a body atom's, or the head's it
+    // writes), nominal, and its relation; empty otherwise.
+    std::string clause_relation;
+    std::vector<u64> clause_row;
   };
 
   // T5 slice (d3): a STANDING stop (repl-ux §9.1's `break`), where a step
@@ -3511,19 +3634,79 @@ public:
   // names), a rule id (matched at the `fire` port -- an instantiation IS
   // "the rule fired"), and a body position (matched at the probe port
   // whose cursor slot is that position).  `pattern` is repl-ux's `when`
-  // clause as a HEAD PATTERN: a binding predicate would need source
-  // variable names, and those are the rule-meta item that also blocks
-  // frames from printing them.
+  // clause as a HEAD PATTERN over the emitted row.
+  //
+  // A pattern term is a word or `_`, or structure: a constructor with its
+  // fields, a sequence, a string by content, or a variable.  Structure is
+  // matched against the value at the port, so a pattern can name a
+  // constructor instance that does not exist yet when the break is armed
+  // (`(infer _ (app _ _))` before the run that first builds an `app`).  A
+  // variable binds the word it meets; met again it must be the same word,
+  // which interning makes value equality.
+  struct BreakTerm
+  {
+    enum Kind : u8 { wild, exact, str, var, ctor, seq };
+    Kind kind = wild;
+    u64 word = 0;                  // word
+    std::string text;              // string content, var or ctor name
+    std::vector<BreakTerm> args;   // ctor fields, seq elements
+    bool open = false;             // seq: more elements may follow
+  };
+  // A guard over the pattern's variables and the rule's own named
+  // variables at the port: `=`/`/=` match the right side as a pattern
+  // (so `(= T (app _ _))` reads as it would in a rule), the orderings
+  // compare numbers.
+  struct BreakGuard
+  {
+    std::string op;
+    BreakTerm left, right;
+  };
+  using BreakBindings = std::vector<std::pair<std::string, u64>>;
+
   struct BreakSpec
   {
     std::string id;
-    std::string relation;        // head relation, or empty for any
+    // Head relations, any of them, or none for any.  A name ending in `*`
+    // names every relation it prefixes (`$sup*`).
+    std::vector<std::string> relations;
     u32 rule_id = UINT32_MAX;    // exact rule, or the sentinel for any
+    // The rule at a source location, "file:line" or "file:line:col" as
+    // rule-location-string spells it, or empty for any.  Rule ids restart
+    // in every stratum, so a location is the one name that picks out a
+    // single rule across a program.
+    std::string source;
     u16 position = 0xffff;       // cursor slot, or the sentinel for any
-    std::vector<u64> pattern;    // head pattern words, empty for any
-    std::vector<bool> wild;      // parallel to pattern: `_` columns
-    u64 hits = 0;
+    // A body atom's relation: stop where the rule matches a row of it (its
+    // drive port, or the probe of that atom), the pattern read against
+    // that row.  Planner order cannot move this the way it moves a slot.
+    std::string premise;
+    std::vector<BreakTerm> pattern;  // head pattern, empty for any
+    // The row read as the judgment it answers: its first column's
+    // constructor fields, then the rest (`(nf T V)` against nf_ans's
+    // `(d V)` where d is `(nf T)`).
+    bool judgment = false;
+    std::vector<BreakGuard> guards;
+    // Values the rule instance's body must have used: a premise row (or
+    // the driving row) holds one matching a term.  "Inside this call" for
+    // a demand, whose id is not minted yet when it is asked.
+    std::vector<BreakTerm> uses;
+    u64 ignore = 0;              // matches that count but do not stop
+    bool log = false;            // a logpoint: record, never stop
+    bool enabled = true;
+    // Counted by the sink, which sees the arms read-only.
+    mutable u64 hits = 0;
   };
+
+  static bool relationNamed(const std::vector<std::string>& names,
+                            const std::string& relation)
+  {
+    for (const std::string& n : names)
+      if (!n.empty() && n.back() == '*'
+            ? relation.compare(0, n.size() - 1, n, 0, n.size() - 1) == 0
+            : n == relation)
+        return true;
+    return false;
+  }
 
 private:
   StepGrain step_grain = step_off;
@@ -3551,9 +3734,12 @@ private:
     break_event_mask = 0;
     for (const BreakSpec& b : break_specs)
     {
-      if (b.position != 0xffff)
+      if (!b.enabled) continue;
+      if (!b.premise.empty())
+        break_event_mask |= (u64{1} << 0) | (u64{1} << 1); // driver, probe_match
+      else if (b.position != 0xffff)
         break_event_mask |= u64{1} << 1;          // EventK::probe_match
-      else if (!b.relation.empty() || !b.pattern.empty())
+      else if (!b.relations.empty() || !b.pattern.empty())
         break_event_mask |= u64{1} << 7;          // EventK::emit
       else
         break_event_mask |= u64{1} << 6;          // EventK::instantiation
@@ -3588,10 +3774,21 @@ public:
     return false;
   }
 
-  void countBreakHit(const std::string& id)
+  bool enableBreak(const std::string& id, bool enabled)
   {
-    for (BreakSpec& b : break_specs) if (b.id == id) { ++b.hits; return; }
+    for (BreakSpec& b : break_specs)
+      if (b.id == id)
+      {
+        b.enabled = enabled;
+        refreshBreakMask();
+        return true;
+      }
+    return false;
   }
+
+  // A match is a hit whether or not it stops (ignored and logged ones are
+  // hits too); the count after this one decides an `ignore`.
+  u64 countBreakHit(const BreakSpec& b) const { return ++b.hits; }
 
   bool breakSuppressed() const
   {
@@ -3729,6 +3926,238 @@ public:
 
   size_t proofCount() const { return proof_journal.size(); }
   u64 proofsDropped() const { return proof_dropped; }
+
+  // ---- logpoints: the break log -------------------------------------------
+  // A logpoint is a break that records where it would stop: the row, the
+  // bindings, and the body that produced it, labelled as the journal labels
+  // it.  Like the journal it is scoped to one semantic event (cleared where
+  // a boundary is prepared or an update epoch begins) and a discarded read
+  // takes its records with it; unlike the journal it is armed per break and
+  // needs no gate.  Bounded: past the cap a record is counted, not kept.
+  struct BreakLogRecord
+  {
+    u64 seq = 0;
+    std::string id;
+    u32 scc = 0;
+    u32 iteration = 0;
+    u32 rule_id = 0;
+    std::string rule_loc;
+    std::string relation;
+    std::vector<u64> row;       // nominal; a struct head's fields
+    BreakBindings bindings;     // the pattern's, then the rule's
+    std::string driver_relation;
+    std::vector<u64> driver;
+    std::vector<ProofPremise> premises;
+  };
+
+private:
+  static constexpr size_t break_log_max = 1u << 18;
+  std::mutex break_log_mutex;
+  std::vector<BreakLogRecord> break_log;
+  u64 break_log_base = 0;       // seq of break_log[0]
+  u64 break_log_dropped = 0;
+  size_t break_log_read_mark = 0;
+
+public:
+  void recordBreakLog(BreakLogRecord&& record)
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    if (break_log.size() >= break_log_max) { ++break_log_dropped; return; }
+    record.seq = break_log_base + break_log.size();
+    record.scc = rs.stratum != nullptr ? rs.stratum->scc_id : 0;
+    record.iteration = rs.iteration_count;
+    break_log.push_back(std::move(record));
+  }
+
+  void clearBreakLog()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    break_log_base += break_log.size();
+    break_log.clear();
+    break_log_dropped = 0;
+    break_log_read_mark = 0;
+  }
+
+  void markBreakLogRead()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    break_log_read_mark = break_log.size();
+  }
+
+  void discardBreakLogFromRead()
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    if (break_log_read_mark < break_log.size())
+      break_log.resize(break_log_read_mark);
+  }
+
+  // Records from `from` (a seq) on; the reader holds no lock past the copy.
+  std::vector<BreakLogRecord> breakLogFrom(u64 from, size_t limit,
+                                           u64& next, u64& dropped,
+                                           u64& first)
+  {
+    std::lock_guard<std::mutex> lk(break_log_mutex);
+    first = break_log_base;
+    std::vector<BreakLogRecord> out;
+    size_t i = from > break_log_base ? from - break_log_base : 0;
+    for (; i < break_log.size() && out.size() < limit; ++i)
+      out.push_back(break_log[i]);
+    next = break_log_base + i;
+    dropped = break_log_dropped;
+    return out;
+  }
+
+  // ---- break patterns ------------------------------------------------------
+  // A struct value's constructor and fields, or false when the word is not
+  // a struct this evaluation holds.  An enum constant is a struct of
+  // `_enum` whose one field is its name, and reads as the source spells it:
+  // that name with no fields.
+  bool decodeStructValue(u64 v, std::string& name, std::vector<u64>& fields)
+  {
+    if (!is_struct(v)) return false;
+    const u32 sid = (u32)decode_struct_id(v);
+    Relation* rel = nullptr;
+    if (TypeDescriptor* descriptor = getTypeDescriptorBySid(sid))
+    {
+      rel = descriptor->canonical_relation;
+      name = currentTypeName(*descriptor);
+    }
+    else if (prepared_boundary)
+      for (const auto& [bound_name, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound->getStructId() == sid
+            && (rel == nullptr || bound_name < name))
+        {
+          rel = bound;
+          name = bound_name;
+        }
+    if (rel == nullptr) return false;
+    std::vector<u64> row;
+    bool found = rel->indexedStructRow(v, row) || rel->unindexedStructRow(v, row);
+    if (!found && prepared_boundary)
+      for (const auto& [_n, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound != rel && bound->getStructId() == sid
+            && (found = bound->indexedStructRow(v, row)
+                        || bound->unindexedStructRow(v, row)))
+          break;
+    if (!found || row.empty()) return false;
+    if (name == "_enum" && row.size() == 2 && is_str(row[1]))
+    {
+      name = decodeString(row[1]);
+      fields.clear();
+      return true;
+    }
+    fields.assign(row.begin() + 1, row.end());
+    return true;
+  }
+
+  // A constructor name matches its declaration's name, or that name's last
+  // component when the declaration is qualified ("m.app" is `app`).
+  static bool ctorNamed(const std::string& declared, const std::string& name)
+  {
+    if (declared == name) return true;
+    return declared.size() > name.size()
+      && declared.compare(declared.size() - name.size(), name.size(), name) == 0
+      && (declared[declared.size() - name.size() - 1] == '.'
+          || declared[declared.size() - name.size() - 1] == '/');
+  }
+
+  bool matchBreakTerm(const BreakTerm& t, u64 v, BreakBindings& bound)
+  {
+    switch (t.kind)
+    {
+      case BreakTerm::wild: return true;
+      case BreakTerm::exact: return v == t.word;
+      case BreakTerm::str: return is_str(v) && decodeString(v) == t.text;
+      case BreakTerm::var:
+        for (const auto& [name, word] : bound)
+          if (name == t.text) return word == v;
+        bound.emplace_back(t.text, v);
+        return true;
+      case BreakTerm::ctor:
+      {
+        std::string name;
+        std::vector<u64> fields;
+        if (!decodeStructValue(v, name, fields) || !ctorNamed(name, t.text)
+            || fields.size() != t.args.size())
+          return false;
+        for (size_t i = 0; i < fields.size(); ++i)
+          if (!matchBreakTerm(t.args[i], fields[i], bound)) return false;
+        return true;
+      }
+      case BreakTerm::seq:
+      {
+        if (!is_seq(v)) return false;
+        std::vector<u64> items;
+        seq_arena->foreach(v, [&](u64 w) { items.push_back(w); });
+        if (t.open ? items.size() < t.args.size()
+                   : items.size() != t.args.size())
+          return false;
+        for (size_t i = 0; i < t.args.size(); ++i)
+          if (!matchBreakTerm(t.args[i], items[i], bound)) return false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A row against a pattern; `bound` collects the pattern's variables.
+  bool matchBreakRow(const BreakSpec& b, const std::vector<u64>& row,
+                     BreakBindings& bound)
+  {
+    std::vector<u64> cols;
+    if (b.judgment)
+    {
+      std::string name;
+      if (row.empty() || !decodeStructValue(row[0], name, cols)) return false;
+      cols.insert(cols.end(), row.begin() + 1, row.end());
+    }
+    const std::vector<u64>& r = b.judgment ? cols : row;
+    if (r.size() != b.pattern.size()) return false;
+    for (size_t i = 0; i < r.size(); ++i)
+      if (!matchBreakTerm(b.pattern[i], r[i], bound)) return false;
+    return true;
+  }
+
+  // The guards, with `bound` (the pattern's variables, then the rule's)
+  // naming variables.  An unbound variable fails its guard: a condition
+  // the port cannot decide is not a stop.
+  bool breakGuardsHold(const BreakSpec& b, const BreakBindings& bound)
+  {
+    const auto lookup = [&](const BreakTerm& t, u64& v) {
+      if (t.kind == BreakTerm::exact) { v = t.word; return true; }
+      if (t.kind != BreakTerm::var) return false;
+      for (const auto& [name, word] : bound)
+        if (name == t.text) { v = word; return true; }
+      return false;
+    };
+    for (const BreakGuard& g : b.guards)
+    {
+      u64 left = 0;
+      if (!lookup(g.left, left)) return false;
+      if (g.op == "=" || g.op == "/=")
+      {
+        BreakBindings scratch = bound;
+        u64 right = 0;
+        const bool same = lookup(g.right, right)
+          ? left == right : matchBreakTerm(g.right, left, scratch);
+        if (same != (g.op == "=")) return false;
+        continue;
+      }
+      u64 right = 0;
+      if (!lookup(g.right, right)) return false;
+      double l = 0, r = 0;
+      if (is_s32(left)) l = s32_decode(left);
+      else if (is_float(left)) l = float_decode(left);
+      else return false;
+      if (is_s32(right)) r = s32_decode(right);
+      else if (is_float(right)) r = float_decode(right);
+      else return false;
+      const bool holds = g.op == "<" ? l < r : g.op == "<=" ? l <= r
+        : g.op == ">" ? l > r : g.op == ">=" ? l >= r : false;
+      if (!holds) return false;
+    }
+    return true;
+  }
 
   // The gate's accepted candidates, retained so `why` can name a change
   // that is not yet committed truth (contract §1's correlation).
@@ -3998,6 +4427,7 @@ public:
     // first).  Without this, `why` after an `add` would answer with the
     // PREVIOUS event's tree while calling it this one's.
     if (provenance_armed) clearProofJournal();
+    clearBreakLog();
     {
       std::lock_guard<std::mutex> lk(update_transition_mutex);
       update_transitions.clear();
@@ -4832,6 +5262,18 @@ public:
   }
 
   bool boundaryPrepared() const { return prepared_boundary != nullptr; }
+  // The prepared boundary's key names the working state of the run in it:
+  // what the run has derived so far, private until commit.  Read only
+  // where the run is parked (the lease admits queries nowhere else).
+  bool isPreparedBoundaryKey(const std::string& key) const
+  {
+    return prepared_boundary != nullptr && !key.empty()
+      && prepared_boundary->key == key;
+  }
+  const std::unordered_map<std::string, Relation*>* preparedEnvironment() const
+  {
+    return prepared_boundary ? &prepared_boundary->environment : nullptr;
+  }
   const std::string& preparedBoundaryKey() const
   {
     static const std::string empty;
@@ -5207,6 +5649,7 @@ public:
     // -- a prepared boundary is where the next one begins, and stale
     // derivations under a fresh event's `why` would be a lie by omission.
     if (provenance_armed) clearProofJournal();
+    clearBreakLog();
     BoundaryAdmission accepted;
     accepted.ok = true;
     accepted.position = prepared_boundary->position;
@@ -5603,6 +6046,7 @@ public:
     // T5 slice (d1): the discarded read's captured derivations go with its
     // shards -- otherwise the rerun would double every proof it repeats.
     discardProofsFromRead();
+    discardBreakLogFromRead();
     rs.once_pending[phase_read] = rs.read_once_armed;
     rs.task_cursor[phase_read] = 0;
     clearPausedPhase(phase_read);
@@ -5707,6 +6151,11 @@ public:
   void evaluateWatchesAtBarrier()
   {
     if (watches.empty()) return;
+    // A count/recount incarnation folds support into sidecars without
+    // mutating membership: its delta re-derives rows already present, so
+    // nothing appears or disappears for a watch to report (rank marking
+    // skips these rounds for the same reason).
+    if (rs.stratum != nullptr && rs.stratum->transient_instance) return;
     const u64 barrier = ++watch_barrier_seq;
     for (WatchSpec& w : watches)
     {
@@ -5715,9 +6164,10 @@ public:
       // the earlier barrier.  The mark lasts exactly one iteration.
       if (w.gate_owned) { w.gate_owned = false; continue; }
       if (w.last_barrier == barrier) continue;
-      auto it = version_key_relations.find(w.version_key);
-      if (it == version_key_relations.end() || it->second == nullptr) continue;
-      Relation* rel = it->second;
+      // through the prepared overlay, as the gate's settle does: a watch
+      // bound at prepare time observes the run that creates its key
+      Relation* rel = watchTarget(w.version_key);
+      if (rel == nullptr) continue;
       const u16 arity = rel->getArity();
       if (arity == 0) continue;
       bool hit = false;
@@ -6239,6 +6689,11 @@ public:
                                   const std::string& key) const
   {
     const BoundarySnapshot* boundary = getBoundary(key);
+    if (boundary == nullptr && isPreparedBoundaryKey(key))
+    {
+      auto it = prepared_boundary->environment.find(name);
+      return it == prepared_boundary->environment.end() ? nullptr : it->second;
+    }
     if (boundary == nullptr) return nullptr;
     auto it = boundary->environment.find(name);
     return it == boundary->environment.end() ? nullptr : it->second;
@@ -7318,7 +7773,7 @@ public:
       rs.suspended = false;
       for (u32 i = 0; i < phase_count; ++i) clearPausedPhase(i);
       st.fixpoint = true;
-      st.new_tuples = totalTuples() - rs.start_tuples;
+      st.progress = (s64)totalTuples() - (s64)rs.start_tuples;
       // Internal strata (reload/disk) are stack-local Stratum objects destroyed
       // right after runStratum returns; drop the pointer so it can't dangle.
       rs.stratum = nullptr;
@@ -7329,9 +7784,9 @@ public:
       st.fixpoint = false;
       st.where = rs.position;
       st.reason = rs.mem_tripped.load(std::memory_order_relaxed) ? "memory" : "time";
-      st.new_tuples = (rs.position == RUN_AT_BOUNDARY)
-        ? (totalTuples() - rs.start_tuples)                 // exact at boundary
-        : rs.emitted_words.load(std::memory_order_relaxed); // estimate mid-read
+      st.progress = (rs.position == RUN_AT_BOUNDARY)
+        ? (s64)totalTuples() - (s64)rs.start_tuples              // exact
+        : (s64)rs.emitted_words.load(std::memory_order_relaxed); // words
     }
     return st;
   }
@@ -7354,68 +7809,77 @@ public:
   {
     const u32 struct_id = (u32)decode_struct_id(v);
     TypeDescriptor* descriptor = getTypeDescriptorBySid(struct_id);
+    Relation* rel = nullptr;
+    std::string display_name;
     if (descriptor == nullptr)
-      fatal("Could not find TypeDescriptor for struct SID "
-            + std::to_string(struct_id));
-    Relation* rel = descriptor->canonical_relation;
-    if (!boundary_key.empty())
     {
-      const BoundarySnapshot* boundary = getBoundary(boundary_key);
-      if (boundary == nullptr)
-        fatal("Could not find selected boundary " + boundary_key);
-      const std::string selected_name =
-        typeNameAtBoundary(*descriptor, boundary_key);
-      if (!selected_name.empty())
-      {
-        auto selected = boundary->environment.find(selected_name);
-        if (selected != boundary->environment.end()
-            && selected->second->getStructId() == struct_id)
-          rel = selected->second;
-      }
+      // A type the prepared run is creating publishes its descriptor only at
+      // commit; until then its storage is bound by name in the overlay.
+      if (prepared_boundary)
+        for (const auto& [name, bound] : prepared_boundary->environment)
+          if (bound != nullptr && bound->getStructId() == struct_id
+              && (rel == nullptr || name < display_name))
+          {
+            rel = bound;
+            display_name = name;
+          }
+      if (rel == nullptr)
+        fatal("Could not find TypeDescriptor for struct SID "
+              + std::to_string(struct_id));
     }
-    if (rel == nullptr)
-      fatal("TypeDescriptor has no canonical relation for struct SID "
-            + std::to_string(struct_id));
+    else
+    {
+      rel = descriptor->canonical_relation;
+      if (!boundary_key.empty())
+      {
+        const BoundarySnapshot* boundary = getBoundary(boundary_key);
+        if (boundary == nullptr)
+          fatal("Could not find selected boundary " + boundary_key);
+        const std::string selected_name =
+          typeNameAtBoundary(*descriptor, boundary_key);
+        if (!selected_name.empty())
+        {
+          auto selected = boundary->environment.find(selected_name);
+          if (selected != boundary->environment.end()
+              && selected->second->getStructId() == struct_id)
+            rel = selected->second;
+        }
+      }
+      if (rel == nullptr)
+        fatal("TypeDescriptor has no canonical relation for struct SID "
+              + std::to_string(struct_id));
 
-    std::string display_name =
-      typeNameAtBoundary(*descriptor, boundary_key);
-    if (display_name.empty())
-      display_name = "<type "
-        + (descriptor->type_key.empty()
-             ? "sid:" + std::to_string(descriptor->sid)
-             : descriptor->type_key)
-        + ">";
+      display_name = typeNameAtBoundary(*descriptor, boundary_key);
+      if (display_name.empty())
+        display_name = "<type "
+          + (descriptor->type_key.empty()
+               ? "sid:" + std::to_string(descriptor->sid)
+               : descriptor->type_key)
+          + ">";
+    }
     std::string tupstr = "(" + display_name;
-    const std::vector<u16>& ord = rel->getLookupIndex();
-    std::vector<u16> rewrite_ord(ord.size(), 0);
-    for (u16 i = 0; i < ord.size(); ++i)
-      rewrite_ord[ord[i]] = i;
-    Index* node = rel->getIndex(ord, false)[buckethash(v)];
     // Heap, not a 2KB `u64 tuple[256]` stack frame: with the frame shrunk the
     // recursion (below, cdepth+1) tolerates far deeper struct/list values before
     // the writeValCSV depth guard trips.
-    std::vector<u64> tuple(ord.size(), 0);
-
-    // The lookup index leads with the id column (ord[0]==0); find the tuple
-    // whose id == v (unique) and copy its columns (in index order).
-    bool found = false;
-    node->forEach([&](const u64* t)
-    {
-      if (t[0] == v)
-      {
-        found = true;
-	for (u16 i = 0; i < rewrite_ord.size(); ++i)
-	  tuple[i] = t[i];
-      }
-    });
+    // An instance missing from every id-leading index is one an iteration
+    // barrier still names (the delta, or the tombstones); a run inside a
+    // prepared boundary may hold it in the overlay's version of the type.
+    std::vector<u64> row;
+    bool found = rel->indexedStructRow(v, row) || rel->unindexedStructRow(v, row);
+    if (!found && prepared_boundary && boundary_key.empty())
+      for (const auto& [name, bound] : prepared_boundary->environment)
+        if (bound != nullptr && bound != rel
+            && bound->getStructId() == struct_id
+            && (found = bound->indexedStructRow(v, row)
+                        || bound->unindexedStructRow(v, row)))
+          break;
     if (!found)
       fatal("Could not find struct instance in selected TypeDescriptor store");
 
-    // Write tuple out in nominal order (fields nest one level deeper)
-    for (u16 i = 1; i < rewrite_ord.size(); ++i)
+    // Write the fields out in nominal order (they nest one level deeper)
+    for (u16 c = 1; c < row.size(); ++c)
       tupstr += " "
-        + writeValCSVAtBoundary(
-            tuple[rewrite_ord[i]], boundary_key, cdepth + 1, max_depth);
+        + writeValCSVAtBoundary(row[c], boundary_key, cdepth + 1, max_depth);
     return tupstr + ")";
   }
 
@@ -7482,8 +7946,14 @@ public:
       return "...";
     if (is_int(v))
       return decodeIntString(v);                           // s32 or bignum
+    // A string renders as the Slog literal that reads back to it: this text
+    // is re-read (line-framed (dumprow ...) replies, a REPL row pasted back
+    // as a fact), where a raw `"` or newline would end the value early.
+    // quoteString emits only escapes the Slog lexer decodes.
     else if (is_str(v))
-      return std::string("\"") + decodeString(v) + "\"";   // mono or rope
+      return signature_strings
+        ? std::string("\"") + decodeString(v) + "\""        // see signatureOf
+        : slog::protocol::quoteString(decodeString(v));     // mono or rope
     else if (is_float(v))
     {
       // Shortest round-trippable form, but keep floats visually distinct from
@@ -7554,13 +8024,8 @@ public:
       TypeDescriptor* descriptor = getTypeDescriptorBySid(sid);
       if (descriptor == nullptr || descriptor->canonical_relation == nullptr)
         return false;
-      Relation* rel = descriptor->canonical_relation;
-      const std::vector<u16>& ord = rel->getLookupIndex();
-      if (!rel->hasIndex(ord, false)) return false;
-      Index* node = rel->getIndex(ord, false)[buckethash(v)];
-      bool found = false;
-      node->forEach([&](const u64* t) { if (t[0] == v) found = true; });
-      return found;
+      std::vector<u64> row;
+      return descriptor->canonical_relation->indexedStructRow(v, row);
     }
     return true;
   }
@@ -7641,8 +8106,19 @@ public:
   // order-independent (commutative XOR) and comparable across runs that
   // reassign ids.  Computed over the FULL relation at save (before sampling)
   // and recomputed after replay to detect drift.
+  // Signatures are stored with saved databases and recomputed after every
+  // replay, so they must not move when display rendering does: inside
+  // signatureOf, strings render as they did when signatures were introduced
+  // (unescaped, between quotes), at any nesting depth.
+  static inline thread_local bool signature_strings = false;
+
   std::pair<u64,u64> signatureOf(Relation* rel)
   {
+    struct CanonicalStrings
+    {
+      CanonicalStrings() { signature_strings = true; }
+      ~CanonicalStrings() { signature_strings = false; }
+    } canonical;
     u64 count = 0, checksum = 0;
     const std::vector<u16>* ordp = rel->getAnyIndex();
     if (!ordp) return {0, 0};
@@ -10481,6 +10957,8 @@ inline void IterCompletion::operator()() noexcept
     // and a replay simply discards the pending vector.)
     db->markProofRead();
   }
+  // Likewise the break log, which a replay of the read must not double.
+  if (db->breaksArmed()) db->markBreakLogRead();
 }
 
 // Decide, now that all workers have stopped claiming, whether the read phase

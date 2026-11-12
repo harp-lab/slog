@@ -642,11 +642,27 @@
                        smt_bad_formula))
       (error (format "The name ~a is reserved for the runtime type-error machinery ((error (error_spec ...)) facts); remove the declaration" name))))
 
+  ;; A constructor -- a struct, a union arm, an enum member, or a demand/
+  ;; extern call struct -- may not take a primitive's name.  Primitive names
+  ;; keep their built-in meaning in expression position (docs/user/
+  ;; language.md, "Names reserved by the system"), and every later pass
+  ;; (type-system, demand, seq-expand, operationalization) asks prim-fun-env
+  ;; first, so (neg X) would always be the primitive: the constructor could
+  ;; never be built or matched, and each use would surface a runtime
+  ;; type_mismatch in place of the rule's heads.  `form` is the declaring
+  ;; syntax, for the location.
+  (define (check-not-primitive! form name)
+    (when (hash-has-key? (type-env-funs base-type-env) name)
+      (error (format "~a: The constructor ~a has the name of a builtin primitive; (~a ...) in a rule always means the primitive (docs/user/builtins.md), so the constructor could never be built or matched -- rename it"
+                     (rule-location-string form) name name))))
+
   (define (extract-type-env ast [env base-type-env])
     (match ast
       [`(syn ,_ ,(and struct-or-table (or 'table 'struct))
-             (syn ,_ ,(? symbol? name) ,args ...) ,body)
+             ,(and decl `(syn ,_ ,(? symbol? name) ,args ...)) ,body)
        (check-not-reserved! name)
+       (when (eq? struct-or-table 'struct)
+         (check-not-primitive! decl name))
        (when (null? args)
          (error (format "Table or struct ~a must have at least one column" name)))
        (match-define (cons xs env+) (flatten-nested-types env args))
@@ -674,8 +690,9 @@
 
       ;; demand (f in ...) out ...: declare the backing relations -- the
       ;; demand struct itself and its answer table, keyed by the demand
-      [`(syn ,_ demand (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+      [`(syn ,_ demand ,(and decl `(syn ,_ ,(? symbol? name) ,args ...)) ,ans ... ,body)
        (check-not-reserved! name)
+       (check-not-primitive! decl name)
        (when (null? args)
          (error (format "Demand relation ~a must have at least one input column" name)))
        (when (null? ans)
@@ -702,8 +719,9 @@
       ;; answering it are rejected (check-extern-rules below).  v1 keeps the
       ;; daemon side trivially generic: one input column, one `int` answer
       ;; (the oracle's code word); lib rules translate codes to enums.
-      [`(syn ,_ extern ,(? symbol? oname) (syn ,_ ,(? symbol? name) ,args ...) ,ans ... ,body)
+      [`(syn ,_ extern ,(? symbol? oname) ,(and decl `(syn ,_ ,(? symbol? name) ,args ...)) ,ans ... ,body)
        (check-not-reserved! name)
+       (check-not-primitive! decl name)
        (unless (= 1 (length args))
          (error (format "Extern relation ~a must have exactly one input column (v1)" name)))
        (unless (and (= 1 (length ans)) (memq (car ans) '(int cmap cset)))
@@ -723,7 +741,7 @@
        (error (format "Malformed extern declaration: expected extern <oracle> (name in-type) int, got ~a"
                       (strip-prov `(extern ,@(drop-right rest 1)))))]
 
-      [`(syn ,_ enum (syn ,_ ,name ,(? symbol? names) ...) ,body)
+      [`(syn ,_ enum ,(and decl `(syn ,_ ,name ,(? symbol? names) ...)) ,body)
        ;; A bare nullary constructor (`enum (halt)`, via a union member) is
        ;; itself a constant.  A named enumeration (`enum (color red green
        ;; blue)`) additionally makes the name a type over its member
@@ -732,6 +750,7 @@
        (check-not-reserved! name)
        (for-each check-not-reserved! names)
        (define members (if (null? names) (list name) names))
+       (for ([m (in-list members)]) (check-not-primitive! decl m))
        (define env+
          (foldl unify-type-envs
                 env

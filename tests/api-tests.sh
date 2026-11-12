@@ -33,6 +33,9 @@ timeout 300 racket compiler/run.rkt --no-banner --sizes tests/reach.slog \
   > out/api-reach.log 2>&1
 expect "sizes-edge"  "(relation_size edge 3)" out/api-reach.log
 expect "sizes-path"  "(relation_size path 6)" out/api-reach.log
+# ... closed by a terminator counting them, so a reader knows when to stop
+expect "sizes-end" "(sizes-end $(grep -c '^(relation_size ' out/api-reach.log))" \
+  out/api-reach.log
 
 # struct interning counts distinct contents (structs.slog inserts (pair 1 2) twice)
 timeout 300 racket compiler/run.rkt --no-banner --sizes tests/structs.slog \
@@ -80,7 +83,7 @@ expect "refresh-unchanged" "(refreshed edge 0)" out/api-fresh0.log
 
 # build the plugins up front, then drive one daemon session through a fifo
 # so the touch lands between the open and the refresh
-mapfile -t SOS < <(timeout 300 racket tests/api/send-actions.rkt --paths \
+mapfile -t SOS < <(timeout 300 racket tests/api/send-actions.rkt --lines \
                      open:apidb refresh-rel:apidb,edge sizes)
 rm -f out/api-fifo; mkfifo out/api-fifo
 SLOG_NO_MEM_CAP=1 ./daemon/slogd < out/api-fifo > out/api-fresh1.log 2>&1 &

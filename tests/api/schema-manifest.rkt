@@ -16,11 +16,11 @@
 
 (module+ main
   (match-define (vector opendb importdb outdb) (current-command-line-arguments))
-  (define paths
-    (map action-so `((open ,opendb) (import ,importdb) (schema) (write-db ,outdb))))
+  (define lines-out
+    (map action-line `((open ,opendb) (import ,importdb) (schema) (write-db ,outdb))))
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
-  (for ([p (in-list paths)])
+  (for ([p (in-list lines-out)])
     (display (string-append p "\n") in))
   (close-output-port in)
   (define lines

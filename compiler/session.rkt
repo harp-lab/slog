@@ -63,6 +63,7 @@
          session-open!
          session-run!
          session-batch!
+         session-unbatch!
          session-edit-batch!
          session-inject-version!
          session-inject-batch!
@@ -91,6 +92,9 @@
          session-reenter!       ; direct replay-entry (tests/tools)
          session-rerun!         ; direct clear-and-rerun (tests/tools)
          session-whatif         ; R5: read-only cone/route preview of an edit
+         session-stale-readers  ; who still reads an older version of REL
+         session-strata-ids     ; live strata, to diff a program event against
+         session-rebinds        ; the versions a program event made, + readers
          session-scratch-add!   ; R3: run one scratch fragment, interp-only
          session-scratch-events ; R3: the live scratch ledger, oldest first
          session-scratch-keep!  ; R3: export the layer and promote it
@@ -104,6 +108,7 @@
          session-set-scc-policy! ; T5: pin a relation's writers to an executor
          session-pending-summary ; gate S1: staged-but-unflushed changes
          session-pause-hook     ; gate S3/R4: observe a parked epoch
+         memory-pause?          ; is this pause line a memory-budget pause (runslog.rkt)
          session-prepare-hook   ; T5: bind watches before the run (R4 break)
          (struct-out scratch-event)
          session-close!
@@ -122,9 +127,8 @@
 (require "dbtool.rkt")
 (require "parser.rkt")    ; current-source-capture / current-source-override
 
-;; §0.3: past a few thousand tuples the inline transport (values baked as
-;; literals into an action plugin) stops making sense -- the known ~10k
-;; inline-facts ceiling with clang time growing ahead of it.  Per
+;; §0.3: past a few thousand tuples a flush leaves the inline transport (the
+;; tuples written into one command line) for an import-delta payload.  Per
 ;; (anchor, relation) per flush.
 (define inline-batch-max
   (or (string->number (or (getenv "SLOG_INLINE_MAX") "")) 2048))
@@ -246,9 +250,24 @@
              (make-hash) (make-hash)
              (empty-boundary (format "b0:~a" layer-id)) '()
              '() '() (hash) #f '() '()))
-  (session-action! s `(set-evaluation ,(session-evaluation-id s))
-                   read-one-line-quiet!)
+  (set-evaluation! s)
   s)
+
+;; Name this daemon's EvaluationId, fresh per session.
+(define (set-evaluation! s)
+  (command-expecting! s `(set-evaluation ,(session-evaluation-id s))
+                      "(evaluation-set)"))
+
+;; Import a frozen ground-fact database (build/frozen/<hash>/).
+(define (import-path! s dir)
+  (command-expecting! s `(import-path ,dir) "(imported)"))
+
+;; Send one command whose only success reply is `expected`, unechoed.
+(define (command-expecting! s datum expected)
+  (send-line! s (action-line datum))
+  (define reply (read-line (session-out s)))
+  (unless (equal? reply expected)
+    (error 'session (format "~a failed: ~a" (car datum) reply))))
 
 ;; A session facade over an existing daemon connection (the one-shot
 ;; driver's, for recipe-chain loads -- runslog's recipe-chain-loader hook).
@@ -261,8 +280,7 @@
                      layer-id (fresh-runtime-id "eval") 0 '()
                      (make-hash) (make-hash) #f '()
                      '() '() (hash) #f '() '()))
-  (session-action! s `(set-evaluation ,(session-evaluation-id s))
-                   read-one-line-quiet!)
+  (set-evaluation! s)
   (define-values (_cur strata-pos _chains) (introspect! s))
   (set-session-next-scc! s (hash-count strata-pos))
   s)
@@ -273,8 +291,9 @@
 (define (session-boundary-history s)
   (session-boundary-plans s))
 
-(define (send-plugin! s path)
-  (display (string-append path "\n") (session-in s))
+;; One protocol line: a command, or the path of a stratum artifact.
+(define (send-line! s line)
+  (display (string-append line "\n") (session-in s))
   (flush-output (session-in s)))
 
 ;; T5 slice (c): a bare command line sent WITHOUT reading a reply -- the
@@ -377,12 +396,15 @@
 ;; continuation it wants instead (T5 slice (c)):
 ;;   'replay -- rerun the parked read from its origin (only the pre-commit
 ;;              gate can honour it; any other park answers with a
-;;              structured refusal, which the driver commits past)
+;;              structured refusal)
 ;;   a STRING -- send that command line verbatim as the resume.  Slice (c3)
 ;;              spells steps this way ("(step emit)", "(step rule 3)"), so
 ;;              the debugger's grammar stays with the client and this
 ;;              driver stays a pump.
 ;;   anything else (including void) -- continue exactly as before.
+;; A declined resume is called back with its (refused ...) line in place of
+;; a pause line: the epoch has not moved, so the hook answers for the same
+;; park again, and a hook that continues commits past the refusal.
 (define session-pause-hook (make-parameter #f))
 
 ;; Drive the current stratum to fixpoint: echo every line; answer
@@ -394,8 +416,8 @@
 ;; session driver had no swap at all: it forced the runnable and never looked
 ;; again, so a REPL run never picked up a background build.
 (define (drive-to-fixpoint! s [upgrade #f])
-  (define continue-so (action-so `(continue)))
-  (define continue-boundary-so (action-so `(continue-boundary)))
+  (define continue-line (action-line `(continue)))
+  (define continue-boundary-line (action-line `(continue-boundary)))
   (let poll ([loaded 0])
     (define line (read-line (session-out s)))
     (cond
@@ -410,16 +432,13 @@
             (echo! s line)
             (list (string->number (cadr m)) (string->number (caddr m)) loaded))]
       [(regexp-match? #px"^\\(fixpoint " line) (echo! s line) #f]
-      ;; A refusal reaches the driver only as the answer to a resume it sent
-      ;; itself -- today a `replay` the daemon would not honour (T5 slice
-      ;; (c): a non-monotone epoch, or a park that is not the pre-commit
-      ;; gate).  The epoch is still parked, so commit past it exactly as an
-      ;; unhooked driver would; the refusal is already echoed as data.
-      [(regexp-match? #px"^\\(refused " line)
-       (echo! s line)
-       (send-plugin! s continue-so)
-       (poll loaded)]
-      [(regexp-match? #px"^\\(paused " line)
+      ;; A refusal reaches the driver only as the answer to a resume the
+      ;; hook asked for -- a `replay` or step the daemon would not honour
+      ;; (T5 slice (c): a non-monotone epoch, or a park that is not the
+      ;; pre-commit gate).  The epoch is still parked where it was, so the
+      ;; refusal goes back to the hook to answer for that same park: a held
+      ;; park must stay held, and only a hook that declines it commits past.
+      [(regexp-match? #px"^\\((paused|refused) " line)
        (echo! s line)
        (define directive
          (and (session-pause-hook) ((session-pause-hook) s line)))
@@ -434,9 +453,12 @@
           ;; next pause -- a step stop, an ordinary park -- or a refusal.
           (send-command-line! s directive)
           (poll loaded)]
-         [(regexp-match? #px"memory\\)\\s*$" line)
+         [(regexp-match? #px"^\\(refused " line)
+          (send-line! s continue-line)
+          (poll loaded)]
+         [(memory-pause? line)
           (error 'session (format "out of memory: ~a" line))]
-         [(not upgrade) (send-plugin! s continue-so) (poll loaded)]
+         [(not upgrade) (send-line! s continue-line) (poll loaded)]
          ;; Only a settled ITERATION boundary is swap-safe -- a mid-read pause
          ;; is not -- so match the phase field exactly, in either the uniform
          ;; command record or the legacy positional form, and drive to a
@@ -447,9 +469,9 @@
               (regexp-match? #px"^\\(paused [^ ]+ \"[^\"]*\" [0-9]+ iter " line))
           (match-define (list artifact done _total) (upgrade loaded))
           (cond
-            [artifact (send-plugin! s artifact) (poll done)]
-            [else (send-plugin! s continue-so) (poll loaded)])]
-         [else (send-plugin! s continue-boundary-so) (poll loaded)])]
+            [artifact (send-line! s artifact) (poll done)]
+            [else (send-line! s continue-line) (poll loaded)])]
+         [else (send-line! s continue-boundary-line) (poll loaded)])]
       [(regexp-match? #px"^\\(error " line)
        (error 'session (format "daemon error: ~a" line))]
       [else (echo! s line) (poll loaded)])))
@@ -459,7 +481,7 @@
 ;; next-scc never drifts from the daemon's scc assignment.
 (define (send-stratum! s so [upgrade #f])
   (set-session-next-scc! s (add1 (session-next-scc s)))
-  (send-plugin! s so)
+  (send-line! s so)
   (drive-to-fixpoint! s upgrade))
 
 ;; Maintenance strata use the same bounded execution protocol without
@@ -470,7 +492,7 @@
   (define armed (read-line (session-out s)))
   (unless (equal? armed "(transient-armed)")
     (error 'session (format "could not arm transient stratum: ~a" armed)))
-  (send-plugin! s so)
+  (send-line! s so)
   (drive-to-fixpoint! s))
 
 ;; Delta/replay incarnations retain legacy numeric pipeline positions but are
@@ -1252,7 +1274,7 @@
 ;; the session's output port; may read as many lines as the action's
 ;; protocol emits -- nothing for silent actions).
 (define (session-action! s spec [read! void])
-  (send-plugin! s (action-so spec))
+  (send-line! s (action-line spec))
   (read! (session-out s)))
 
 (define (read-one-line! s)
@@ -1626,7 +1648,7 @@
 ;; The live schema as a compile manifest (0.D2): one (schema) round trip
 ;; parsed by runslog's db-manifest-from-schema-lines.
 (define (session-schema-manifest s)
-  (send-plugin! s (action-so `(schema)))
+  (send-line! s (action-line `(schema)))
   (define lines
     (let loop ([acc '()])
       (define line (read-line (session-out s)))
@@ -2964,7 +2986,7 @@
             (when (session-prepare-hook)
               ((session-prepare-hook) s (car bps)))
             (for ([dir (in-list g-frozen)])
-              (session-action! s `(import-path ,dir)))
+              (import-path! s dir))
             ;; spine A3: a severing (activation) plan runs ONLY the cone's
             ;; strata -- the plan's create actions are the cone, and the
             ;; outside-cone strata have nothing to derive (their relations
@@ -3004,7 +3026,7 @@
           (read-one-line! s)])   ; (segment P N)
        (unless n2?
          (for ([dir (in-list g-frozen)])
-           (session-action! s `(import-path ,dir)))
+           (import-path! s dir))
          (for ([sb (in-list g-strata)])
            (push-sbuild! s sb)))
        (when (or (not n2?) committed?) (touch! s ws))
@@ -3074,6 +3096,18 @@
   (define per-rel (hash-ref! per-anchor rel make-hash))
   (hash-update! per-rel tuple (lambda (commands) (cons sign commands)) '()))
 
+;; Withdraw the newest queued `sign` command for one tuple, leaving the rest
+;; of the batch as it was.  #f when no such command is queued.
+(define (session-unbatch! s sign rel tuple #:at [anchor 'tip])
+  (define per-rel (hash-ref (hash-ref (session-pending s) anchor (hash)) rel (hash)))
+  (define commands (hash-ref per-rel tuple '()))
+  (and (memq sign commands)
+       (let ([rest (remove sign commands)])
+         (if (null? rest)
+             (hash-remove! per-rel tuple)
+             (hash-set! per-rel tuple rest))
+         #t)))
+
 ;; Explicit existing-slot edit spelling.  Keep session-batch! as the
 ;; compatibility alias used by the current harness and recipe reader.
 (define session-edit-batch! session-batch!)
@@ -3103,6 +3137,67 @@
       [(eq? sign '+) (if mono? 'maintain-positive 'clear-and-rerun)]
       [else (if negatable? 'maintain-negative 'clear-and-rerun)]))
   (list affected route (length cone) mono? negatable?))
+
+;; A program event that writes an existing relation makes a new version of
+;; it (§0.4); strata bound earlier keep reading the version they were bound
+;; to, so neither the new rows nor later tip edits reach them.  The stale
+;; readers of `rel` are the heads of the OLD strata that read it, less any
+;; head a NEW stratum re-derives from it (a program that restates its
+;; readers reads the new version).  Old/new are lists of (reads . heads);
+;; $-machinery heads never count.
+(define (stale-heads rel old new)
+  (define rederived
+    (for*/set ([e (in-list new)] #:when (assq rel (car e)) [h (in-list (cdr e))])
+      h))
+  (sort (remove-duplicates
+         (for*/list ([e (in-list old)] #:when (assq rel (car e))
+                     [h (in-list (cdr e))]
+                     #:unless (regexp-match? #rx"^[$]" (symbol->string h))
+                     #:unless (set-member? rederived h))
+           h))
+        symbol<?))
+
+;; Live: the version of `rel` current now, old = strata bound before it.
+;; (values ordinal readers).
+(define (stale-readers s rel strata-pos chains)
+  (define chain (hash-ref chains rel '()))
+  (define anchor (if (null? chain) 0 (second (last chain))))
+  (define-values (old new)
+    (partition (lambda (e) (< (car e) anchor))
+               (for/list ([p (in-list (session-strata-info s))])
+                 (list* (hash-ref strata-pos (car p) 0)
+                        (sinfo-reads (cdr p)) (sinfo-heads (cdr p))))))
+  (values (if (null? chain) 0 (first (last chain)))
+          (stale-heads rel (map cdr old) (map cdr new))))
+
+(define (session-stale-readers s rel)
+  (define rel* (if (symbol? rel) rel (string->symbol rel)))
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (stale-readers s rel* strata-pos chains))
+
+;; The scc ids of the live strata -- a snapshot to diff a program event
+;; against (session-rebinds).
+(define (session-strata-ids s) (map car (session-strata-info s)))
+
+;; The rebinds a program event made: for each relation written by a
+;; stratum not in `before-ids` that earlier strata still read at an older
+;; version, (list rel ordinal readers).
+(define (session-rebinds s before-ids)
+  (define-values (_cur strata-pos chains) (introspect! s))
+  (define writes
+    (sort (remove-duplicates
+           (for*/list ([p (in-list (session-strata-info s))]
+                       #:unless (memv (car p) before-ids)
+                       [h (in-list (sinfo-heads (cdr p)))])
+             h))
+          symbol<?))
+  (for*/list ([r (in-list writes)]
+              [found (in-value
+                      (call-with-values
+                       (lambda () (stale-readers s r strata-pos chains))
+                       list))]
+              #:when (pair? (second found)))
+    (cons r found)))
 
 ;; Create a distinct input-only successor slot at the current JIT tip.  An
 ;; earlier pipeline point requires a recipe-branch rebuild; refusing it keeps
@@ -3474,12 +3569,21 @@
                 ;; the generic derived-only/absent report misleads.  The
                 ;; schema round trip runs only on this error path.
                 (define kind (hash-ref (session-schema-manifest s) rel #f))
+                ;; derived-only: a rule supports the row and no input does.
+                ;; A fact written in the program (`rule (edge 2 3)`) is
+                ;; such a rule, which is the common surprise -- say so,
+                ;; and say what retracts it.
                 (error 'session
-                       (if (and (pair? kind) (eq? (car kind) 'struct))
-                           (format "cannot retract ~a from ~a: ~a is a struct relation (import-delta is the vehicle for struct-embedding input)"
-                                   t rel rel)
-                           (format "cannot retract ~a from ~a: tuple is ~a"
-                                   t rel (if live? "derived-only" "absent"))))])]))
+                       (cond
+                         [(and (pair? kind) (eq? (car kind) 'struct))
+                          (format "cannot retract ~a from ~a: ~a is a struct relation (import-delta is the vehicle for struct-embedding input)"
+                                  t rel rel)]
+                         [live?
+                          (format "cannot retract ~a from ~a: tuple is derived-only -- a rule of the program derives it (a fact in the program source, like `rule (~a ~a)`, is a rule too), and a retraction removes only input rows (added with `add`, `stage`, or an import); to remove it, change the program and run it again"
+                                  t rel rel (string-join (map ~s t) " "))]
+                         [else
+                          (format "cannot retract ~a from ~a: tuple is absent"
+                                  t rel)]))])]))
     (unless (and (equal? d d0) (equal? m m0))
       (define before? (or d0 (and pred? (not m0))))
       (define after? (or d (and pred? (not m))))
@@ -3532,7 +3636,6 @@
                 [(rel per-rel) (in-hash per-anchor)]
                 #:when (positive? (hash-count per-rel)))
       (list anchor rel (hash-copy per-rel))))
-  (hash-clear! pending)
   (cond
     [(null? raw-groups) (echo! s "(flush 0)")]
     [else
@@ -3555,6 +3658,10 @@
           (define normalized (normalize-pending! s rel bind-pos per-rel))
           (and (positive? (hash-count normalized))
                (list anchor rel ord bind-pos last? normalized)))))
+     ;; The batch is consumed only once all of it has validated: a refused
+     ;; flush leaves it queued, so one bad change can be withdrawn without
+     ;; restaging the rest (audit M-06).
+     (hash-clear! pending)
      ;; Serialize the complete logical edit (possibly several anchors and
      ;; strata) against one expected settled revision.  The daemon rejects a
      ;; stale writer before any mutation is applied.
@@ -5125,6 +5232,18 @@
     (error 'session
            (format "refusing to overwrite database ~a: it is an input to ~a"
                    name (string-join deps ", "))))
+  ;; A save writes a new layer linked atop the databases this session read
+  ;; (docs/db-compression.md §7: data/ is an acyclic DAG), so it can never
+  ;; replace one of them: the layer's recipe would open itself, and neither
+  ;; it nor anything built on it could load again.  An input reached
+  ;; through another database's manifest is refused just above.
+  (when (for/or ([st (in-list (session-steps s))])
+          (match (third st)
+            [(or `(open ,db) `(link ,db ,_) `(attach ,db ,_)) (equal? db name)]
+            [_ #f]))
+    (error 'session
+           (format "refusing to save over ~a: this session reads it as an input; save under another name"
+                   name)))
   (define dir (string-append "data/" name))
   (make-directory* dir)
   ;; 1. the materialisation (all latest versions, canonical writer)
@@ -5138,7 +5257,7 @@
        (introspect! s)   ; sync only (pure-batch layer with nothing touched)
        (hash)]
       [else
-       (send-plugin! s (action-so `(signature ,@touched)))
+       (send-line! s (action-line `(signature ,@touched)))
        (let loop ([acc (hash)])
          (define line (read-line (session-out s)))
          (cond

@@ -1,0 +1,23 @@
+;; A first run's later strata must see every row an earlier stratum wrote.
+;; A first run creates each relation in its prepared boundary with only the
+;; identity ordering, a placeholder until the program's own orderings
+;; arrive.  The first stratum here (goal, seed, part: facts and a recursive
+;; probe of goal by its second column) maintains goal in (1 0) alone; the
+;; ones after it scan goal and probe it by its first column, through (0 1).
+;; The placeholder must not pass for that maintained (0 1): it holds none of
+;; goal's rows.
+table (goal str int)
+table (seed int)
+table (part str int)
+table (every str)
+table (answer str int)
+
+rule (goal "a" 1)
+rule (goal "b" 2)
+rule (goal "c" 1)
+rule (seed 1)
+
+rule (seed N) (goal G N) --> (part G N)
+rule (part G N) --> (goal G N) (seed N)
+rule (goal G N) --> (every G)
+rule (every G) (goal G N) --> (answer G N)

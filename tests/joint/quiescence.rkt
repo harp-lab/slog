@@ -30,11 +30,15 @@
 
 (define pauses 0)
 (define barrier-result #f)
+(define barrier-progress #f)
 (parameterize ([session-pause-hook
                 (lambda (s line)
                   (set! pauses (add1 pauses))
                   ;; one query at the FIRST parked barrier of the epoch
                   (when (= pauses 1)
+                    (set! barrier-progress
+                          (match (read (open-input-string line))
+                            [`(paused ,fields ...) (assq 'progress fields)]))
                     (set! barrier-result
                           (with-handlers ([exn:fail? exn-message])
                             (run! "?count (path X Y)")))))])
@@ -51,4 +55,5 @@
 
 (printf "(quiescence (pauses ~a))\n" pauses)
 (printf "(barrier-query ~s)\n" (result-count barrier-result))
+(printf "(barrier ~s)\n" barrier-progress)
 (printf "(settled-query ~s)\n" (result-count settled))
