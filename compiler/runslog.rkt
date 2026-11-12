@@ -268,8 +268,10 @@
   (ensure-slogd-exists)
   (define-values (sp out in err) (apply subprocess #f #f #f (slogd-argv "daemon/slogd")))
   ;; One protocol line -- a command, or a stratum artifact path -- echoed.
-  (define (send-line line)
-    (display (string-append line "\n"))
+  ;; Every command sent is traced on stdout (the stratum artifacts, continues,
+  ;; and the closing sizes/write commands); #:echo? #f sends one silently.
+  (define (send-line line #:echo? [echo? #t])
+    (when echo? (display (string-append line "\n")))
     (display (string-append line "\n") in)
     (flush-output in))
   ;; Drain the daemon's stderr continuously in the background, so a chatty
@@ -371,7 +373,7 @@
     ;; send + read-until-sentinel; the dump action never calls continueRun, so it
     ;; emits no (paused|fixpoint) and its lines arrive before anything else.
     (define (check-errors! where)
-      (send-line dump-errors-line)
+      (send-line dump-errors-line #:echo? #f)   ; an internal probe, not a step to trace
       (let drain ()
         (define l (read-line out))
         (cond
