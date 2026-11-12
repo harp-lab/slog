@@ -50,7 +50,7 @@ Run Slog from the repository root. It currently expects its `compiler/`,
 
 The required tools and libraries are:
 
-- Racket, including its `sha` package
+- Racket
 - Rust and Cargo (to build the interactive `slog` frontend)
 - GNU Make
 - a C++20 Clang toolchain
@@ -61,19 +61,13 @@ The required tools and libraries are:
 - OpenSSL development headers and libcrypto
 
 On Debian or Ubuntu, the native packages are typically `racket`, `make`,
-`clang`, `libomp-dev`, `libboost-dev`, `zlib1g-dev`, `libgmp-dev`, and `libssl-dev`. If
-Racket cannot load `sha`, install it with:
-
-```console
-$ raco pkg install sha
-```
+`clang`, `libomp-dev`, `libboost-dev`, `zlib1g-dev`, `libgmp-dev`, and `libssl-dev`.
 
 On macOS (Apple Silicon or Intel), install the native dependencies with Homebrew:
 
 ```console
 $ xcode-select --install
 $ brew install racket rust libomp boost gmp openssl@3
-$ raco pkg install sha
 ```
 
 Slog defaults to Apple Clang and the system C++ standard library, with an

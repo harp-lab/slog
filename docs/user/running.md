@@ -32,7 +32,7 @@ repository-relative paths for `compiler/`, `daemon/`, `lib/`, `build/`, and
 
 Slog needs:
 
-- Racket and its `sha` package
+- Racket
 - Rust and Cargo for the interactive frontend (not required for batch mode)
 - GNU Make
 - Clang with C++20 support
@@ -46,7 +46,6 @@ On Debian and Ubuntu the package names are typically:
 
 ```console
 $ sudo apt install racket make clang libomp-dev libboost-dev zlib1g-dev libgmp-dev libssl-dev
-$ raco pkg install sha
 ```
 
 On macOS, follow the [Homebrew installation instructions](../../Readme.md#install-and-run).
