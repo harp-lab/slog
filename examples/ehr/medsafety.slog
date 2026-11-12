@@ -1,0 +1,103 @@
+;; Medication safety from mechanism, not from a lookup table.
+;;
+;; No table here says "drug X interacts with drug Y".  Each alert is derived from
+;; how the body handles the drugs: which enzyme clears or activates each one, how
+;; well that enzyme works in this patient, and how well the kidneys work.  Every
+;; alert carries its reason as a structured term.  (Contrast provenance.slog, where
+;; a fact's support is folded into one lattice value; here each reason is its own
+;; row, so one drug can be flagged twice for two different reasons.)
+;; Run:  racket compiler/run.rkt --no-banner --debug-dir out/medsafety examples/ehr/medsafety.slog
+;; then read out/medsafety/alert.csv.
+
+;; ---- types -------------------------------------------------------------------
+;; Patients get a type.  Drugs and enzymes stay plain strings: vocabulary terms.
+union (patient (mrn str))                ;; a patient, by medical record number
+enum (phenotype poor normal ultrarapid)  ;; how well a drug-metabolizing enzyme works in someone
+enum (direction raised lowered)          ;; which way a drug's exposure moved
+union (why (inherited str phenotype)     ;; enzyme, phenotype from the genotype report
+           (inhibited str str str)       ;; co-prescribed inhibitor, enzyme, strength
+           (induced str str)             ;; co-prescribed inducer, enzyme
+           (low_clearance float float))  ;; creatinine clearance (mL/min), the limit it falls below
+;; An enum value is written (poor); CSV dumps print it as (_enum "poor").
+
+;; ---- the chart ---------------------------------------------------------------
+table (rx patient str)                   ;; patient, drug currently prescribed
+table (demographics patient int str float)  ;; patient, age, sex, weight (kg)
+table (creatinine patient int float)     ;; patient, day, serum creatinine (mg/dL)
+table (genotype patient str phenotype)   ;; patient, enzyme, phenotype from pharmacogenomic testing
+
+;; ---- drug knowledge, written once per drug or once per class -----------------
+;; drug_class is a demand relation: a function computed only for the drugs some rule
+;; asks about, and allowed several answers (here, the drug and each class it is in).
+;; "<--" writes a rule head first.
+table (drug_isa str str)                 ;; drug, a class it belongs to
+demand (drug_class str) str              ;; a drug -> itself and every class it belongs to
+rule (drug_class D D)
+rule (drug_class D C) <-- (drug_isa D P) (drug_class P C)
+table (cleared_by str str)               ;; drug, enzyme that clears it
+table (activated_by str str)             ;; prodrug, enzyme that turns it into its active form
+table (inhibits str str str)             ;; drug or class, enzyme it inhibits, strength
+table (induces str str)                  ;; drug or class, enzyme it induces
+table (narrow_margin str)                ;; drugs where a modest rise in exposure is dangerous
+table (renal_limit str float str)        ;; drug, clearance below which advice applies, the advice
+table (sex_factor str float)             ;; Cockcroft-Gault multiplier by sex
+
+;; 1. Kidney function.  last_creatinine is a max lattice: of a patient's lab days it
+;;    keeps only the newest.  crcl is a demand relation, so a clearance is computed
+;;    only for the patients the alert rule in part 4 asks about.
+lattice (latest (max int))
+table (last_creatinine patient latest)   ;; patient, day of their most recent creatinine
+rule (creatinine P D _) --> (last_creatinine P D)
+demand (crcl patient) float              ;; estimated creatinine clearance, mL/min (Cockcroft-Gault)
+rule (crcl P (* F (/ (* (tofloat (- 140 Age)) Wt) (* 72.0 Cr))))
+  <-- (demographics P Age Sex Wt) (sex_factor Sex F) (last_creatinine P D) (creatinine P D Cr)
+
+;; 2. How well each enzyme works in this patient: as inherited, or forced to "poor"
+;;    by a strong inhibitor they also take (phenoconversion).  (drug_class A) is
+;;    called inline inside the inhibits atom and stands for A and each class of A.
+table (metabolizer patient str phenotype why)   ;; patient, enzyme, working phenotype, reason
+rule (genotype P E Ph) --> (metabolizer P E Ph (inherited E Ph))
+rule (rx P A) (inhibits (drug_class A) E "strong") --> (metabolizer P E (poor) (inhibited A E "strong"))
+
+;; 3. One drug raising or lowering another's exposure, through the enzyme that clears it.
+table (exposure patient str direction why)      ;; patient, affected drug, which way, reason
+rule (rx P A) (rx P B) (/= A B) (cleared_by B E) (inhibits (drug_class A) E S)
+  --> (exposure P B (raised) (inhibited A E S))
+rule (rx P A) (rx P B) (/= A B) (cleared_by B E) (induces (drug_class A) E)
+  --> (exposure P B (lowered) (induced A E))
+
+;; 4. Alerts: what will go wrong, with the reason as a term a UI can render or a
+;;    later rule can match on.  (= C (crcl P)) calls the demand and binds its answer.
+table (alert patient str str why)        ;; patient, drug, what will go wrong, reason
+rule (rx P D) (activated_by D E) (metabolizer P E (poor) W)       --> (alert P D "no effect: prodrug is never activated" W)
+rule (rx P D) (activated_by D E) (metabolizer P E (ultrarapid) W) --> (alert P D "toxicity: prodrug activated too fast" W)
+rule (exposure P D (raised) W) (narrow_margin D)                  --> (alert P D "toxicity: exposure raised, narrow margin" W)
+rule (exposure P D (lowered) W)                                   --> (alert P D "loss of effect: exposure lowered" W)
+rule (rx P D) (renal_limit D Limit Advice) (= C (crcl P)) (< C Limit)
+  --> (alert P D Advice (low_clearance C Limit))
+
+;; ---- sample data -------------------------------------------------------------
+rule
+(rx (mrn "p1") "codeine") (rx (mrn "p1") "fluoxetine")      ;; normal CYP2D6 genotype, but fluoxetine: codeine never activates
+(rx (mrn "p2") "codeine")                                   ;; ultrarapid CYP2D6: codeine activates too fast
+(rx (mrn "p3") "warfarin") (rx (mrn "p3") "fluconazole")    ;; inhibition raises a narrow-margin drug
+(rx (mrn "p4") "tacrolimus") (rx (mrn "p4") "rifampin")     ;; induction lowers tacrolimus
+(rx (mrn "p5") "clopidogrel") (rx (mrn "p5") "omeprazole")  ;; the inhibitor is known only at class level (ppi)
+(rx (mrn "p6") "metformin") (rx (mrn "p7") "metformin")     ;; same drug; p6's kidneys say stop, p7's are fine
+(genotype (mrn "p1") "CYP2D6" (normal)) (genotype (mrn "p2") "CYP2D6" (ultrarapid))
+;; p1 and p2 have labs too, but take no renally limited drug, so no clearance is computed for them.
+(demographics (mrn "p1") 61 "M" 82.0) (demographics (mrn "p2") 34 "F" 60.0)
+(demographics (mrn "p6") 78 "F" 58.0) (demographics (mrn "p7") 45 "M" 90.0)
+(creatinine (mrn "p1") 3 1.0) (creatinine (mrn "p2") 3 0.7)
+(creatinine (mrn "p6") 10 1.1) (creatinine (mrn "p6") 40 1.6)  ;; only the day-40 value counts: 26.5 mL/min, below 30
+(creatinine (mrn "p7") 12 0.9)                                 ;; 132 mL/min: no alert
+(cleared_by "warfarin" "CYP2C9") (cleared_by "tacrolimus" "CYP3A4")
+(activated_by "codeine" "CYP2D6") (activated_by "clopidogrel" "CYP2C19")
+(inhibits "fluoxetine" "CYP2D6" "strong") (inhibits "fluconazole" "CYP2C9" "moderate")
+(inhibits "ppi" "CYP2C19" "strong")
+(induces "rifampin" "CYP3A4")
+(narrow_margin "warfarin") (narrow_margin "tacrolimus")
+(drug_isa "omeprazole" "ppi") (drug_isa "pantoprazole" "ppi")
+(renal_limit "metformin" 30.0 "stop: contraindicated below 30 mL/min")
+(renal_limit "gabapentin" 60.0 "reduce dose by clearance band")
+(sex_factor "M" 1.0) (sex_factor "F" 0.85)

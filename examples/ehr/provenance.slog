@@ -1,0 +1,96 @@
+;; Provenance that travels with the reasoning.
+;;
+;; Facts extracted from a chart are not taken on trust: each one names the document,
+;; page, and quoted span it came from.  Rules then derive new facts, and every
+;; derived fact carries two things along with it:
+;;   lineage   -- every source it rests on, across all the ways it can be derived;
+;;   clearance -- the lowest sensitivity level at which some one derivation is visible.
+;; Run:  racket compiler/run.rkt --no-banner --debug-dir out/provenance examples/ehr/provenance.slog
+;; then read out/provenance/alert.csv, alert_level.csv, and can_see.csv.
+
+;; ---- types -------------------------------------------------------------------
+;; Patients, sources, and users get their own types.  Conditions and drugs stay
+;; plain strings: they are vocabulary terms, like SNOMED or RxNorm names.
+union (patient (mrn str))                ;; a patient, by medical record number
+union (source (doc str)                  ;; a chart document the extractor read
+              (kg str))                  ;; an edition of the medical knowledge graph
+union (user (pharmacist str)             ;; who is asking; the role is part of the identity
+            (physician str)
+            (researcher str))
+struct (evidence source int str)         ;; where an extraction came from: source, page, quoted span
+
+;; ---- extracted chart data and reference data ---------------------------------
+table (dx patient str evidence)          ;; a diagnosis the extractor found: patient, condition, evidence
+table (rx patient str evidence)          ;; a prescription it found: patient, drug, evidence
+table (sensitivity source int)           ;; how restricted a source is: 0 public .. 3 psychiatric or HIV
+table (synonym str str)                  ;; condition, a phrase an extractor may have quoted for it
+table (isa str str source)               ;; condition, its broader class, the knowledge-graph edition that says so
+table (contraindicated str str)          ;; drug, condition class it must not be given with
+table (clearance_of user int)            ;; the highest sensitivity a user may see
+
+;; 1. Citation check.  An extraction counts only if the span it quotes mentions the
+;;    condition it claims (shas is a substring test; a stand-in for a real check).
+;;    The rest is "ungrounded", and both chains below refuse it with ~, negation.
+table (mentions str str)                 ;; quoted span, a condition it names
+rule (dx _ C (evidence _ _ Q)) (synonym C Phrase) (= 1 (shas Q Phrase)) --> (mentions Q C)
+table (ungrounded patient str source)    ;; an extraction whose own quote does not support it
+rule (dx P C (evidence D _ Q)) ~(mentions Q C) --> (ungrounded P C D)
+
+;; 2. Lineage.  The last column is a set lattice: rows that agree on patient and
+;;    condition are merged by set union, so one row ends up citing everything that
+;;    ever supported it.  ({D} is a one-element set; cins adds an element.)  Climbing
+;;    the ontology adds the knowledge-graph edition as a source: an isa edge is a claim too.
+lattice (sources (set source))
+table (condition patient str sources)    ;; patient, condition (or a broader class of it), every source behind it
+rule (dx P C (evidence D _ _)) ~(ungrounded P C D) --> (condition P C {D})
+rule (condition P C S) (isa C A K) --> (condition P A (cins S K))
+
+table (alert patient str str sources)    ;; patient, drug, the condition class it conflicts with, sources to show
+rule (rx P Dr (evidence D _ _)) (condition P A S) (contraindicated Dr A) --> (alert P Dr A (cins S D))
+
+;; 3. Clearance.  To see a fact you must be allowed to see every premise of some
+;;    derivation of it.  So a derivation is as sensitive as its MOST sensitive
+;;    premise (max), and a fact is as sensitive as its LEAST sensitive derivation:
+;;    the min lattice keeps the smallest level proposed for each key.  A user with
+;;    clearance c therefore sees exactly what is derivable from sources at level c
+;;    or below, with no view built per level.
+lattice (clearance (min int #:floor 0))
+table (condition_level patient str clearance)       ;; patient, condition, lowest clearance that can see it
+rule (dx P C (evidence D _ _)) (sensitivity D L) ~(ungrounded P C D) --> (condition_level P C L)
+rule (condition_level P C L) (isa C A K) (sensitivity K L2) --> (condition_level P A (max L L2))
+table (alert_level patient str str clearance)       ;; patient, drug, class, lowest clearance that can see the alert
+rule (rx P Dr (evidence D _ _)) (sensitivity D L1) (condition_level P A L2) (contraindicated Dr A)
+  --> (alert_level P Dr A (max L1 L2))
+
+table (can_see user patient str str)     ;; user, patient, drug, class: the alerts each user may be shown
+rule (alert_level P Dr A L) (clearance_of U Cl) (>= Cl L) --> (can_see U P Dr A)
+
+;; ---- sample data -------------------------------------------------------------
+;; p1's diabetes is extracted twice, from a level-1 summary and a level-3 psychiatry
+;;   note: its lineage cites both, but its clearance is 1 (the summary alone proves it).
+;; p2's eating disorder is known only from a level-3 note, so the bupropion alert is
+;;   level 3 even though the prescription itself sits in a level-1 med list.
+;; p3's "stroke" quote never mentions a stroke: ungrounded, so no warfarin alert.
+;; Result: the pharmacist (1) sees p1's alert only, the physician (3) sees both,
+;;   and the researcher (0) sees none.
+rule
+(dx (mrn "p1") "type_2_diabetes" (evidence (doc "p1_discharge_summary") 2 "PMH: T2DM, HTN. Continue metformin."))
+(dx (mrn "p1") "type_2_diabetes" (evidence (doc "p1_psychiatry_note") 1 "Hx of T2DM; mood stable on sertraline."))
+(dx (mrn "p1") "chronic_kidney_disease" (evidence (doc "p1_nephrology_letter") 1 "CKD stage 3b, eGFR 38."))
+(rx (mrn "p1") "metformin" (evidence (doc "p1_med_list") 1 "metformin 1000 mg BID"))
+(dx (mrn "p2") "bulimia_nervosa" (evidence (doc "p2_psychiatry_note") 3 "Meets criteria for bulimia nervosa."))
+(rx (mrn "p2") "bupropion" (evidence (doc "p2_med_list") 1 "bupropion XL 300 mg daily"))
+(dx (mrn "p3") "stroke" (evidence (doc "p3_ed_note") 1 "Pt denies headache. BP 128/80. Discharged."))
+(rx (mrn "p3") "warfarin" (evidence (doc "p3_med_list") 1 "warfarin 5 mg daily"))
+(sensitivity (doc "p1_discharge_summary") 1) (sensitivity (doc "p1_psychiatry_note") 3)
+(sensitivity (doc "p1_nephrology_letter") 1) (sensitivity (doc "p1_med_list") 1)
+(sensitivity (doc "p2_psychiatry_note") 3) (sensitivity (doc "p2_med_list") 1)
+(sensitivity (doc "p3_ed_note") 1) (sensitivity (doc "p3_med_list") 1) (sensitivity (kg "2026") 0)
+(synonym "type_2_diabetes" "T2DM") (synonym "type_2_diabetes" "type 2 diabetes") (synonym "chronic_kidney_disease" "CKD")
+(synonym "bulimia_nervosa" "bulimia") (synonym "stroke" "CVA") (synonym "stroke" "stroke")
+(isa "type_2_diabetes" "diabetes_mellitus" (kg "2026")) (isa "chronic_kidney_disease" "renal_disorder" (kg "2026"))
+(isa "bulimia_nervosa" "eating_disorder" (kg "2026")) (isa "eating_disorder" "mental_disorder" (kg "2026"))
+(isa "stroke" "cerebrovascular_disease" (kg "2026"))
+(contraindicated "metformin" "renal_disorder") (contraindicated "bupropion" "eating_disorder")
+(contraindicated "warfarin" "cerebrovascular_disease")
+(clearance_of (pharmacist "ng") 1) (clearance_of (physician "okafor") 3) (clearance_of (researcher "ana") 0)
