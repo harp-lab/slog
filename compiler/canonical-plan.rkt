@@ -44,7 +44,7 @@
          kernel-plan-key)         ; sha256 hex of that serialization
 
 (require "utils.rkt" racket/set
-         sha
+         "sha256.rkt"
          "ir-stack.rkt"
          (only-in "params.rkt" semijoin-filters-enabled)  ; RF1 slice 3
          (only-in "ir-shared.rkt"          ; RF1 slice 1's ProgramModel
